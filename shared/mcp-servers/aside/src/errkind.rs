@@ -72,6 +72,7 @@ const TRANSIENT_PATTERNS: &[(&str, BackendErrorKind)] = &[
     ("insufficient_quota", BackendErrorKind::QuotaOrBilling),
     ("quota", BackendErrorKind::QuotaOrBilling),
     ("insufficient credits", BackendErrorKind::QuotaOrBilling),
+    ("credit balance", BackendErrorKind::QuotaOrBilling),
     ("billing", BackendErrorKind::QuotaOrBilling),
     ("payment required", BackendErrorKind::QuotaOrBilling),
     ("402", BackendErrorKind::QuotaOrBilling),
@@ -80,6 +81,13 @@ const TRANSIENT_PATTERNS: &[(&str, BackendErrorKind)] = &[
     ("model not found", BackendErrorKind::ModelUnavailable),
     (
         "does not exist or you do not have access",
+        BackendErrorKind::ModelUnavailable,
+    ),
+    // Real claude CLI shape (captured live, reported on stdout): "There's an
+    // issue with the selected model (X). It may not exist or you may not have
+    // access to it."
+    (
+        "may not exist or you may not have access",
         BackendErrorKind::ModelUnavailable,
     ),
     ("unknown model", BackendErrorKind::ModelUnavailable),

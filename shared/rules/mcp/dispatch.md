@@ -1,7 +1,7 @@
 <!-- slate-agent-kit:common -->
 # Dispatch Guidance
 
-Policy for the `dispatch` MCP server (`dispatch_submit` / `dispatch_status` / `dispatch_wait` / `dispatch_list` / `dispatch_cancel` / `dispatch_logs` / `dispatch_steer` / `dispatch_backends`). dispatch delegates an **execution** step to a coding-agent backend (codex or opencode) running headless and **write-capable** — it edits files in a target directory. This is hierarchical delegation (entrust execution), the complement to `aside` (`{{ASIDE_RULE_FILE}}`), which is horizontal consultation (seek a read-only opinion). dispatch is also distinct from any harness-native subagent/team/workflow surface described in `{{DELEGATION_RULE_FILE}}`: those spawn native delegates inside the current harness; dispatch hands work to a *different* agent process and tracks it asynchronously.
+Policy for the `dispatch` MCP server (`dispatch_submit` / `dispatch_status` / `dispatch_wait` / `dispatch_list` / `dispatch_cancel` / `dispatch_logs` / `dispatch_steer` / `dispatch_backends`). dispatch delegates an **execution** step to a coding-agent backend (codex, opencode, or claude) running headless and **write-capable** — it edits files in a target directory. This is hierarchical delegation (entrust execution), the complement to `aside` (`{{ASIDE_RULE_FILE}}`), which is horizontal consultation (seek a read-only opinion). dispatch is also distinct from any harness-native subagent/team/workflow surface described in `{{DELEGATION_RULE_FILE}}`: those spawn native delegates inside the current harness; dispatch hands work to a *different* agent process and tracks it asynchronously.
 
 ## Async model
 

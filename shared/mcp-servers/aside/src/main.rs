@@ -79,7 +79,7 @@ impl Aside {
     }
 
     #[tool(
-        description = "Ask OpenAI's codex CLI for a second opinion. include_transcript defaults to true — the current harness conversation is forwarded when a transcript source is available, but in REDACTED form (text blocks pass through; tool_use / tool_result / thinking blocks become placeholders). codex runs in `-s read-only` sandbox: it CAN read files and grep the workspace itself, but cannot write or exec shells. **Prefer passing file paths in `question` / `context` and let codex read them** (this is cheaper and avoids the transcript's 100 KB cap); embed an excerpt only when you want to focus codex on a specific line range OR when the data is transient tool output (command stdout, API response) that isn't on disk. Pass include_transcript=false for decontextualised questions. model_fallback: an optional ordered list of models retried in turn on a transient backend error (rate limit, quota, model unavailable) — the response notes when a fallback model answered instead of the first one tried. See the aside rule's Transcript redaction section. Costs third-party API quota."
+        description = "Ask OpenAI's codex CLI for a second opinion. include_transcript defaults to true — the current harness conversation is forwarded by reading the harness's own session log natively (Claude Code project transcripts, Codex rollouts, Kimi Code wire logs), but in REDACTED form (text blocks pass through; tool_use / tool_result / thinking blocks become placeholders). codex runs in `-s read-only` sandbox: it CAN read files and grep the workspace itself, but cannot write or exec shells. **Prefer passing file paths in `question` / `context` and let codex read them** (this is cheaper and avoids the transcript's 100 KB cap); embed an excerpt only when you want to focus codex on a specific line range OR when the data is transient tool output (command stdout, API response) that isn't on disk. Pass include_transcript=false for decontextualised questions. model_fallback: an optional ordered list of models retried in turn on a transient backend error (rate limit, quota, model unavailable) — the response notes when a fallback model answered instead of the first one tried. See the aside rule's Transcript redaction section. Costs third-party API quota."
     )]
     async fn aside_codex(
         &self,
@@ -90,7 +90,7 @@ impl Aside {
     }
 
     #[tool(
-        description = "Ask GitHub's standalone copilot CLI for a second opinion. include_transcript defaults to true — the current harness conversation is forwarded when a transcript source is available, in REDACTED form (tool_use / tool_result / thinking blocks become placeholders; only text passes through). Runs with --allow-all-tools + --available-tools=view,rg,glob,web_fetch — a read-only whitelist that lets copilot inspect files (view), grep the workspace (rg), pattern-match file paths (glob), and fetch URL bodies (web_fetch). NO shell exec, NO file mutation (bash/write_bash/task/sql and other mutating tools are excluded). **Prefer passing file paths in `question` / `context`** and let copilot read them; embed an excerpt only for focused line-range questions or for off-disk tool output. reasoning_effort maps to copilot --effort (low/medium/high/xhigh). model_fallback: an optional ordered list of models retried in turn on a transient backend error — the response notes when a fallback model answered instead of the first one tried. See the aside rule's Transcript redaction section. Costs third-party API quota."
+        description = "Ask GitHub's standalone copilot CLI for a second opinion. include_transcript defaults to true — the current harness conversation is forwarded by reading the harness's own session log natively (Claude Code project transcripts, Codex rollouts, Kimi Code wire logs), in REDACTED form (tool_use / tool_result / thinking blocks become placeholders; only text passes through). Runs with --allow-all-tools + --available-tools=view,rg,glob,web_fetch — a read-only whitelist that lets copilot inspect files (view), grep the workspace (rg), pattern-match file paths (glob), and fetch URL bodies (web_fetch). NO shell exec, NO file mutation (bash/write_bash/task/sql and other mutating tools are excluded). **Prefer passing file paths in `question` / `context`** and let copilot read them; embed an excerpt only for focused line-range questions or for off-disk tool output. reasoning_effort maps to copilot --effort (low/medium/high/xhigh). model_fallback: an optional ordered list of models retried in turn on a transient backend error — the response notes when a fallback model answered instead of the first one tried. See the aside rule's Transcript redaction section. Costs third-party API quota."
     )]
     async fn aside_copilot(
         &self,
@@ -393,6 +393,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cwd = std::env::current_dir()?;
+    // Canonicalize so transcript-slug computation and workDir comparison are
+    // stable under symlinked/aliased paths.
+    let cwd = cwd.canonicalize().unwrap_or(cwd);
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map(PathBuf::from)

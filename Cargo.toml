@@ -3,5 +3,6 @@ resolver = "3"
 members = [
     "shared/mcp-servers/aside",
     "shared/mcp-servers/dispatch",
+    "shared/mcp-servers/harness-log",
 ]
 

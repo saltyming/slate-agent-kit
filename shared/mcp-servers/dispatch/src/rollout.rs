@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use harness_log::codex::{codex_home, collect, cwd_matches, file_mtime, read_session_meta};
 use serde_json::Value;
 
 const RENDER_BYTE_CAP: usize = 40 * 1024;
@@ -34,7 +35,9 @@ pub fn default_kinds(backend: &str) -> Vec<String> {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    if backend == "opencode" {
+    // OpenCode and Claude expose plaintext reasoning in their logs; codex
+    // reasoning is API-encrypted, so it stays excluded there.
+    if backend == "opencode" || backend == "claude" {
         kinds.push("reasoning".to_string());
     }
     kinds
@@ -254,17 +257,124 @@ pub fn read_to_string(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)
 }
 
-// ── locating a session's rollout file ─────────────────────
+// ── claude session logs ───────────────────────────────────
+//
+// Claude Code (the `claude` backend) persists each session as
+// `~/.claude/projects/<dashed-working-dir>/<session-uuid>.jsonl`, appended
+// live. dispatch pins the session id at spawn (`--session-id`), so the log
+// path is fully deterministic — no snapshot/nonce discovery is needed.
 
-fn codex_home() -> PathBuf {
-    if let Some(h) = std::env::var_os("CODEX_HOME") {
-        return PathBuf::from(h);
-    }
+/// The session log path for a pinned claude session in `working_dir`.
+/// `working_dir` must already be canonical (dispatch canonicalizes at the
+/// working_dir guard) — Claude slugs the canonical cwd.
+pub fn claude_session_path(working_dir: &Path, sid: &str) -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_default();
-    PathBuf::from(home).join(".codex")
+    let slug = working_dir.to_string_lossy().replace('/', "-");
+    PathBuf::from(home)
+        .join(".claude")
+        .join("projects")
+        .join(slug)
+        .join(format!("{sid}.jsonl"))
 }
+
+/// Curate a Claude session JSONL string into the same compact timeline shape
+/// as codex/OpenCode logs. Claude session entries are `type` `user`/`assistant`
+/// with `message.content` blocks (`text`, `tool_use`, `tool_result`,
+/// `thinking`); other entry types (queue-operation, attachment, summary, …)
+/// are noise. There are no explicit lifecycle events in this format.
+pub fn curate_claude(jsonl: &str, kinds: &[String]) -> Rendered {
+    let mut lines = Vec::new();
+    for raw in jsonl.lines() {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let o: Value = match serde_json::from_str(raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let ty = o.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if ty != "user" && ty != "assistant" {
+            continue;
+        }
+        let Some(content) = o.get("message").and_then(|m| m.get("content")) else {
+            continue;
+        };
+        match content {
+            Value::String(s) => {
+                if !s.trim().is_empty() && kinds.iter().any(|k| k == "messages") {
+                    let tag = if ty == "user" { "user" } else { "claude" };
+                    lines.push(format!("[{tag}] {}", flatten(s)));
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    let bt = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    let (kind, line) = match bt {
+                        "text" => {
+                            let t = item.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                            if t.trim().is_empty() {
+                                continue;
+                            }
+                            let tag = if ty == "user" { "user" } else { "claude" };
+                            ("messages", format!("[{tag}] {}", flatten(t)))
+                        }
+                        "thinking" => {
+                            let t = item.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
+                            if t.trim().is_empty() {
+                                continue;
+                            }
+                            ("reasoning", format!("[thinking] {}", flatten(t)))
+                        }
+                        "tool_use" => {
+                            let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                            let input = item.get("input").cloned().unwrap_or(Value::Null);
+                            if matches!(name, "Edit" | "Write" | "MultiEdit" | "NotebookEdit") {
+                                let file = input
+                                    .get("file_path")
+                                    .or_else(|| input.get("notebook_path"))
+                                    .and_then(|f| f.as_str())
+                                    .map(|f| {
+                                        Path::new(f)
+                                            .file_name()
+                                            .and_then(|s| s.to_str())
+                                            .unwrap_or(f)
+                                            .to_string()
+                                    })
+                                    .unwrap_or_else(|| "(file)".to_string());
+                                ("edits", format!("[edit] {name} {file}"))
+                            } else {
+                                let arg = oneline(&input.to_string(), 160);
+                                ("tools", format!("[tool] {name}: {arg}"))
+                            }
+                        }
+                        "tool_result" => {
+                            let body = match item.get("content") {
+                                Some(Value::String(s)) => s.clone(),
+                                Some(v) => v.to_string(),
+                                None => String::new(),
+                            };
+                            ("tool_results", format!("[result] {}", oneline(&body, 200)))
+                        }
+                        _ => continue,
+                    };
+                    if kinds.iter().any(|k| k == kind) {
+                        lines.push(line);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let total = lines.len();
+    Rendered { lines, total }
+}
+
+// ── locating a session's rollout file ─────────────────────
+// Discovery/schema primitives (codex_home, collect, read_session_meta,
+// cwd_matches, file_mtime) live in the shared `harness-log` crate.
 
 /// Snapshot the set of rollout files that exist right now. Taken **before** spawning
 /// a codex child so the post-spawn search can require a *new* file and never match a
@@ -313,10 +423,10 @@ fn locate_new_in(
         {
             continue;
         }
-        if let Some((cwd, sid)) = read_session_meta(&path)
-            && cwd_matches(&cwd, &want, want_canon.as_deref())
+        if let Some(meta) = read_session_meta(&path)
+            && cwd_matches(&meta.cwd, &want, want_canon.as_deref())
         {
-            return Some((path, sid));
+            return Some((path, meta.session_id));
         }
     }
     None
@@ -363,74 +473,14 @@ fn locate_by_nonce_in(root: &Path, working_dir: &Path, nonce: &str) -> Option<(P
     let want = working_dir.to_string_lossy().to_string();
     let want_canon = working_dir.canonicalize().ok();
     for (path, _) in files.into_iter().take(SCAN_CAP) {
-        if let Some((cwd, sid)) = read_session_meta(&path)
-            && cwd_matches(&cwd, &want, want_canon.as_deref())
+        if let Some(meta) = read_session_meta(&path)
+            && cwd_matches(&meta.cwd, &want, want_canon.as_deref())
             && rollout_has_nonce(&path, nonce)
         {
-            return Some((path, sid));
+            return Some((path, meta.session_id));
         }
     }
     None
-}
-
-fn collect(dir: &Path, out: &mut Vec<(PathBuf, SystemTime)>, depth: usize) {
-    if depth > 5 {
-        return;
-    }
-    let rd = match std::fs::read_dir(dir) {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            collect(&p, out, depth + 1);
-        } else if let Some(name) = p.file_name().and_then(|s| s.to_str())
-            && name.starts_with("rollout-")
-            && name.ends_with(".jsonl")
-        {
-            let mtime = e
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            out.push((p, mtime));
-        }
-    }
-}
-
-fn read_session_meta(path: &Path) -> Option<(String, String)> {
-    use std::io::{BufRead, BufReader};
-    let f = std::fs::File::open(path).ok()?;
-    let mut first = String::new();
-    BufReader::new(f).read_line(&mut first).ok()?;
-    let o: Value = serde_json::from_str(first.trim()).ok()?;
-    if o.get("type")?.as_str()? != "session_meta" {
-        return None;
-    }
-    let p = o.get("payload")?;
-    let cwd = p.get("cwd")?.as_str()?.to_string();
-    // session_id is the canonical field; older codex logs carried only `id`.
-    let sid = p
-        .get("session_id")
-        .or_else(|| p.get("id"))
-        .and_then(|v| v.as_str())?
-        .to_string();
-    Some((cwd, sid))
-}
-
-/// Whether `cwd` (from a rollout's session_meta) refers to the same directory as
-/// `want`, comparing the raw strings first and then canonicalized paths.
-fn cwd_matches(cwd: &str, want: &str, want_canon: Option<&Path>) -> bool {
-    if cwd == want {
-        return true;
-    }
-    if let Some(wc) = want_canon
-        && Path::new(cwd).canonicalize().ok().as_deref() == Some(wc)
-    {
-        return true;
-    }
-    false
 }
 
 /// Scan the opening lines of a rollout for the dispatch `nonce` inside a
@@ -478,7 +528,7 @@ pub fn rollout_has_session_id(path: &Path, sid: &str) -> bool {
         return false;
     }
     read_session_meta(path)
-        .map(|(_, s)| s == sid)
+        .map(|m| m.session_id == sid)
         .unwrap_or(false)
 }
 
@@ -488,21 +538,17 @@ pub fn rollout_has_session_id(path: &Path, sid: &str) -> bool {
 /// the rollout is not a stale pre-existing same-cwd session — this is what breaks the
 /// circular `session_id == session_id` self-comparison on a poisoned row.
 pub fn rollout_cwd_after(path: &Path, working_dir: &Path, floor: Option<SystemTime>) -> bool {
-    let Some((cwd, _)) = read_session_meta(path) else {
+    let Some(meta) = read_session_meta(path) else {
         return false;
     };
     let want = working_dir.to_string_lossy().to_string();
-    if !cwd_matches(&cwd, &want, working_dir.canonicalize().ok().as_deref()) {
+    if !cwd_matches(&meta.cwd, &want, working_dir.canonicalize().ok().as_deref()) {
         return false;
     }
     match floor {
         Some(f) => file_mtime(path).map(|m| m >= f).unwrap_or(false),
         None => true,
     }
-}
-
-fn file_mtime(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 #[cfg(test)]
@@ -730,6 +776,46 @@ mod tests {
         assert_eq!(locate_by_session_id_in(&root, "bbb-222"), Some(target));
         assert_eq!(locate_by_session_id_in(&root, "no-such-sid"), None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn curate_claude_maps_session_blocks_to_kinds() {
+        let jsonl = [
+            r#"{"type":"queue-operation","op":"x"}"#.to_string(),
+            r#"{"type":"attachment","a":"y"}"#.to_string(),
+            r#"{"type":"user","message":{"role":"user","content":"do the task"}}"#.to_string(),
+            r#"{"type":"assistant","message":{"role":"assistant","content":[
+                {"type":"thinking","thinking":"let me think"},
+                {"type":"text","text":"working on it"},
+                {"type":"tool_use","name":"Bash","input":{"command":"cargo test"}},
+                {"type":"tool_use","name":"Edit","input":{"file_path":"/w/src/main.rs"}}
+            ]}}"#
+                .replace('\n', " "),
+            r#"{"type":"user","message":{"role":"user","content":[
+                {"type":"tool_result","content":"test output here"}
+            ]}}"#
+                .replace('\n', " "),
+        ]
+        .join("\n");
+        let r = curate_claude(&jsonl, &default_kinds("claude"));
+        // defaults include reasoning (plaintext) but exclude tool_results
+        assert_eq!(r.total, 5, "lines: {:?}", r.lines);
+        assert_eq!(r.lines[0], "[user] do the task");
+        assert_eq!(r.lines[1], "[thinking] let me think");
+        assert_eq!(r.lines[2], "[claude] working on it");
+        assert!(r.lines[3].starts_with("[tool] Bash:"));
+        assert_eq!(r.lines[4], "[edit] Edit main.rs");
+
+        let results_only = curate_claude(&jsonl, &["tool_results".to_string()]);
+        assert_eq!(results_only.total, 1);
+        assert_eq!(results_only.lines[0], "[result] test output here");
+    }
+
+    #[test]
+    fn claude_session_path_is_deterministic_slug() {
+        let p = claude_session_path(Path::new("/w/proj"), "sid-1");
+        let s = p.to_string_lossy();
+        assert!(s.ends_with(".claude/projects/-w-proj/sid-1.jsonl"), "{s}");
     }
 
     #[test]

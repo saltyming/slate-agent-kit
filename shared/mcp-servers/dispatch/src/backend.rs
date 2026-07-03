@@ -33,6 +33,7 @@ const MAX_STDERR: usize = 16 * 1024;
 pub enum Backend {
     Codex,
     Opencode,
+    Claude,
 }
 
 impl Backend {
@@ -40,6 +41,7 @@ impl Backend {
         match self {
             Backend::Codex => "codex",
             Backend::Opencode => "opencode",
+            Backend::Claude => "claude",
         }
     }
 
@@ -53,12 +55,13 @@ impl Backend {
         match s.trim().to_ascii_lowercase().as_str() {
             "" | "codex" => Some(Backend::Codex),
             "opencode" => Some(Backend::Opencode),
+            "claude" => Some(Backend::Claude),
             _ => None,
         }
     }
 
     pub fn all() -> &'static [Backend] {
-        &[Backend::Codex, Backend::Opencode]
+        &[Backend::Codex, Backend::Opencode, Backend::Claude]
     }
 }
 
@@ -70,10 +73,15 @@ pub struct SpawnSpec<'a> {
     pub model: Option<&'a str>,
     pub reasoning_effort: Option<&'a str>,
     pub skip_git_repo_check: bool,
-    /// When `Some(session_id)`, continue an existing codex session
-    /// (`codex exec resume <id>`) instead of starting a fresh one — the basis of
-    /// `dispatch_steer`. The accumulated conversation context is preserved.
+    /// When `Some(session_id)`, continue an existing backend session
+    /// (`codex exec resume <id>` / `claude -p --resume <id> --fork-session`)
+    /// instead of starting a fresh one — the basis of `dispatch_steer`. The
+    /// accumulated conversation context is preserved.
     pub resume_session: Option<&'a str>,
+    /// Claude only: pin the (new) session id via `--session-id <uuid>` so the
+    /// session log path under `~/.claude/projects/` is deterministic — no
+    /// discovery/polling needed. Ignored by other backends.
+    pub pin_session: Option<&'a str>,
 }
 
 /// Build the `Command` for a backend. stdio, process group, and kill_on_drop are
@@ -117,6 +125,69 @@ pub fn build_command(backend: Backend, spec: &SpawnSpec) -> (Command, Vec<String
             }
             if spec.skip_git_repo_check {
                 args.push("--skip-git-repo-check".into());
+            }
+
+            let mut cmd = Command::new(backend.binary());
+            cmd.args(&args);
+            cmd.current_dir(spec.working_dir);
+
+            let mut argv = vec![backend.binary().to_string()];
+            argv.extend(args);
+            (cmd, argv)
+        }
+        Backend::Claude => {
+            // claude -p [--permission-mode …|--dangerously-skip-permissions]
+            //        [--model M] [--effort E] [--resume SID --fork-session]
+            //        --session-id <uuid>   (prompt on stdin, final text on stdout)
+            //
+            // Sandbox is a policy mapping (like OpenCode's permission rules; Claude
+            // Code has no OS-level dispatch sandbox):
+            //   read-only        → --permission-mode plan (no edits, no state-changing
+            //                      commands)
+            //   workspace-write  → --permission-mode acceptEdits + Bash allowlisted:
+            //                      edits inside working_dir auto-accepted, edits
+            //                      outside it prompt → auto-denied headless; commands
+            //                      may run (parity with OpenCode's workspace-write,
+            //                      which also allows bash while denying
+            //                      external-directory edits)
+            //   danger-full-access → --dangerously-skip-permissions (server-gated)
+            //
+            // --resume <sid> --fork-session --session-id <new>: verified live — a
+            // steered run continues the parent conversation under a NEW pinned id
+            // (--session-id alongside --resume requires --fork-session).
+            let mut args: Vec<String> = vec!["-p".into()];
+            match spec.sandbox {
+                "read-only" => {
+                    args.push("--permission-mode".into());
+                    args.push("plan".into());
+                }
+                "danger-full-access" => {
+                    args.push("--dangerously-skip-permissions".into());
+                }
+                _ => {
+                    args.push("--permission-mode".into());
+                    args.push("acceptEdits".into());
+                    args.push("--allowedTools".into());
+                    args.push("Bash".into());
+                }
+            }
+            if let Some(m) = spec.model {
+                args.push("--model".into());
+                args.push(m.into());
+            }
+            if let Some(eff) = spec.reasoning_effort {
+                // claude --effort accepts low/medium/high/xhigh/max — pass through.
+                args.push("--effort".into());
+                args.push(eff.into());
+            }
+            if let Some(sid) = spec.resume_session {
+                args.push("--resume".into());
+                args.push(sid.into());
+                args.push("--fork-session".into());
+            }
+            if let Some(pin) = spec.pin_session {
+                args.push("--session-id".into());
+                args.push(pin.into());
             }
 
             let mut cmd = Command::new(backend.binary());
@@ -467,6 +538,11 @@ pub fn install_hint(backend: Backend) -> String {
                 .to_string()
         }
         Backend::Opencode => "install opencode CLI (see https://opencode.ai/docs/cli/)".to_string(),
+        Backend::Claude => {
+            "install Claude Code CLI (`npm i -g @anthropic-ai/claude-code`; see \
+             https://claude.com/claude-code)"
+                .to_string()
+        }
     }
 }
 
@@ -479,8 +555,53 @@ mod tests {
         assert_eq!(Backend::parse(""), Some(Backend::Codex));
         assert_eq!(Backend::parse("codex"), Some(Backend::Codex));
         assert_eq!(Backend::parse("opencode"), Some(Backend::Opencode));
+        assert_eq!(Backend::parse("claude"), Some(Backend::Claude));
         assert_eq!(Backend::parse("missing"), None);
         assert!(Backend::all().contains(&Backend::Codex));
         assert!(Backend::all().contains(&Backend::Opencode));
+        assert!(Backend::all().contains(&Backend::Claude));
+    }
+
+    fn claude_spec<'a>(
+        sandbox: &'a str,
+        resume: Option<&'a str>,
+        pin: Option<&'a str>,
+    ) -> SpawnSpec<'a> {
+        SpawnSpec {
+            working_dir: Path::new("/w"),
+            sandbox,
+            model: Some("haiku"),
+            reasoning_effort: Some("high"),
+            skip_git_repo_check: false,
+            resume_session: resume,
+            pin_session: pin,
+        }
+    }
+
+    #[test]
+    fn claude_argv_maps_sandbox_and_pins_session() {
+        let (_c, argv) = build_command(Backend::Claude, &claude_spec("workspace-write", None, Some("uuid-1")));
+        let joined = argv.join(" ");
+        assert!(joined.starts_with("claude -p"));
+        assert!(joined.contains("--permission-mode acceptEdits"));
+        assert!(joined.contains("--allowedTools Bash"));
+        assert!(joined.contains("--model haiku"));
+        assert!(joined.contains("--effort high"));
+        assert!(joined.contains("--session-id uuid-1"));
+        assert!(!joined.contains("--resume"));
+
+        let (_c, ro) = build_command(Backend::Claude, &claude_spec("read-only", None, Some("u")));
+        assert!(ro.join(" ").contains("--permission-mode plan"));
+
+        let (_c, danger) =
+            build_command(Backend::Claude, &claude_spec("danger-full-access", None, Some("u")));
+        assert!(danger.join(" ").contains("--dangerously-skip-permissions"));
+
+        let (_c, steer) =
+            build_command(Backend::Claude, &claude_spec("workspace-write", Some("old-sid"), Some("new-sid")));
+        let s = steer.join(" ");
+        assert!(s.contains("--resume old-sid"));
+        assert!(s.contains("--fork-session"));
+        assert!(s.contains("--session-id new-sid"));
     }
 }

@@ -140,7 +140,7 @@ async fn run(db: &DbHandle, job: &Job, ct: &CancellationToken) {
             return;
         }
 
-        if let Some(text) = failure_text(&outcome) {
+        if let Some(text) = failure_text(job.backend, &outcome) {
             let kind = errkind::classify(&text);
             tracing::info!(
                 "dispatch: {} attempt {}/{} model={:?} failed kind={} detail={:.200}",
@@ -181,15 +181,6 @@ async fn run_attempt(
     idx: usize,
     ct: &CancellationToken,
 ) -> backend::RunOutcome {
-    let spec = backend::SpawnSpec {
-        working_dir: &job.working_dir,
-        sandbox: &job.sandbox,
-        model,
-        reasoning_effort: job.reasoning_effort.as_deref(),
-        skip_git_repo_check: job.skip_git_repo_check,
-        resume_session: job.resume_session.as_deref(),
-    };
-
     // Attempt 0 keeps the job's own nonce/prompt exactly as submitted (no
     // swap needed); a fallback retry (idx > 0) mints a fresh nonce and swaps
     // it into a copy of the prompt, so its own record_rollout call can never
@@ -225,6 +216,54 @@ async fn run_attempt(
         };
         return opencode::run(db, ospec, ct).await;
     }
+
+    if job.backend == Backend::Claude {
+        // Pin a fresh session id per attempt: the session log path under
+        // ~/.claude/projects/ becomes deterministic (no discovery/polling),
+        // and a fallback retry can never collide with a prior attempt's
+        // half-created session. A steered run passes the parent session via
+        // --resume … --fork-session and still pins its own new id.
+        let pin = uuid::Uuid::new_v4().to_string();
+        let spec = backend::SpawnSpec {
+            working_dir: &job.working_dir,
+            sandbox: &job.sandbox,
+            model,
+            reasoning_effort: job.reasoning_effort.as_deref(),
+            skip_git_repo_check: job.skip_git_repo_check,
+            resume_session: job.resume_session.as_deref(),
+            pin_session: Some(&pin),
+        };
+        let spawned = match backend::spawn_child(job.backend, &spec, &attempt_prompt) {
+            Ok(s) => s,
+            Err(e) => return backend::RunOutcome::WaitFailed(e),
+        };
+        let child_pid = spawned.child_pid.map(|p| p as i64);
+        let argv_json = serde_json::to_string(&spawned.argv).unwrap_or_default();
+        db_mark_running(
+            db,
+            &job.id,
+            child_pid,
+            &argv_json,
+            job.backend_version.as_deref(),
+        );
+        let path = crate::rollout::claude_session_path(&job.working_dir, &pin);
+        if let Ok(conn) = db.lock()
+            && let Err(e) = store::set_session(&conn, &job.id, &pin, &path.to_string_lossy())
+        {
+            tracing::warn!("dispatch: set_session({}) failed: {e}", job.id);
+        }
+        return backend::capture(spawned, ct).await;
+    }
+
+    let spec = backend::SpawnSpec {
+        working_dir: &job.working_dir,
+        sandbox: &job.sandbox,
+        model,
+        reasoning_effort: job.reasoning_effort.as_deref(),
+        skip_git_repo_check: job.skip_git_repo_check,
+        resume_session: job.resume_session.as_deref(),
+        pin_session: None,
+    };
 
     // Snapshot the rollouts that already exist BEFORE spawning THIS attempt,
     // so its own record_rollout call can require a file that did not exist
@@ -265,14 +304,30 @@ async fn run_attempt(
 /// Extract the text `errkind::classify` should judge from a non-success
 /// outcome. `None` for a success or a cancellation (neither is a failure to
 /// classify — cancellation is handled separately, before this is called).
-fn failure_text(outcome: &backend::RunOutcome) -> Option<String> {
+///
+/// The `claude` CLI reports its discriminating failure text (e.g. the
+/// bad-model message, captured live) on **stdout**, not stderr — stderr
+/// carries only incidental warnings — so its stdout tail joins the
+/// classification text. Other backends stay stderr-only to avoid false
+/// pattern hits in verbose agent stdout.
+fn failure_text(backend: Backend, outcome: &backend::RunOutcome) -> Option<String> {
     match outcome {
         backend::RunOutcome::Done {
             success: false,
+            stdout,
             stderr,
             exit_code,
             ..
-        } => Some(format!("exit_code={:?} stderr={}", exit_code, stderr)),
+        } => {
+            let mut text = format!("exit_code={:?} stderr={}", exit_code, stderr);
+            if backend == Backend::Claude {
+                let tail: String = stdout.chars().rev().take(2000).collect::<Vec<_>>()
+                    .into_iter().rev().collect();
+                text.push_str(" stdout=");
+                text.push_str(&tail);
+            }
+            Some(text)
+        }
         backend::RunOutcome::WaitFailed(e) => Some(e.clone()),
         backend::RunOutcome::Done { success: true, .. } | backend::RunOutcome::Cancelled => None,
     }

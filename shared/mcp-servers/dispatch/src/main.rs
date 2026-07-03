@@ -74,7 +74,10 @@ struct Dispatch {
     db: executor::DbHandle,
     registry: executor::Registry,
     /// Canonical project root — the default containment boundary for working_dir.
-    project_root: PathBuf,
+    /// `None` when no explicit `*_PROJECT_DIR` env was set and the process cwd is
+    /// recognizably not a project (e.g. a harness plugin/state dir): containment
+    /// then relies on `extra_roots` alone instead of silently trusting a bogus cwd.
+    project_root: Option<PathBuf>,
     /// Canonical extra roots from DISPATCH_EXTRA_ROOTS — the user's explicit opt-in
     /// to delegate outside the project tree.
     extra_roots: Arc<Vec<PathBuf>>,
@@ -94,7 +97,7 @@ struct Dispatch {
 #[tool_router]
 impl Dispatch {
     #[tool(
-        description = "Delegate ONE execution step to a coding-agent backend (codex or opencode) running headless and WRITE-CAPABLE in `working_dir` — it may modify files there. Runs ASYNCHRONOUSLY: returns a task id immediately; poll dispatch_status(id) for progress and the result. Provide a structured spec — objective (required), working_dir (required, absolute), and optional target_files / constraints / acceptance — plus optional free-form context / details; the server renders them into the backend prompt. working_dir is rejected unless it canonicalizes within the project root (widen with the DISPATCH_EXTRA_ROOTS env var). sandbox defaults to workspace-write; danger-full-access is rejected unless the server enables it. One active run per working_dir unless allow_concurrent=true. model_fallback: an optional ordered list of models tried in turn on a transient backend error (rate limit, quota, model unavailable) — dispatch_status reports final_model/fallback_history when a retry occurred; not honored by dispatch_steer. POLICY: initiate dispatch according to the harness-rendered dispatch preferences file (`conservative` / `preference-only` / `proactive`) — under `proactive` + `auto`, submit directly for suitable steps; this policy governs dispatch specifically and is not subject to the general write-capable delegation propose-and-wait default used elsewhere. APPROVAL: before the FIRST dispatch in a session, confirm working_dir + the step scope + the approval granularity (per-step vs batch) with the user when approval mode is ask; skip that confirmation only when approval mode is auto."
+        description = "Delegate ONE execution step to a coding-agent backend (codex, opencode, or claude) running headless and WRITE-CAPABLE in `working_dir` — it may modify files there. Runs ASYNCHRONOUSLY: returns a task id immediately; poll dispatch_status(id) for progress and the result. Provide a structured spec — objective (required), working_dir (required, absolute), and optional target_files / constraints / acceptance — plus optional free-form context / details; the server renders them into the backend prompt. working_dir is rejected unless it canonicalizes within the project root (widen with the DISPATCH_EXTRA_ROOTS env var). sandbox defaults to workspace-write; danger-full-access is rejected unless the server enables it. One active run per working_dir unless allow_concurrent=true. model_fallback: an optional ordered list of models tried in turn on a transient backend error (rate limit, quota, model unavailable) — dispatch_status reports final_model/fallback_history when a retry occurred; not honored by dispatch_steer. POLICY: initiate dispatch according to the harness-rendered dispatch preferences file (`conservative` / `preference-only` / `proactive`) — under `proactive` + `auto`, submit directly for suitable steps; this policy governs dispatch specifically and is not subject to the general write-capable delegation propose-and-wait default used elsewhere. APPROVAL: before the FIRST dispatch in a session, confirm working_dir + the step scope + the approval granularity (per-step vs batch) with the user when approval mode is ask; skip that confirmation only when approval mode is auto."
     )]
     async fn dispatch_submit(
         &self,
@@ -116,7 +119,7 @@ impl Dispatch {
                 return Ok(err_struct(
                     ErrCode::UnknownBackend,
                     format!(
-                        "unknown backend {:?}; supported: codex, opencode",
+                        "unknown backend {:?}; supported: codex, opencode, claude",
                         p.backend.as_deref().unwrap_or("")
                     ),
                 ));
@@ -125,7 +128,7 @@ impl Dispatch {
 
         let canon = match self.check_working_dir(&p.working_dir) {
             Ok(c) => c,
-            Err(e) => return Ok(err_struct(ErrCode::InvalidWorkingDir, e)),
+            Err((code, e)) => return Ok(err_struct(code, e)),
         };
         let canon_str = canon.to_string_lossy().to_string();
 
@@ -349,7 +352,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "List which backend CLIs (codex, opencode) are available on PATH, with their --version output. Call this when you're unsure a dispatch backend is installed on this machine."
+        description = "List which backend CLIs (codex, opencode, claude) are available on PATH, with their --version output, plus this server's containment configuration (project_root, extra_roots). Call this when you're unsure a dispatch backend is installed on this machine, or to check why a working_dir is being rejected."
     )]
     async fn dispatch_backends(
         &self,
@@ -378,11 +381,17 @@ impl Dispatch {
             };
             report.push(entry);
         }
-        Ok(json_ok(json!({ "backends": report })))
+        Ok(json_ok(json!({
+            "backends": report,
+            // Containment observability: what this server will accept as
+            // working_dir (and the live probe for harness spawn-cwd issues).
+            "project_root": self.project_root.as_ref().map(|p| p.display().to_string()),
+            "extra_roots": self.extra_roots.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        })))
     }
 
     #[tool(
-        description = "Show a curated, live-updating timeline of what a delegated run is doing. Codex logs are read from codex's rollout; OpenCode logs are dispatch-owned normalized JSONL with native OpenCode events preserved. Noise (system prompts, token counts, encrypted codex reasoning, raw tool-call output) is filtered out; signal (user/backend messages, tool-call invocations, file edits, lifecycle, and plaintext OpenCode reasoning) is kept, and never truncated per-field — only the total response is size-capped (see line_start/line_end). Works WHILE the task is still running. Page with line_start/line_end (1-based; omitted = the tail) to avoid output limits — total_lines tells you how to page. kinds filters categories (lifecycle/messages/tools/edits/reasoning/tool_results; by default codex excludes reasoning, opencode includes it; tool_results — raw tool-call output — is excluded by default for both backends, request it explicitly). raw=true returns the underlying JSONL."
+        description = "Show a curated, live-updating timeline of what a delegated run is doing. Codex logs are read from codex's rollout; OpenCode logs are dispatch-owned normalized JSONL; Claude logs are read from the session file under ~/.claude/projects (the session id is pinned at spawn). Noise (system prompts, token counts, encrypted codex reasoning, raw tool-call output) is filtered out; signal (user/backend messages, tool-call invocations, file edits, lifecycle, and plaintext OpenCode/Claude reasoning) is kept, and never truncated per-field — only the total response is size-capped (see line_start/line_end). Works WHILE the task is still running. Page with line_start/line_end (1-based; omitted = the tail) to avoid output limits — total_lines tells you how to page. kinds filters categories (lifecycle/messages/tools/edits/reasoning/tool_results; by default codex excludes reasoning while opencode and claude include it; tool_results — raw tool-call output — is excluded by default for every backend, request it explicitly). raw=true returns the underlying JSONL."
     )]
     async fn dispatch_logs(
         &self,
@@ -446,7 +455,11 @@ impl Dispatch {
         let kinds = p
             .kinds
             .unwrap_or_else(|| rollout::default_kinds(&row.backend));
-        let rendered = rollout::curate(&jsonl, &kinds);
+        let rendered = if row.backend == "claude" {
+            rollout::curate_claude(&jsonl, &kinds)
+        } else {
+            rollout::curate(&jsonl, &kinds)
+        };
         let (text, s, e, capped) = rollout::window(&rendered.lines, start, end);
         Ok(json_ok(json!({
             "id": id, "status": row.status, "session_id": row.session_id,
@@ -757,7 +770,11 @@ impl Dispatch {
             }
         };
         let kinds = rollout::default_kinds(&row.backend);
-        let rendered = rollout::curate(&jsonl, &kinds);
+        let rendered = if row.backend == "claude" {
+            rollout::curate_claude(&jsonl, &kinds)
+        } else {
+            rollout::curate(&jsonl, &kinds)
+        };
         let (text, s, e, capped) = rollout::window_with_limits(
             &rendered.lines,
             None,
@@ -819,6 +836,18 @@ impl Dispatch {
     /// plus a not-older-than-start time floor. The floor is what avoids the circular case
     /// where a poisoned row's session_id was copied from the same stale file.
     fn rollout_is_ours(&self, row: &store::TaskRow, path: &Path) -> bool {
+        if row.backend == "claude" {
+            // Claude session ids are pinned at spawn, so identity is the
+            // deterministic path formula — no content scanning needed.
+            return row
+                .session_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|sid| {
+                    path == rollout::claude_session_path(Path::new(&row.working_dir), sid)
+                })
+                .unwrap_or(false);
+        }
         if let Some(n) = row.nonce.as_deref().filter(|n| !n.is_empty()) {
             return rollout::rollout_has_nonce(path, n);
         }
@@ -840,6 +869,11 @@ impl Dispatch {
     /// rollout is written); the inherited session id (steered, by `parent_id`); else —
     /// a legacy row — the newest same-cwd rollout at or after the task's start.
     fn locate_validated(&self, row: &store::TaskRow) -> Option<(PathBuf, String)> {
+        if row.backend == "claude" {
+            let sid = row.session_id.as_deref().filter(|s| !s.is_empty())?;
+            let p = rollout::claude_session_path(Path::new(&row.working_dir), sid);
+            return p.exists().then(|| (p, sid.to_string()));
+        }
         if let Some(n) = row.nonce.as_deref().filter(|n| !n.is_empty()) {
             return rollout::locate_by_nonce(Path::new(&row.working_dir), n);
         }
@@ -868,33 +902,28 @@ impl Dispatch {
     /// Containment guard: working_dir must be absolute, exist, be a directory, and
     /// canonicalize within the project root OR a user-allowlisted extra root. This
     /// is the real, model-proof boundary on a write-capable subprocess.
-    fn check_working_dir(&self, raw: &str) -> Result<PathBuf, String> {
+    fn check_working_dir(&self, raw: &str) -> Result<PathBuf, (ErrCode, String)> {
         let raw = raw.trim();
         let p = Path::new(raw);
         if !p.is_absolute() {
-            return Err(format!("working_dir must be an absolute path, got {raw:?}"));
+            return Err((
+                ErrCode::InvalidWorkingDir,
+                format!("working_dir must be an absolute path, got {raw:?}"),
+            ));
         }
-        let canon = p
-            .canonicalize()
-            .map_err(|e| format!("working_dir {raw:?} cannot be resolved (does it exist?): {e}"))?;
+        let canon = p.canonicalize().map_err(|e| {
+            (
+                ErrCode::InvalidWorkingDir,
+                format!("working_dir {raw:?} cannot be resolved (does it exist?): {e}"),
+            )
+        })?;
         if !canon.is_dir() {
-            return Err(format!(
-                "working_dir {} is not a directory",
-                canon.display()
+            return Err((
+                ErrCode::InvalidWorkingDir,
+                format!("working_dir {} is not a directory", canon.display()),
             ));
         }
-        let allowed = canon.starts_with(&self.project_root)
-            || self.extra_roots.iter().any(|r| canon.starts_with(r));
-        if !allowed {
-            return Err(format!(
-                "working_dir {} is outside the project root ({}) and any allowlisted root. \
-                 dispatch only delegates within the project tree by default; if you intend this, \
-                 add the root to the DISPATCH_EXTRA_ROOTS env var (an OS-path-list of absolute \
-                 paths) for this server.",
-                canon.display(),
-                self.project_root.display()
-            ));
-        }
+        containment_check(&canon, self.project_root.as_deref(), &self.extra_roots)?;
         Ok(canon)
     }
 
@@ -928,6 +957,49 @@ impl Dispatch {
 
 // ── free helpers ──────────────────────────────────────────
 
+/// The containment decision proper: a canonical working_dir is allowed inside
+/// the project root or any allowlisted extra root. With no project root and no
+/// extra roots there is no boundary to check against — that is a configuration
+/// error (`no_project_root`), not a rejection of this particular directory.
+fn containment_check(
+    canon: &Path,
+    project_root: Option<&Path>,
+    extra_roots: &[PathBuf],
+) -> Result<(), (ErrCode, String)> {
+    let in_project = project_root.map(|r| canon.starts_with(r)).unwrap_or(false);
+    if in_project || extra_roots.iter().any(|r| canon.starts_with(r)) {
+        return Ok(());
+    }
+    if project_root.is_none() && extra_roots.is_empty() {
+        return Err((
+            ErrCode::NoProjectRoot,
+            format!(
+                "no project root is configured for this dispatch server, so working_dir {} \
+                 cannot be containment-checked. This harness spawns MCP servers outside the \
+                 project (detected cwd is not a project directory). Fix: set \
+                 DISPATCH_EXTRA_ROOTS to your workspace root(s) at registration time \
+                 (e.g. re-run install-mcp.sh with --roots ~/Workspace), or set \
+                 SLATE_PROJECT_DIR for this server.",
+                canon.display()
+            ),
+        ));
+    }
+    let root_desc = project_root
+        .map(|r| r.display().to_string())
+        .unwrap_or_else(|| "(no project root)".to_string());
+    Err((
+        ErrCode::InvalidWorkingDir,
+        format!(
+            "working_dir {} is outside the project root ({}) and any allowlisted root. \
+             dispatch only delegates within the project tree by default; if you intend this, \
+             add the root to the DISPATCH_EXTRA_ROOTS env var (an OS-path-list of absolute \
+             paths) for this server.",
+            canon.display(),
+            root_desc
+        ),
+    ))
+}
+
 fn text_ok(msg: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![Content::text(msg.into())])
 }
@@ -940,11 +1012,12 @@ fn json_ok(v: Value) -> CallToolResult {
 
 /// Stable, machine-readable error categories returned alongside the human message, so a
 /// calling agent can branch on `error.code` instead of parsing prose.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ErrCode {
     InvalidParams,
     NoSuchTask,
     InvalidWorkingDir,
+    NoProjectRoot,
     SandboxForbidden,
     DirBusy,
     SessionNotReady,
@@ -959,6 +1032,7 @@ impl ErrCode {
             ErrCode::InvalidParams => "invalid_params",
             ErrCode::NoSuchTask => "no_such_task",
             ErrCode::InvalidWorkingDir => "invalid_working_dir",
+            ErrCode::NoProjectRoot => "no_project_root",
             ErrCode::SandboxForbidden => "sandbox_forbidden",
             ErrCode::DirBusy => "dir_busy",
             ErrCode::SessionNotReady => "session_not_ready",
@@ -1073,30 +1147,21 @@ fn env_truthy(key: &str) -> bool {
 ///
 /// `DISPATCH_STATE_DIR` is the explicit override. Without it, the directory is
 /// anchored under `SLATE_AGENT_STATE_HOME` / `AGENT_KIT_STATE_HOME`, or
-/// `~/.slate-agent-kit/projects/{dashed-project}/dispatch`. `CLAUDE_PROJECT_DIR`
-/// remains only an explicit compatibility fallback for existing Claude installs.
-fn resolve_state_dir(fallback: &Path) -> PathBuf {
+/// `~/.slate-agent-kit/projects/{dashed-project}/dispatch`. When no project
+/// root could be resolved, state is keyed to the `_no-project` slug instead of
+/// a bogus (plugin/state) directory path.
+fn resolve_state_dir(project_root: Option<&Path>) -> PathBuf {
     if let Some(dir) = std::env::var_os("DISPATCH_STATE_DIR") {
         return PathBuf::from(dir);
     }
-    let project_dir = std::env::var("SLATE_PROJECT_DIR")
-        .or_else(|_| std::env::var("AGENT_KIT_PROJECT_DIR"))
-        .or_else(|_| std::env::var("CLAUDE_PROJECT_DIR"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| fallback.to_path_buf());
-    // Canonicalize so symlink / case / `..` aliases of one project don't split it
-    // into multiple state dirs (which would defeat reconciliation + the dir guard).
-    let project_dir = project_dir.canonicalize().unwrap_or(project_dir);
-    let project_path = project_dir.to_string_lossy().replace('/', "-");
+    let project_path = match project_root {
+        Some(p) => p.to_string_lossy().replace('/', "-"),
+        None => "_no-project".to_string(),
+    };
     let state_home = std::env::var_os("SLATE_AGENT_STATE_HOME")
         .or_else(|| std::env::var_os("AGENT_KIT_STATE_HOME"))
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .or_else(|_| std::env::var("USERPROFILE"))
-                .map(|h| PathBuf::from(h).join(".slate-agent-kit"))
-                .ok()
-        })
+        .or_else(|| home_dir().map(|h| h.join(".slate-agent-kit")))
         .unwrap_or_else(std::env::temp_dir);
     state_home
         .join("projects")
@@ -1104,12 +1169,81 @@ fn resolve_state_dir(fallback: &Path) -> PathBuf {
         .join("dispatch")
 }
 
-fn resolve_project_dir(fallback: &Path) -> PathBuf {
-    std::env::var("SLATE_PROJECT_DIR")
-        .or_else(|_| std::env::var("AGENT_KIT_PROJECT_DIR"))
-        .or_else(|_| std::env::var("CLAUDE_PROJECT_DIR"))
+fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
         .map(PathBuf::from)
-        .unwrap_or_else(|_| fallback.to_path_buf())
+        .ok()
+}
+
+/// Resolve the canonical project root, or `None` when it cannot be trusted.
+///
+/// An explicit `SLATE_PROJECT_DIR` / `AGENT_KIT_PROJECT_DIR` / `CLAUDE_PROJECT_DIR`
+/// always wins. Otherwise the process cwd is used **only if it plausibly is a
+/// project directory** — harnesses that spawn MCP servers elsewhere (e.g. the
+/// Kimi plugin pins cwd to the plugin dir) would otherwise silently turn the
+/// containment boundary into a directory no delegation ever targets.
+fn resolve_project_root(cwd: &Path) -> Option<PathBuf> {
+    for key in [
+        "SLATE_PROJECT_DIR",
+        "AGENT_KIT_PROJECT_DIR",
+        "CLAUDE_PROJECT_DIR",
+    ] {
+        if let Ok(v) = std::env::var(key)
+            && !v.trim().is_empty()
+        {
+            let p = PathBuf::from(v);
+            // Canonicalize so symlink / case / `..` aliases of one project don't
+            // split it into multiple state dirs (which would defeat
+            // reconciliation + the dir guard).
+            return Some(p.canonicalize().unwrap_or(p));
+        }
+    }
+    let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    if plausible_fallback_root(&canon, &implausible_roots()) {
+        Some(canon)
+    } else {
+        None
+    }
+}
+
+/// Directories a project cwd can never be: filesystem root, $HOME itself, and
+/// anything under a harness home / Slate state home.
+fn implausible_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let home = home_dir();
+    if let Some(h) = &home {
+        roots.push(h.join(".claude"));
+        roots.push(
+            std::env::var_os("CODEX_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| h.join(".codex")),
+        );
+        roots.push(
+            std::env::var_os("KIMI_CODE_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| h.join(".kimi-code")),
+        );
+        roots.push(
+            std::env::var_os("SLATE_AGENT_STATE_HOME")
+                .or_else(|| std::env::var_os("AGENT_KIT_STATE_HOME"))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| h.join(".slate-agent-kit")),
+        );
+    }
+    roots
+}
+
+fn plausible_fallback_root(canon: &Path, denied: &[PathBuf]) -> bool {
+    if canon == Path::new("/") || canon.parent().is_none() {
+        return false;
+    }
+    if let Some(h) = home_dir()
+        && canon == h.as_path()
+    {
+        return false;
+    }
+    !denied.iter().any(|d| canon.starts_with(d))
 }
 
 fn parse_extra_roots() -> Vec<PathBuf> {
@@ -1188,7 +1322,7 @@ impl ServerHandler for Dispatch {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Hierarchical delegation tools. Where `aside` asks another model family for a \
-             read-only second opinion, `dispatch` hands a coding-agent backend (codex or opencode) an \
+             read-only second opinion, `dispatch` hands a coding-agent backend (codex, opencode, or claude) an \
              execution task: the backend runs headless and WRITE-CAPABLE, modifying \
              files under a target directory. Delegation is ASYNCHRONOUS — dispatch_submit returns \
              a task id immediately and the run continues in the background; poll dispatch_status, \
@@ -1261,7 +1395,16 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cwd = std::env::current_dir()?;
-    let state_dir = resolve_state_dir(&cwd);
+    let project_root = resolve_project_root(&cwd);
+    if project_root.is_none() {
+        tracing::warn!(
+            "no project root: cwd {} is not a plausible project directory and no \
+             *_PROJECT_DIR env is set; working_dir containment will rely on \
+             DISPATCH_EXTRA_ROOTS only",
+            cwd.display()
+        );
+    }
+    let state_dir = resolve_state_dir(project_root.as_deref());
     tokio::fs::create_dir_all(&state_dir).await?;
 
     let db_path = state_dir.join("dispatch.db");
@@ -1271,9 +1414,6 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;")?;
     store::init(&conn)?;
     reconcile(&conn);
-
-    let project_dir = resolve_project_dir(&cwd);
-    let project_root = project_dir.canonicalize().unwrap_or(project_dir);
 
     let owner_pid = std::process::id() as i64;
     let nanos = std::time::SystemTime::now()
@@ -1384,5 +1524,66 @@ mod tests {
         assert!(parse_sqlite_utc("not-a-date").is_none());
         assert!(parse_sqlite_utc("2026-13-01 00:00:00").is_none());
         assert!(parse_sqlite_utc("2026-06-27 -1:00:00").is_none());
+    }
+
+    #[test]
+    fn plausible_fallback_root_denies_non_project_dirs() {
+        let denied = vec![
+            PathBuf::from("/home/u/.kimi-code"),
+            PathBuf::from("/home/u/.codex"),
+            PathBuf::from("/home/u/.slate-agent-kit"),
+        ];
+        assert!(!plausible_fallback_root(Path::new("/"), &denied));
+        assert!(!plausible_fallback_root(
+            Path::new("/home/u/.kimi-code/plugins/managed/slate-agent-kit-mcp"),
+            &denied
+        ));
+        assert!(!plausible_fallback_root(
+            Path::new("/home/u/.codex/slate-agent-kit"),
+            &denied
+        ));
+        assert!(plausible_fallback_root(
+            Path::new("/home/u/Workspace/some-project"),
+            &denied
+        ));
+        if let Some(h) = home_dir() {
+            assert!(!plausible_fallback_root(&h, &denied));
+        }
+    }
+
+    #[test]
+    fn containment_check_distinguishes_missing_root_from_outside_root() {
+        let proj = Path::new("/w/proj");
+        let extra = vec![PathBuf::from("/allow")];
+
+        // inside project or extra root → ok
+        assert!(containment_check(Path::new("/w/proj/sub"), Some(proj), &[]).is_ok());
+        assert!(containment_check(Path::new("/allow/x"), None, &extra).is_ok());
+
+        // outside, with a root configured → invalid_working_dir
+        let (code, msg) = containment_check(Path::new("/elsewhere"), Some(proj), &extra)
+            .unwrap_err();
+        assert_eq!(code, ErrCode::InvalidWorkingDir);
+        assert!(msg.contains("/w/proj"));
+
+        // no root at all → no_project_root with remediation guidance
+        let (code, msg) = containment_check(Path::new("/elsewhere"), None, &[]).unwrap_err();
+        assert_eq!(code, ErrCode::NoProjectRoot);
+        assert!(msg.contains("DISPATCH_EXTRA_ROOTS"));
+
+        // no project root but extra roots exist and don't match → invalid_working_dir
+        let (code, msg) = containment_check(Path::new("/elsewhere"), None, &extra).unwrap_err();
+        assert_eq!(code, ErrCode::InvalidWorkingDir);
+        assert!(msg.contains("(no project root)"));
+    }
+
+    #[test]
+    fn resolve_state_dir_uses_no_project_slug_when_rootless() {
+        let p = resolve_state_dir(None);
+        assert!(
+            p.to_string_lossy().contains("_no-project"),
+            "state dir without a project root must not be keyed to a real path: {}",
+            p.display()
+        );
     }
 }
