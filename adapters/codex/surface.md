@@ -39,6 +39,11 @@ semantics.
 - Use `apply_patch` for manual file edits. Do not create or edit files with
   shell heredocs, `cat > file`, Python write scripts, or ad-hoc redirection when
   a direct patch is sufficient.
+- A small patch is a *diff-size* discipline, not a *design-horizon* one
+  (INV-QUALITY-1): the minimal diff that fixes the cause across the declared
+  operating envelope is right; the even smaller diff that silences today's
+  symptom on today's machine is not. Codex sessions habitually optimize for the
+  latter — check the envelope before calling a patch done.
 - Formatting commands, package-manager lockfile generation, and other mechanical
   tool outputs may write files when that is the tool's normal purpose.
 - Preserve user-owned changes (INV-STATE-3): check `git status` / relevant diffs
