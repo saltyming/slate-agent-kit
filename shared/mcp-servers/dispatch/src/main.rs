@@ -1161,7 +1161,9 @@ fn resolve_state_dir(project_root: Option<&Path>) -> PathBuf {
         return PathBuf::from(dir);
     }
     let project_path = match project_root {
-        Some(p) => p.to_string_lossy().replace('/', "-"),
+        // Separators and the Windows drive colon must all flatten to `-` —
+        // `:` is invalid in Windows file names and `\` would nest directories.
+        Some(p) => p.to_string_lossy().replace(['/', '\\', ':'], "-"),
         None => "_no-project".to_string(),
     };
     let state_home = std::env::var_os("SLATE_AGENT_STATE_HOME")

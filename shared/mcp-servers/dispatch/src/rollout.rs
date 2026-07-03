@@ -267,11 +267,12 @@ pub fn read_to_string(path: &Path) -> std::io::Result<String> {
 /// The session log path for a pinned claude session in `working_dir`.
 /// `working_dir` must already be canonical (dispatch canonicalizes at the
 /// working_dir guard). Claude's slug is *approximately* the canonical cwd with
-/// `/` → `-` — but the exact formula has edge cases (a leading-dot path
-/// component is observed to slug as `-`, not `.`), so callers must be prepared
-/// to fall back to `find_claude_session` when this path does not exist.
+/// path separators (and, on Windows, the drive colon) → `-` — but the exact
+/// formula has edge cases (a leading-dot path component is observed to slug as
+/// `-`, not `.`), so callers must be prepared to fall back to
+/// `find_claude_session` when this path does not exist.
 pub fn claude_session_path(working_dir: &Path, sid: &str) -> PathBuf {
-    let slug = working_dir.to_string_lossy().replace('/', "-");
+    let slug = working_dir.to_string_lossy().replace(['/', '\\', ':'], "-");
     claude_projects_root()
         .join(slug)
         .join(format!("{sid}.jsonl"))
@@ -840,9 +841,20 @@ mod tests {
 
     #[test]
     fn claude_session_path_is_deterministic_slug() {
+        // Compare path components, not a rendered string — the string form is
+        // separator-dependent (`\` on Windows) while the components are not.
         let p = claude_session_path(Path::new("/w/proj"), "sid-1");
-        let s = p.to_string_lossy();
-        assert!(s.ends_with(".claude/projects/-w-proj/sid-1.jsonl"), "{s}");
+        let tail: Vec<_> = p.iter().rev().take(4).collect();
+        assert_eq!(tail[0], "sid-1.jsonl", "{}", p.display());
+        assert_eq!(tail[1], "-w-proj", "{}", p.display());
+        assert_eq!(tail[2], "projects", "{}", p.display());
+        assert_eq!(tail[3], ".claude", "{}", p.display());
+
+        // Windows-style cwd: backslashes and the drive colon slug to `-`.
+        let w = claude_session_path(Path::new(r"C:\w\proj"), "sid-2");
+        let wtail: Vec<_> = w.iter().rev().take(2).collect();
+        assert_eq!(wtail[0], "sid-2.jsonl", "{}", w.display());
+        assert_eq!(wtail[1], "C--w-proj", "{}", w.display());
     }
 
     #[test]

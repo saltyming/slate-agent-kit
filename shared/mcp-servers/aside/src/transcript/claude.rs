@@ -2,10 +2,10 @@
 //!
 //! Claude Code writes one `<session-uuid>.jsonl` per session under
 //! `~/.claude/projects/<dashed-cwd>/`, where `<dashed-cwd>` is the project
-//! path with `/` replaced by `-` (dots and underscores preserved). Entries of
-//! `type` `user`/`assistant` carry a `message.content` that is either a plain
-//! string or an array of content blocks (`text`, `tool_use`, `tool_result`,
-//! `thinking`).
+//! path with separators (and, on Windows, the drive colon) replaced by `-`
+//! (dots and underscores preserved). Entries of `type` `user`/`assistant`
+//! carry a `message.content` that is either a plain string or an array of
+//! content blocks (`text`, `tool_use`, `tool_result`, `thinking`).
 
 use std::path::Path;
 use std::time::SystemTime;
@@ -15,7 +15,7 @@ use serde_json::Value;
 use super::{Located, newest_jsonl};
 
 fn slug(p: &Path) -> String {
-    p.to_string_lossy().replace('/', "-")
+    p.to_string_lossy().replace(['/', '\\', ':'], "-")
 }
 
 /// Find the newest session transcript for this project. Tries the canonical

@@ -81,7 +81,7 @@ fn locate_in(kimi_home: &Path, project_dir: &Path, now: SystemTime) -> Result<Lo
 
     // Newest matching session that actually has renderable messages — a
     // freshly-opened empty "New Session" must not shadow the real one.
-    matching.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    matching.sort_by_key(|loc| std::cmp::Reverse(loc.mtime));
     for loc in &matching {
         if !render_file(&loc.path).is_empty() {
             return Ok(loc.clone());
