@@ -1,0 +1,9 @@
+[submodule "kits/claude-agent-kit"]
+	path = kits/claude-agent-kit
+	url = https://github.com/saltyming/claude-agent-kit.git
+[submodule "kits/codex-agent-kit"]
+	path = kits/codex-agent-kit
+	url = https://github.com/saltyming/codex-agent-kit.git
+[submodule "kits/kimi-agent-kit"]
+	path = kits/kimi-agent-kit
+	url = https://github.com/saltyming/kimi-agent-kit.git
