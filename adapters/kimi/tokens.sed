@@ -13,5 +13,6 @@ s#{{ASIDE_PREFS_FILE}}#kimi-agent-kit--aside-prefs.md#g
 s#{{DISPATCH_PREFS_FILE}}#kimi-agent-kit--dispatch-prefs.md#g
 s#{{HARNESS_RULES_DIR}}#$KIMI_CODE_HOME/rules#g
 s#{{TASK_TRACKER}}#TodoList#g
+s#{{EDIT_SURFACE}}#Kimi's native edit/write tools#g
 s#{{DELEGATION_SURFACE}}#Agent / dispatch when installed#g
 s#{{FANOUT_DELEGATION_SURFACE}}#AgentSwarm#g

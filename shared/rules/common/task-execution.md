@@ -170,7 +170,7 @@ In a {{HARNESS_NAME}} session, "revert" / "undo" / "discard" / "roll back" / "�
 If you judge mid- or post-implementation that the scope is too large, that your approach was wrong, or that the work so far should be thrown away, you MUST NOT use any mechanism to undo, destroy, or hide the work. Forbidden mechanisms include (non-exhaustive — the list extends to any tool whose effect is to erase the incomplete state):
 
 - **Destructive git operations.** `git checkout --` / `git restore` / `git reset --hard` / `git revert` / `git clean -f*` / `git stash drop` / `git branch -D` / `git push --force*`, and any equivalent.
-- **`Edit` / `Write` used to overwrite, blank out, or replace your own work.** Using `Edit` with an empty `new_string`, or `Write` with cleared content, to erase code you just wrote is the same failure mode as `git checkout --`, just through a different tool surface.
+- **{{EDIT_SURFACE}} used to overwrite, blank out, or replace your own work.** Using the harness edit surface to erase code you just wrote is the same failure mode as `git checkout --`, just through a different tool surface.
 - **File or directory deletion** — `rm`, Bash-level deletes, or deleting new files you created earlier in the session.
 - **Any shell command, MCP tool, or action whose purpose is to erase the incomplete state**, regardless of tool surface.
 
@@ -197,10 +197,10 @@ Why: the edits made in the session are edits. They live in the files on disk. Un
 
 Required procedure:
 
-1. **Identify what edits the model made in this session.** Sources, in order of reliability: the `Edit` / `Write` tool uses visible in the conversation history; the conversation's narration of what was changed.
+1. **Identify what edits the model made in this session.** Sources, in order of reliability: the harness edit tool uses visible in the conversation history; the conversation's narration of what was changed.
 2. **Confirm reconstructibility.** If you cannot reconstruct the pre-edit content with high confidence — long session with compacted history, or changes whose exact prior content the conversation did not preserve — do NOT perform an approximate undo. Report exactly which parts you are and are not confident about, and ask the user whether to inspect `git diff` / file history or to name an explicit git command.
 3. **Confirm scope with the user.** Which edits specifically — all of them, just the most recent, a specific file, a specific hunk? If the user's phrasing is ambiguous, ask before touching anything.
-4. **Reverse the edits via `Edit` / `Write`.** Write the inverse operation: delete the lines you added, restore the lines you replaced, remove the files you created in this session.
+4. **Reverse the edits via {{EDIT_SURFACE}}.** Write the inverse operation: delete the lines you added, restore the lines you replaced, remove the files you created in this session.
 5. **Do NOT reach for git for session-edit undo.** Not `checkout --`, not `restore`, not `revert`, not `reset`, not `stash`, not any other git command. None of those are the right tool for undoing session edits. (See step 6 for the case where the user's request is actually about a commit / branch / ref, not session edits.)
 6. **If the user identifies a commit / branch / ref** (e.g., *"revert commit abc123"*, *"undo what's on main since yesterday"*, *"remove the commit you just made"*), stop and clarify which git operation they want — this is NOT session-edit undo regardless of whether the commit came from this session. Do not reinterpret it as file-edit undo. Subsection C applies once the user names a specific git command.
 7. **If the undo would require touching files the model did NOT edit in this session**, stop and clarify. Those files' state is user-owned, not session-owned; you need explicit authorization before changing them.

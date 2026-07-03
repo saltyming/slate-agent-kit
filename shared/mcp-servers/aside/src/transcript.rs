@@ -3,13 +3,16 @@
 //! Transcript forwarding is optional and harness-adapted.
 //!
 //! If `ASIDE_TRANSCRIPT_DIR` is set, it is treated as the directory containing
-//! `<uuid>.jsonl` transcript files for the current project. Otherwise aside
-//! falls back to Claude Code's historical layout,
-//! `~/.claude/projects/{dashed-cwd}/`, so existing Claude installations keep
-//! working. Missing directories, missing files, unparseable lines, or unknown
-//! content shapes all produce `TranscriptUnavailable` or a best-effort partial
-//! render rather than an error. The caller's `question` and `context` always
-//! reach the backend even when transcript rendering fails.
+//! `<uuid>.jsonl` transcript files for the current project. Otherwise aside uses
+//! a harness-neutral Slate state directory:
+//! `{SLATE_AGENT_STATE_HOME|AGENT_KIT_STATE_HOME|~/.slate-agent-kit}/transcripts/{dashed-cwd}`.
+//!
+//! Claude Code's historical transcript layout is available only when
+//! `ASIDE_CLAUDE_COMPAT=1`; it is not the shared default. Missing directories,
+//! missing files, unparseable lines, or unknown content shapes all produce
+//! `TranscriptUnavailable` or a best-effort partial render rather than an error.
+//! The caller's `question` and `context` always reach the backend even when
+//! transcript rendering fails.
 
 use std::path::{Path, PathBuf};
 
@@ -36,7 +39,25 @@ pub fn project_state_dir(cwd: &Path, home: &Path) -> PathBuf {
         return PathBuf::from(dir);
     }
     let dashed = cwd.to_string_lossy().replace('/', "-");
-    home.join(".claude").join("projects").join(dashed)
+    if env_truthy("ASIDE_CLAUDE_COMPAT") {
+        return home.join(".claude").join("projects").join(dashed);
+    }
+    let state_home = std::env::var_os("SLATE_AGENT_STATE_HOME")
+        .or_else(|| std::env::var_os("AGENT_KIT_STATE_HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".slate-agent-kit"));
+    state_home.join("transcripts").join(dashed)
+}
+
+fn env_truthy(key: &str) -> bool {
+    std::env::var(key)
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 /// Locate the newest `.jsonl` file in `dir`, by modification time.

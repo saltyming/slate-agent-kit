@@ -13,5 +13,6 @@ s#{{ASIDE_PREFS_FILE}}#codex-agent-kit--aside-prefs.md#g
 s#{{DISPATCH_PREFS_FILE}}#codex-agent-kit--dispatch-prefs.md#g
 s#{{HARNESS_RULES_DIR}}#$CODEX_HOME/rules#g
 s#{{TASK_TRACKER}}#update_plan plus goal tracking#g
+s#{{EDIT_SURFACE}}#apply_patch for manual file edits#g
 s#{{DELEGATION_SURFACE}}#Codex read-only delegates, write-capable delegates, or dispatch#g
 s#{{FANOUT_DELEGATION_SURFACE}}#Codex fan-out or multi-agent surfaces#g

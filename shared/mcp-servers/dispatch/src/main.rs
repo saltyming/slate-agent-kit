@@ -643,7 +643,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "Bounded long-poll: block until a dispatched task reaches a terminal status (succeeded / failed / cancelled / interrupted) or timeout_ms elapses (default 30s, capped at 120s), then return compact task status plus a small curated `log_tail` and `timed_out` flag. This is NOT an unbounded wait — a multi-minute run times out with `timed_out: true` and a non-terminal status. dispatch has NO push notification (unlike a backgrounded Agent/Workflow task, which auto-notifies on completion): if the task is still non-terminal, either re-invoke dispatch_wait now to keep blocking, or — if ending the turn — schedule a follow-up dispatch_status/dispatch_wait check first where a scheduling mechanism is available (e.g. ScheduleWakeup), or otherwise tell the user explicitly the task is still running and they'll need to ask you to check back. Ending the turn with nothing armed and no signal to the user strands the task with no way to learn it finished. Use dispatch_logs for the full timeline and dispatch_status for the full captured result/spec."
+        description = "Bounded long-poll: block until a dispatched task reaches a terminal status (succeeded / failed / cancelled / interrupted) or timeout_ms elapses (default 30s, capped at 120s), then return compact task status plus a small curated `log_tail` and `timed_out` flag. This is NOT an unbounded wait — a multi-minute run times out with `timed_out: true` and a non-terminal status. dispatch has NO push notification: if the task is still non-terminal, either re-invoke dispatch_wait now to keep blocking, or — if ending the turn — schedule a follow-up dispatch_status/dispatch_wait check first where the active harness has a scheduling mechanism, or otherwise tell the user explicitly the task is still running and they'll need to ask you to check back. Ending the turn with nothing armed and no signal to the user strands the task with no way to learn it finished. Use dispatch_logs for the full timeline and dispatch_status for the full captured result/spec."
     )]
     async fn dispatch_wait(
         &self,
@@ -1074,7 +1074,7 @@ fn env_truthy(key: &str) -> bool {
 /// `DISPATCH_STATE_DIR` is the explicit override. Without it, the directory is
 /// anchored under `SLATE_AGENT_STATE_HOME` / `AGENT_KIT_STATE_HOME`, or
 /// `~/.slate-agent-kit/projects/{dashed-project}/dispatch`. `CLAUDE_PROJECT_DIR`
-/// remains a compatibility fallback for existing Claude installs.
+/// remains only an explicit compatibility fallback for existing Claude installs.
 fn resolve_state_dir(fallback: &Path) -> PathBuf {
     if let Some(dir) = std::env::var_os("DISPATCH_STATE_DIR") {
         return PathBuf::from(dir);

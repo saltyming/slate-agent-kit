@@ -1,7 +1,7 @@
 <!-- slate-agent-kit:common -->
 # Dispatch Guidance
 
-Policy for the `dispatch` MCP server (`dispatch_submit` / `dispatch_status` / `dispatch_wait` / `dispatch_list` / `dispatch_cancel` / `dispatch_logs` / `dispatch_steer` / `dispatch_backends`). dispatch delegates an **execution** step to a coding-agent backend (codex or opencode) running headless and **write-capable** — it edits files in a target directory. This is hierarchical delegation (entrust execution), the complement to `aside` (`{{ASIDE_RULE_FILE}}`), which is horizontal consultation (seek a read-only opinion). dispatch is also distinct from the `Agent` / `Workflow` delegation in `{{DELEGATION_RULE_FILE}}`: those spawn the agent subagents; dispatch hands work to a *different* agent process and tracks it asynchronously.
+Policy for the `dispatch` MCP server (`dispatch_submit` / `dispatch_status` / `dispatch_wait` / `dispatch_list` / `dispatch_cancel` / `dispatch_logs` / `dispatch_steer` / `dispatch_backends`). dispatch delegates an **execution** step to a coding-agent backend (codex or opencode) running headless and **write-capable** — it edits files in a target directory. This is hierarchical delegation (entrust execution), the complement to `aside` (`{{ASIDE_RULE_FILE}}`), which is horizontal consultation (seek a read-only opinion). dispatch is also distinct from any harness-native subagent/team/workflow surface described in `{{DELEGATION_RULE_FILE}}`: those spawn native delegates inside the current harness; dispatch hands work to a *different* agent process and tracks it asynchronously.
 
 ## Async model
 
@@ -19,11 +19,11 @@ After submitting, keep working or poll; do not busy-wait — `dispatch_wait` is 
 
 ### Ending a turn while a dispatch task is still running (HARD RULE)
 
-dispatch has **no push notification** — it is a plain MCP stdio subprocess, not integrated with the harness's own background-task notification system. This is unlike a backgrounded `Agent`/`Workflow` call (`run_in_background: true`), which auto-notifies the session on completion. If you submit a dispatch task and end your turn without arming a way to re-check it, nothing wakes you — the task keeps running, but neither you nor the user has any signal when it finishes.
+dispatch has **no push notification** — it is a plain MCP stdio subprocess, not integrated with any harness's native background-task notification system. If you submit a dispatch task and end your turn without arming a way to re-check it, nothing wakes you — the task keeps running, but neither you nor the user has any signal when it finishes.
 
 Two sanctioned patterns:
 - **Short remaining wait** — the task is expected to finish soon: keep re-invoking `dispatch_wait` in the same turn until it returns a terminal status.
-- **Ending the turn is otherwise appropriate** — the task will run longer than fits in this turn: before ending the turn, arm a follow-up check where a scheduling mechanism is available for this session (e.g. `ScheduleWakeup`, interval matched to the task's expected duration). Where no such mechanism is available, tell the user explicitly that the task is still running and that they'll need to ask you to check back — do not silently end the turn as if the task will auto-notify like a backgrounded `Agent`/`Workflow` call. Do not end a turn on a non-terminal task with nothing armed and no signal to the user either way.
+- **Ending the turn is otherwise appropriate** — the task will run longer than fits in this turn: before ending the turn, arm a follow-up check where the active harness has a scheduling/reminder mechanism, interval matched to the task's expected duration. Where no such mechanism is available, tell the user explicitly that the task is still running and that they'll need to ask you to check back — do not silently end the turn as if dispatch will auto-notify. Do not end a turn on a non-terminal task with nothing armed and no signal to the user either way.
 
 ## Watching a run + steering it
 
@@ -41,7 +41,7 @@ Read `{{DISPATCH_PREFS_FILE}}` before choosing dispatch. If the file is absent o
 - `execution policy: preference-only` — do not auto-submit, but when the user asks for execution delegation without naming a surface, prefer dispatch for execution-shaped work and apply the prefs defaults.
 - `execution policy: proactive` — for suitable execution steps, the agent **SHOULD** initiate dispatch. With `approval mode: ask`, initiating dispatch means running the approval gate below before the first submit; with `approval mode: auto`, the agent may submit directly within the server's hard guards.
 
-**This overrides the general write-capable delegation gate for dispatch specifically.** `{{PRIMARY_MANUAL_FILE}}`'s Collaboration section and `{{DELEGATION_RULE_FILE}}` default write-capable delegation (a `general-purpose` subagent, a teammate, a `Workflow`) to surface-and-propose, then wait for the user's agreement before spawning. `execution policy: proactive` is dispatch's own, narrower gate and takes precedence for dispatch: under `proactive` + `approval mode: auto`, the agent submits a suitable step directly — no separate proposal round, no waiting for agreement beyond the one-time approval-gate confirmation below.
+**This overrides the general write-capable delegation gate for dispatch specifically.** `{{PRIMARY_MANUAL_FILE}}`'s Collaboration section and `{{DELEGATION_RULE_FILE}}` default write-capable native delegation to surface-and-propose, then wait for the user's agreement before spawning. `execution policy: proactive` is dispatch's own, narrower gate and takes precedence for dispatch: under `proactive` + `approval mode: auto`, the agent submits a suitable step directly — no separate proposal round, no waiting for agreement beyond the one-time approval-gate confirmation below.
 
 Proactive dispatch is for execution, not judgment. Suitable triggers include isolated mechanical edits, long-running verification/fix loops, large but well-scoped repetitive sweeps, or independent plan steps with clear target files and acceptance criteria. Do not proactive-dispatch when the product scope is ambiguous, the expected edits overlap active local/user edits, the task needs tight interactive judgment, or the task cannot be written as one self-contained structured spec.
 

@@ -33,7 +33,7 @@ truth; adapters may specialize wording but must not weaken the policy.
 
 1. **Understand** — read all relevant files, trace execution flows, identify dependencies.
 2. **Plan** — document the problem, propose solutions, get approval.
-3. **Execute** — implement ALL changes completely, no placeholders. Use `Edit` / `Write` directly.
+3. **Execute** — implement ALL changes completely, no placeholders. Use {{EDIT_SURFACE}}.
 
 When `_palette/` exists in the project, this Three-Phase Workflow is the *inner* loop, run per story under palette's *outer* loop (backlog → slice → hand off → review). palette's advisory backlog informs planning but never authorizes an edit; the "Get approval" gate is the hand-off where a story's acceptance criteria enter this inner loop (Tier A → Tier B). Full mechanism in `{{PALETTE_RULE_FILE}}`.
 
@@ -133,7 +133,7 @@ User Request
 │  ├─ Read all relevant files (Read / Grep / Glob)
 │  ├─ Create task document / present plan
 │  ├─ Get approval   ← palette: Tier A→B hand-off when _palette/ present
-│  └─ Implement with Edit / Write directly
+│  └─ Implement with {{EDIT_SURFACE}}
 │
 ├─ Mid-implementation: forced to deviate from approved scope/design/order?
 │  └─ STOP → preserve work → propose the ONE deviation → wait for explicit approval

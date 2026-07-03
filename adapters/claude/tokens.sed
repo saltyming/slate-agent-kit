@@ -13,5 +13,6 @@ s#{{ASIDE_PREFS_FILE}}#claude-agent-kit--aside-prefs.md#g
 s#{{DISPATCH_PREFS_FILE}}#claude-agent-kit--dispatch-prefs.md#g
 s#{{HARNESS_RULES_DIR}}#$HOME/.claude/rules#g
 s#{{TASK_TRACKER}}#workslate_task_*#g
+s#{{EDIT_SURFACE}}#Edit / Write directly#g
 s#{{DELEGATION_SURFACE}}#Agent / Workflow / dispatch#g
 s#{{FANOUT_DELEGATION_SURFACE}}#Workflow#g
