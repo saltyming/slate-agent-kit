@@ -1572,8 +1572,8 @@ mod tests {
         assert!(containment_check(Path::new("/allow/x"), None, &extra).is_ok());
 
         // outside, with a root configured → invalid_working_dir
-        let (code, msg) = containment_check(Path::new("/elsewhere"), Some(proj), &extra)
-            .unwrap_err();
+        let (code, msg) =
+            containment_check(Path::new("/elsewhere"), Some(proj), &extra).unwrap_err();
         assert_eq!(code, ErrCode::InvalidWorkingDir);
         assert!(msg.contains("/w/proj"));
 

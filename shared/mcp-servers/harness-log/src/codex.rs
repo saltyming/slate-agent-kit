@@ -151,11 +151,8 @@ mod tests {
     use serde_json::json;
 
     fn test_root(tag: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "harness-log-test-{}-{}",
-            tag,
-            std::process::id()
-        ));
+        let p =
+            std::env::temp_dir().join(format!("harness-log-test-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         p
     }

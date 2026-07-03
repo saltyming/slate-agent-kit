@@ -321,8 +321,14 @@ fn failure_text(backend: Backend, outcome: &backend::RunOutcome) -> Option<Strin
         } => {
             let mut text = format!("exit_code={:?} stderr={}", exit_code, stderr);
             if backend == Backend::Claude {
-                let tail: String = stdout.chars().rev().take(2000).collect::<Vec<_>>()
-                    .into_iter().rev().collect();
+                let tail: String = stdout
+                    .chars()
+                    .rev()
+                    .take(2000)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
                 text.push_str(" stdout=");
                 text.push_str(&tail);
             }

@@ -123,10 +123,7 @@ pub fn render_transcript(cwd: &Path, home: &Path, tail: Option<u32>) -> Transcri
         }
         return match newest_jsonl(&dir) {
             Some(p) => finish(claude::render_file(&p), tail, "override", &p),
-            None => TranscriptOutcome::Unavailable(format!(
-                "no .jsonl files in {}",
-                dir.display()
-            )),
+            None => TranscriptOutcome::Unavailable(format!("no .jsonl files in {}", dir.display())),
         };
     }
 
@@ -135,9 +132,7 @@ pub fn render_transcript(cwd: &Path, home: &Path, tail: Option<u32>) -> Transcri
     match harness_from_env() {
         Some(h) => match locate_for(h, cwd, &project_dir, home) {
             Ok(loc) => finish(render_for_path(h, &loc.path), tail, h.name(), &loc.path),
-            Err(reason) => {
-                TranscriptOutcome::Unavailable(format!("{}: {}", h.name(), reason))
-            }
+            Err(reason) => TranscriptOutcome::Unavailable(format!("{}: {}", h.name(), reason)),
         },
         None => {
             // Auto-detect: the newest located source wins.
@@ -158,9 +153,7 @@ pub fn render_transcript(cwd: &Path, home: &Path, tail: Option<u32>) -> Transcri
                 }
             }
             match best {
-                Some((h, loc)) => {
-                    finish(render_for_path(h, &loc.path), tail, h.name(), &loc.path)
-                }
+                Some((h, loc)) => finish(render_for_path(h, &loc.path), tail, h.name(), &loc.path),
                 None => TranscriptOutcome::Unavailable(format!(
                     "no transcript source found — {}",
                     attempts.join("; ")
@@ -219,7 +212,12 @@ pub(crate) fn newest_jsonl(dir: &Path) -> Option<PathBuf> {
 ///
 /// Byte budget: if the result exceeds `MAX_RENDERED_BYTES`, messages are
 /// dropped from the **front** (keeping the most recent).
-fn finish(messages: Vec<String>, tail: Option<u32>, source: &str, path: &Path) -> TranscriptOutcome {
+fn finish(
+    messages: Vec<String>,
+    tail: Option<u32>,
+    source: &str,
+    path: &Path,
+) -> TranscriptOutcome {
     if messages.is_empty() {
         return TranscriptOutcome::Unavailable(format!(
             "transcript at {} has no renderable messages",
@@ -244,9 +242,8 @@ fn finish(messages: Vec<String>, tail: Option<u32>, source: &str, path: &Path) -
     let file = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
     let mut head = format!("[transcript source: {source} {file}]");
     if trimmed || kept_count < total {
-        head = format!(
-            "{head}\n[transcript truncated: kept last {kept_count} of {total} messages]"
-        );
+        head =
+            format!("{head}\n[transcript truncated: kept last {kept_count} of {total} messages]");
     }
     TranscriptOutcome::Ok {
         rendered: format!("{head}\n\n{rendered}"),

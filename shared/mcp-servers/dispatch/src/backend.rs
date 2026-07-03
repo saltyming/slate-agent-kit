@@ -538,11 +538,9 @@ pub fn install_hint(backend: Backend) -> String {
                 .to_string()
         }
         Backend::Opencode => "install opencode CLI (see https://opencode.ai/docs/cli/)".to_string(),
-        Backend::Claude => {
-            "install Claude Code CLI (`npm i -g @anthropic-ai/claude-code`; see \
+        Backend::Claude => "install Claude Code CLI (`npm i -g @anthropic-ai/claude-code`; see \
              https://claude.com/claude-code)"
-                .to_string()
-        }
+            .to_string(),
     }
 }
 
@@ -580,7 +578,10 @@ mod tests {
 
     #[test]
     fn claude_argv_maps_sandbox_and_pins_session() {
-        let (_c, argv) = build_command(Backend::Claude, &claude_spec("workspace-write", None, Some("uuid-1")));
+        let (_c, argv) = build_command(
+            Backend::Claude,
+            &claude_spec("workspace-write", None, Some("uuid-1")),
+        );
         let joined = argv.join(" ");
         assert!(joined.starts_with("claude -p"));
         assert!(joined.contains("--permission-mode acceptEdits"));
@@ -593,12 +594,16 @@ mod tests {
         let (_c, ro) = build_command(Backend::Claude, &claude_spec("read-only", None, Some("u")));
         assert!(ro.join(" ").contains("--permission-mode plan"));
 
-        let (_c, danger) =
-            build_command(Backend::Claude, &claude_spec("danger-full-access", None, Some("u")));
+        let (_c, danger) = build_command(
+            Backend::Claude,
+            &claude_spec("danger-full-access", None, Some("u")),
+        );
         assert!(danger.join(" ").contains("--dangerously-skip-permissions"));
 
-        let (_c, steer) =
-            build_command(Backend::Claude, &claude_spec("workspace-write", Some("old-sid"), Some("new-sid")));
+        let (_c, steer) = build_command(
+            Backend::Claude,
+            &claude_spec("workspace-write", Some("old-sid"), Some("new-sid")),
+        );
         let s = steer.join(" ");
         assert!(s.contains("--resume old-sid"));
         assert!(s.contains("--fork-session"));

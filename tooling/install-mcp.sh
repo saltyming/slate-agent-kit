@@ -9,6 +9,9 @@ CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 CODEX_BIN="${CODEX_BIN:-codex}"
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 ROOTS="${DISPATCH_ROOTS:-}"
+PREBUILT="${SLATE_PREBUILT:-0}"
+SLATE_RELEASE_REPO="${SLATE_RELEASE_REPO:-saltyming/slate-agent-kit}"
+SLATE_RELEASE_TAG="${SLATE_RELEASE_TAG:-latest}"
 
 DO_INSTALL=0
 CONFIG_CODEX=0
@@ -40,6 +43,10 @@ Options:
                           project, so dispatch has no project root there) and
                           recommended for Codex.
   --bin-dir DIR           Install binaries into DIR (default: $HOME/.local/bin)
+  --prebuilt              Download prebuilt aside/dispatch from GitHub Releases
+                          instead of building with cargo. Also used automatically
+                          when cargo is unavailable. Note: "latest" release may be
+                          newer than this checkout; pin with SLATE_RELEASE_TAG.
   -h, --help              Show this help
 
 Environment:
@@ -50,6 +57,10 @@ Environment:
   CLAUDE_BIN              Claude Code CLI, default claude
   CLAUDE_DIR              Claude home (dispatch state anchor), default $HOME/.claude
   DISPATCH_ROOTS          Same as --roots
+  SLATE_PREBUILT          Same as --prebuilt (1 = on)
+  SLATE_RELEASE_REPO      Release repo (default saltyming/slate-agent-kit)
+  SLATE_RELEASE_TAG       Release tag (default latest)
+  PLATFORM                Override the auto-detected release platform triple
 
 Transcript forwarding (aside) reads each harness's own session log natively;
 the installer only pins which harness via ASIDE_HARNESS.
@@ -92,6 +103,9 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || { echo "--roots requires a colon-separated path list" >&2; exit 2; }
       ROOTS="$2"
       shift
+      ;;
+    --prebuilt)
+      PREBUILT=1
       ;;
     --bin-dir)
       [ "$#" -ge 2 ] || { echo "--bin-dir requires a path" >&2; exit 2; }
@@ -137,16 +151,70 @@ install_binary() {
   mv -f "$tmp" "$dest"
 }
 
-build_and_install() {
-  command -v cargo >/dev/null 2>&1 || {
-    echo "Error: cargo is required to build shared MCP servers." >&2
+fetch() {
+  url="$1"
+  dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$dest"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$dest" "$url"
+  else
+    echo "Error: curl or wget required to download prebuilt binaries." >&2
     exit 1
-  }
-  echo "Building shared MCP servers..."
-  cargo build --release -p aside -p dispatch --manifest-path "$ROOT/Cargo.toml"
+  fi
+}
+
+detect_platform() {
+  if [ -n "${PLATFORM:-}" ]; then
+    printf '%s' "$PLATFORM"
+    return 0
+  fi
+  arch=$(uname -m)
+  case "$arch" in
+    arm64|aarch64) arch=aarch64 ;;
+    x86_64|amd64) arch=x86_64 ;;
+    *) echo "Error: unsupported architecture $arch (set PLATFORM manually)" >&2; exit 1 ;;
+  esac
+  case "$(uname -s)" in
+    Darwin) printf '%s-apple-darwin' "$arch" ;;
+    Linux) printf '%s-unknown-linux-gnu' "$arch" ;;
+    *) echo "Error: unsupported OS $(uname -s) (set PLATFORM manually)" >&2; exit 1 ;;
+  esac
+}
+
+download_prebuilt() {
+  platform=$(detect_platform)
+  if [ "$SLATE_RELEASE_TAG" = "latest" ]; then
+    base="https://github.com/$SLATE_RELEASE_REPO/releases/latest/download"
+  else
+    base="https://github.com/$SLATE_RELEASE_REPO/releases/download/$SLATE_RELEASE_TAG"
+  fi
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+  echo "Downloading prebuilt MCP servers ($platform, $SLATE_RELEASE_TAG)..."
+  for name in aside dispatch; do
+    fetch "$base/$name-$platform.tar.gz" "$tmp/$name.tar.gz"
+    tar xzf "$tmp/$name.tar.gz" -C "$tmp"
+  done
   mkdir -p "$BIN_DIR"
-  install_binary "$ROOT/target/release/aside" "$ASIDE_BIN"
-  install_binary "$ROOT/target/release/dispatch" "$DISPATCH_BIN"
+  install_binary "$tmp/aside" "$ASIDE_BIN"
+  install_binary "$tmp/dispatch" "$DISPATCH_BIN"
+}
+
+build_and_install() {
+  if [ "$PREBUILT" != "1" ] && ! command -v cargo >/dev/null 2>&1; then
+    echo "cargo not found — falling back to prebuilt release binaries." >&2
+    PREBUILT=1
+  fi
+  if [ "$PREBUILT" = "1" ]; then
+    download_prebuilt
+  else
+    echo "Building shared MCP servers..."
+    cargo build --release -p aside -p dispatch --manifest-path "$ROOT/Cargo.toml"
+    mkdir -p "$BIN_DIR"
+    install_binary "$ROOT/target/release/aside" "$ASIDE_BIN"
+    install_binary "$ROOT/target/release/dispatch" "$DISPATCH_BIN"
+  fi
   echo "Installed:"
   echo "  $ASIDE_BIN"
   echo "  $DISPATCH_BIN"

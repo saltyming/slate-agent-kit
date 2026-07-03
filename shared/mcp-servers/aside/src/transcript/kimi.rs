@@ -57,17 +57,17 @@ fn locate_in(kimi_home: &Path, project_dir: &Path, now: SystemTime) -> Result<Lo
         ) else {
             continue;
         };
-        sessions.insert(
-            sid.to_string(),
-            (PathBuf::from(dir), PathBuf::from(work)),
-        );
+        sessions.insert(sid.to_string(), (PathBuf::from(dir), PathBuf::from(work)));
     }
 
     let mut matching: Vec<Located> = Vec::new();
     let mut newest_any: Option<Located> = None;
     for (dir, work) in sessions.values() {
         let wire = dir.join("agents").join("main").join("wire.jsonl");
-        let Some(mtime) = std::fs::metadata(&wire).ok().and_then(|m| m.modified().ok()) else {
+        let Some(mtime) = std::fs::metadata(&wire)
+            .ok()
+            .and_then(|m| m.modified().ok())
+        else {
             continue;
         };
         let loc = Located { path: wire, mtime };
@@ -226,11 +226,8 @@ mod tests {
     }
 
     fn setup_home(tag: &str) -> PathBuf {
-        let home = std::env::temp_dir().join(format!(
-            "aside-kimi-test-{}-{}",
-            tag,
-            std::process::id()
-        ));
+        let home =
+            std::env::temp_dir().join(format!("aside-kimi-test-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         home
@@ -300,7 +297,10 @@ mod tests {
             .unwrap();
 
         let got = locate_in(&home, &proj, SystemTime::now()).unwrap();
-        assert_eq!(got.path, full, "empty newest session must not shadow the renderable one");
+        assert_eq!(
+            got.path, full,
+            "empty newest session must not shadow the renderable one"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 

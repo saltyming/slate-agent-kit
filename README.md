@@ -91,6 +91,15 @@ tooling/render-kit.sh claude
 The rendered harness repos are committed independently. The shared source in
 this repo remains the place to edit common behavior.
 
+## Releases
+
+Tagging `v*` publishes prebuilt `aside` / `dispatch` binaries for 8 platforms
+(macOS/Linux-gnu/Linux-musl/Windows × aarch64/x86_64) via GitHub Actions.
+`tooling/install-mcp.sh` consumes them with `--prebuilt` (or automatically when
+cargo is unavailable); pin a version with `SLATE_RELEASE_TAG=vX.Y.Z`. CI runs
+build/test/clippy/fmt on the Rust workspace plus `tooling/validate.sh` over the
+rendered kits (submodules) on every push.
+
 ## License
 
 [MIT](LICENSE.md) © 2026 Hamin Sung.
