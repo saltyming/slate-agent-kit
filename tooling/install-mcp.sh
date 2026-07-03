@@ -140,15 +140,17 @@ DISPATCH_BIN="$BIN_DIR/dispatch"
 # ad-hoc codesign it on macOS (an in-place overwrite invalidates the signature
 # and macOS may SIGKILL the running process).
 install_binary() {
-  src="$1"
-  dest="$2"
-  tmp="$dest.tmp.$$"
-  cp "$src" "$tmp"
-  chmod 755 "$tmp"
+  # POSIX sh has no local variables — prefix these so they cannot shadow a
+  # caller's state (download_prebuilt's $dl_dir survives across our calls).
+  ib_src="$1"
+  ib_dest="$2"
+  ib_tmp="$ib_dest.tmp.$$"
+  cp "$ib_src" "$ib_tmp"
+  chmod 755 "$ib_tmp"
   if [ "$(uname -s)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
-    codesign --force --sign - "$tmp" >/dev/null 2>&1 || true
+    codesign --force --sign - "$ib_tmp" >/dev/null 2>&1 || true
   fi
-  mv -f "$tmp" "$dest"
+  mv -f "$ib_tmp" "$ib_dest"
 }
 
 fetch() {
@@ -189,16 +191,16 @@ download_prebuilt() {
   else
     base="https://github.com/$SLATE_RELEASE_REPO/releases/download/$SLATE_RELEASE_TAG"
   fi
-  tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+  dl_dir=$(mktemp -d)
+  trap 'rm -rf "$dl_dir"' EXIT HUP INT TERM
   echo "Downloading prebuilt MCP servers ($platform, $SLATE_RELEASE_TAG)..."
   for name in aside dispatch; do
-    fetch "$base/$name-$platform.tar.gz" "$tmp/$name.tar.gz"
-    tar xzf "$tmp/$name.tar.gz" -C "$tmp"
+    fetch "$base/$name-$platform.tar.gz" "$dl_dir/$name.tar.gz"
+    tar xzf "$dl_dir/$name.tar.gz" -C "$dl_dir"
   done
   mkdir -p "$BIN_DIR"
-  install_binary "$tmp/aside" "$ASIDE_BIN"
-  install_binary "$tmp/dispatch" "$DISPATCH_BIN"
+  install_binary "$dl_dir/aside" "$ASIDE_BIN"
+  install_binary "$dl_dir/dispatch" "$DISPATCH_BIN"
 }
 
 build_and_install() {
