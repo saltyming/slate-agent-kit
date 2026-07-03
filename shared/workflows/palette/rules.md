@@ -20,7 +20,7 @@ The folder's presence switches on the *advisory* loop — it does **not** grant 
 
 ## Authority firewall — Tier A / Tier B (HARD)
 
-palette adds a durable record of intent. To keep it from silently becoming a second, competing definition of "current scope" — which would undercut this project's scope-integrity rules — the authority split is strict:
+This section is INV-AUTH-1's procedure (the invariant is defined in `{{PRIMARY_MANUAL_FILE}}`). palette adds a durable record of intent. To keep it from silently becoming a second, competing definition of "current scope" — which would undercut this project's scope-integrity rules — the authority split is strict:
 
 - **Tier A — the palette artifacts** (everything under `_palette/`: `backlog.rst`, `phase-brief.rst`, `story-*.rst`, `index.rst`, and any optional `tech-spec.rst` / `ux-flow.rst` / `design-brief.rst` / `project-rules.rst`). **Advisory only.** They *propose* scope; they never *authorize* an edit. **The backlog is an intent ledger, not an execution authority.** A backlog item may only inform questions and proposals. It becomes executable only after it is promoted into a current story/plan, approved by the user, and tracked with `{{TASK_TRACKER}}` (and delegated via `{{DELEGATION_SURFACE}}` when appropriate).
 - **Tier B — the existing execution machinery.** The user's approval at the generic "Get approval" gate *authorizes*; `{{TASK_TRACKER}}` entries *track*. These are binding.
@@ -37,7 +37,19 @@ The single most important safety rule, and it runs in **both** directions:
 
 ### Deviation and ambiguity — reuse the existing rules
 
-palette invents no new deviation vocabulary. Once a story has passed the hand-off approval gate, its `Done when` + `Not this story` **are** the "approved spec/plan" that `{{TASK_EXECUTION_RULE_FILE}}` → *Forced Spec/Plan Deviation: Re-request Approval* governs: if delivering the story as written turns out genuinely impossible, requires reordering that changes the approved sequence, or needs a design that deviates from the plan — stop, preserve work, propose, wait. Plain undecided ambiguity is handled by the existing Clarification heuristic (ask about WHAT, decide HOW yourself).
+palette invents no new deviation vocabulary. Once a story has passed the hand-off approval gate, its `Done when` + `Not this story` **are** the "approved spec/plan" that GATE-DEVIATION (`{{TASK_EXECUTION_RULE_FILE}}`) governs: if delivering the story as written turns out genuinely impossible, requires reordering that changes the approved sequence, or needs a design that deviates from the plan — stop, preserve work, propose, wait. Plain undecided ambiguity is handled by the existing Clarification heuristic (ask about WHAT, decide HOW yourself).
+
+## Gate bindings — every gate's palette meaning, in one place
+
+The scattered "palette note" pattern is consolidated here. When engaged:
+
+- **The approval gate (Tier A → Tier B).** The execution loop's "Get approval" node IS the palette hand-off: a pending story's `Done when` criteria enter the inner loop only through it. Nothing is edited before the gate.
+- **GATE-SCOPE-CONFIRM.** palette runs this checkpoint every cycle: proposing a phase/story scope is a user-facing gate — report the proposed slice, wait for explicit approval, *then* hand off. The backlog *proposes*; the user's approval *authorizes*.
+- **`{{TASK_TRACKER}}` projection.** Tracker entries created for a story are the tactical *projection of already-approved acceptance criteria* — a translation, not a second backlog and not new scope.
+- **GATE-DEVIATION.** A story's `Done when` + `Not this story` are the approved spec it protects; moving unmet acceptance criteria into the backlog is not an escape hatch.
+- **GATE-DELEGATE / GATE-DISPATCH.** A delegate (native subagent or dispatch step) receives the *approved, tracked scope* — never the raw `story-*.rst`. A dispatch spec's `objective`/`acceptance` come from the approved criteria (Tier-B scope, not a Tier-A artifact).
+- **Thin-slicing vs INV-SCOPE-1.** Choosing a thinner slice is a planning-time, user-owned decision made *before* approval — not the agent shrinking approved work. Once a slice is approved, "implement the entire scope" applies to that slice; deferring any of it to the backlog needs explicit, specific consent.
+- **Git.** `_palette/` is the developer's personal planning record — never auto-committed by the agent. `palette-init` offers a self-contained `_palette/.gitignore`; a developer who wants sharing commits it themselves.
 
 ## The loop
 

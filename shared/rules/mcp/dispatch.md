@@ -1,7 +1,7 @@
 <!-- slate-agent-kit:common -->
 # Dispatch Guidance
 
-Policy for the `dispatch` MCP server (`dispatch_submit` / `dispatch_status` / `dispatch_wait` / `dispatch_list` / `dispatch_cancel` / `dispatch_logs` / `dispatch_steer` / `dispatch_backends`). dispatch delegates an **execution** step to a coding-agent backend (codex, opencode, or claude) running headless and **write-capable** — it edits files in a target directory. This is hierarchical delegation (entrust execution), the complement to `aside` (`{{ASIDE_RULE_FILE}}`), which is horizontal consultation (seek a read-only opinion). dispatch is also distinct from any harness-native subagent/team/workflow surface described in `{{DELEGATION_RULE_FILE}}`: those spawn native delegates inside the current harness; dispatch hands work to a *different* agent process and tracks it asynchronously.
+Policy for the `dispatch` MCP server (`dispatch_submit` / `dispatch_status` / `dispatch_wait` / `dispatch_list` / `dispatch_cancel` / `dispatch_logs` / `dispatch_steer` / `dispatch_backends`). dispatch delegates an **execution** step to a coding-agent backend (codex, opencode, or claude) running headless and **write-capable** — it edits files in a target directory, asynchronously. Where dispatch sits relative to `aside` and the harness-native delegates is stated once in `{{DELEGATION_RULE_FILE}}`'s taxonomy. This file owns **GATE-DISPATCH** (the approval gate below).
 
 ## Async model
 
@@ -11,9 +11,9 @@ MCP calls are request/response, but a delegated run takes minutes, so dispatch i
 - `dispatch_wait(id, timeout_ms?)` is a **bounded long-poll**: it blocks until the task is terminal *or* `timeout_ms` elapses (default 30s, hard cap 120s), then returns the task row plus a `timed_out` flag. It is deliberately **not** an unbounded block — a held MCP call would hit the client / harness request timeout — so a multi-minute run times out and you simply re-invoke it. Use it instead of busy-polling `dispatch_status` when the next step needs this one finished.
 - `dispatch_list(plan_id?, status?)` enumerates tasks.
 - `dispatch_cancel(id | plan_id)` stops a run (kills the backend's process group); cancelling by `plan_id` stops every active step of that plan.
-- `dispatch_logs(id, line_start?, line_end?, kinds?, raw?)` shows a **curated, live-updating** timeline of what the backend is doing — read from codex's rollout or dispatch-owned OpenCode event JSONL, with noise filtered out (raw tool-call output is never shown by default; messages/reasoning are never truncated per-field — only the total response is size-capped). Works while the task is still running. Page with `line_start`/`line_end` (1-based; omitted = the tail) so a long session can't blow the output budget; `kinds` filters categories (lifecycle/messages/tools/edits/reasoning/tool_results; by default codex excludes reasoning because it is encrypted, while opencode includes plaintext reasoning; `tool_results` — raw tool-call output, e.g. a full file read — is excluded by default for both backends, request it explicitly via `kinds=["tool_results", ...]`), `raw=true` returns the underlying JSONL. Until the run's log is associated it returns `session_pending: true` with an empty log — the honest "not yet", never another session's log.
+- `dispatch_logs(id, line_start?, line_end?, kinds?, raw?)` shows a **curated, live-updating** timeline of what the backend is doing — read from codex's rollout, dispatch-owned OpenCode event JSONL, or the Claude session log (claude session ids are pinned at spawn, so the log path is deterministic), with noise filtered out (raw tool-call output is never shown by default; messages/reasoning are never truncated per-field — only the total response is size-capped). Works while the task is still running. Page with `line_start`/`line_end` (1-based; omitted = the tail) so a long session can't blow the output budget; `kinds` filters categories (lifecycle/messages/tools/edits/reasoning/tool_results; codex excludes reasoning by default because it is encrypted, while opencode and claude include plaintext reasoning; `tool_results` — raw tool-call output, e.g. a full file read — is excluded by default for every backend, request it explicitly via `kinds=["tool_results", ...]`), `raw=true` returns the underlying JSONL. Until the run's log is associated it returns `session_pending: true` with an empty log — the honest "not yet", never another session's log.
 - `dispatch_steer(id, instruction)` **interrupts and redirects** a run: it cancels the task if still active, then resumes the SAME backend session with your new instruction — the accumulated context and files already written are preserved when supported. Creates a new linked task (`parent_id` = the steered one) so the turn history shows in `dispatch_list`.
-- `dispatch_backends()` reports whether codex and opencode are installed.
+- `dispatch_backends()` reports whether codex, opencode, and claude are installed, plus this server's containment configuration (`project_root`, `extra_roots`) — the first thing to check when a working_dir is rejected.
 
 After submitting, keep working or poll; do not busy-wait — `dispatch_wait` is the non-busy way to block for a terminal status. Report a delegated step as done only after `dispatch_status` (or `dispatch_wait`) shows `succeeded` — and review the captured result, since `succeeded` means the process exited 0, not that the change is correct.
 
@@ -24,6 +24,8 @@ dispatch has **no push notification** — it is a plain MCP stdio subprocess, no
 Two sanctioned patterns:
 - **Short remaining wait** — the task is expected to finish soon: keep re-invoking `dispatch_wait` in the same turn until it returns a terminal status.
 - **Ending the turn is otherwise appropriate** — the task will run longer than fits in this turn: before ending the turn, arm a follow-up check where the active harness has a scheduling/reminder mechanism, interval matched to the task's expected duration. Where no such mechanism is available, tell the user explicitly that the task is still running and that they'll need to ask you to check back — do not silently end the turn as if dispatch will auto-notify. Do not end a turn on a non-terminal task with nothing armed and no signal to the user either way.
+
+{{@INSERT dispatch-notify}}
 
 ## Watching a run + steering it
 
@@ -49,10 +51,10 @@ Proactive dispatch is for execution, not judgment. Suitable triggers include iso
 
 An explicit current-turn user instruction always wins: "use dispatch", "do not dispatch", "only do it yourself", or equivalent overrides the preference file for that turn.
 
-## Approval gate (HARD RULE)
+## GATE-DISPATCH: Approval gate (HARD RULE)
 
-dispatch runs a write-capable subprocess, so **before the FIRST dispatch in a session you MUST confirm with the user directly** (unless their prefs set `approval mode: auto` — see below). Confirm three things:
-1. **working_dir** — the exact directory codex will edit.
+**GATE-DISPATCH — dispatch's own instance of INV-GATE-1.** dispatch runs a write-capable subprocess, so **before the FIRST dispatch in a session you MUST confirm with the user directly** (unless their prefs set `approval mode: auto` — see below). Confirm three things:
+1. **working_dir** — the exact directory the backend will edit.
 2. **Step scope** — which step(s) of the plan are being delegated.
 3. **Approval granularity** — per-step (confirm each dispatch) vs batch (approve the whole plan once, then dispatch its steps under one `plan_id`).
 
@@ -64,7 +66,7 @@ After the first-dispatch confirmation, follow the agreed granularity for the res
 
 **Fallback retry is not a fresh-confirmation trigger.** When `model_fallback` is set — either passed to `dispatch_submit` directly, or applied from the default in `{{DISPATCH_PREFS_FILE}}` — an automatic retry of the SAME task against the next model in that chain, triggered by the dispatch server's own detection of a transient backend error (rate limit, quota exceeded, model unavailable, auth/permission), is not a new working_dir, not a materially wider scope, and not a new dispatch for purposes of this gate. It reuses the same task id and the same already-approved objective/working_dir/step scope; only the model changes, and the server does it automatically inside the executor's retry loop once the task is submitted. Do not re-run the approval-gate confirmation for it, and do not ask the user's permission before each fallback attempt.
 
-**[OVERRIDE] precedence.** {{PRIMARY_MANUAL_FILE}} `[OVERRIDE]` directives outrank this approval gate. For example, completing the full approved scope of a delegated task is governed by the scope-integrity overrides; do not treat confirmation friction as a reason to deliver less. The gate is about *getting initial authorization to delegate*, not about second-guessing work the user already approved. A delegated dispatch step inherits the same scope-integrity rules as any delegated child — finish the approved scope, no silent reduction, and stop-and-ask on a forced deviation (`{{TASK_EXECUTION_RULE_FILE}}`; the delegated-children rule in `{{DELEGATION_RULE_FILE}}` > *Delegation*).
+**Invariant precedence.** The kernel invariants outrank this approval gate: completing the full approved scope of a delegated task is INV-SCOPE-1's territory — do not treat confirmation friction as a reason to deliver less. The gate is about *getting initial authorization to delegate*, not about second-guessing work the user already approved. A delegated dispatch step inherits every invariant as any delegated child does (INV-GATE-3) — finish the approved scope, no silent reduction, stop-and-ask on a forced deviation (GATE-DEVIATION).
 
 ## Writing the task
 
@@ -76,12 +78,12 @@ After the first-dispatch confirmation, follow the agreed granularity for the res
 - `acceptance` — how to know it's done (tests to pass, behavior to verify).
 - `context` / `details` — free-form background and extra instructions.
 - `plan_id` — group a plan's steps so they list / cancel as a unit.
-- `backend` / `model` / `reasoning_effort` / `sandbox` — execution knobs (defaults from prefs). OpenCode models are `provider/model`; `reasoning_effort` maps to OpenCode `variant`.
+- `backend` / `model` / `reasoning_effort` / `sandbox` — execution knobs (defaults from prefs). OpenCode models are `provider/model`; `reasoning_effort` maps to OpenCode `variant`. Claude models are aliases or full names (`haiku`, `sonnet`, `opus`, …); `reasoning_effort` maps to `claude --effort`; steering a claude task resumes the same conversation under a new pinned session id (`--resume … --fork-session`).
 - `model_fallback` — optional ordered list of fallback models, tried in order only on a transient backend error (rate limit, quota, model unavailable, auth/permission); a non-transient failure is never retried. If omitted and `{{DISPATCH_PREFS_FILE}}` sets a default (a comma-separated list), split it on commas, trim whitespace, and pass it as this array. `dispatch_status` reports which model actually produced the result (`final_model`) and which earlier models were tried and discarded (`fallback_history`) when a retry occurred. Not honored by `dispatch_steer` — a steered/resumed session stays on one model.
 
 Frame one self-contained step per dispatch. A step that depends on another's output should wait for that one to reach `succeeded` (poll, then submit the next) — dispatch does not sequence steps for you.
 
-**palette note.** If the step implements a palette story, its `objective` / `acceptance` come from that story's *approved* acceptance criteria (post-approval), not from the raw `story-*.rst` file. The backlog proposes, approval authorizes, and the dispatch spec carries the authorized scope. See `{{PALETTE_RULE_FILE}}`.
+For a palette story, the spec's `objective` / `acceptance` come from the *approved* acceptance criteria, never the raw Tier-A artifact (`{{PALETTE_RULE_FILE}}` § Gate bindings).
 
 ## Model fallback and partial state
 
@@ -90,12 +92,12 @@ A `model_fallback` retry re-sends the SAME prompt to a fresh backend invocation 
 ## Server-enforced guards (what will be rejected)
 
 The server enforces these regardless of how the call is phrased — design submits to satisfy them rather than work around them:
-- **working_dir containment** — must be absolute, exist, and canonicalize within the project root, or within a root the user added to `DISPATCH_EXTRA_ROOTS`. Anything else is rejected. Do not try to widen it from the model side; the user sets that env var.
+- **working_dir containment** — must be absolute, exist, and canonicalize within the project root, or within a root the user added to `DISPATCH_EXTRA_ROOTS`. Anything else is rejected. Do not try to widen it from the model side; the user sets that env var (installer flag `--roots`). When the harness spawned the MCP server outside any project (e.g. a plugin runtime), there is no project root at all — submits then fail with `no_project_root` until `DISPATCH_EXTRA_ROOTS` (or `SLATE_PROJECT_DIR`) is configured; `dispatch_backends` shows the live containment configuration.
 - **Sandbox ceiling** — `workspace-write` (default) and `read-only` are allowed; `danger-full-access` is rejected unless the server runs with `DISPATCH_ALLOW_DANGER=1`.
-- **OpenCode sandbox note** — OpenCode uses OpenCode permission rules plus dispatch's directory guard, not the OS-level sandbox used by Codex. Treat it as a backend policy layer, not a hard filesystem sandbox.
+- **Backend sandbox notes** — OpenCode uses OpenCode permission rules plus dispatch's directory guard; the claude backend maps the sandbox to Claude Code permission modes (`read-only` → plan, `workspace-write` → acceptEdits with Bash allowed, `danger-full-access` → skip permissions). Both are backend policy layers, not the OS-level sandbox Codex uses.
 - **One active run per working_dir** — a second submit against a directory with a live run is rejected; wait, cancel, or pass `allow_concurrent=true` only when concurrent edits to the same tree are genuinely safe.
 
-Rejections come back as a **structured error** — `{ "error": { "code", "message" } }` with a stable `code` (e.g. `working_dir_outside_root`, `sandbox_forbidden`, `dir_busy`, `session_not_ready`, `no_such_task`, `invalid_params`) — so you can branch on the code rather than parse prose.
+Rejections come back as a **structured error** — `{ "error": { "code", "message" } }` with a stable `code` (e.g. `invalid_working_dir`, `no_project_root`, `sandbox_forbidden`, `dir_busy`, `session_not_ready`, `no_such_task`, `invalid_params`) — so you can branch on the code rather than parse prose.
 
 ## Cost & cleanup
 

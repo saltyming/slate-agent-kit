@@ -1,0 +1,1 @@
+- `kimi-agent-kit--kimi-surface.md` — the Kimi surface binding: loading model, `TodoList`, `Agent` / `AgentSwarm`, skills, Slate MCP plugin registration.

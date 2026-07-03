@@ -1,0 +1,1 @@
+**Claude Code binding:** this is unlike a backgrounded `Agent`/`Workflow` call (`run_in_background: true`), which auto-notifies the session on completion — dispatch does not. The scheduling mechanism to arm here is `ScheduleWakeup` (or a `/loop`), with the interval matched to the task's expected duration.

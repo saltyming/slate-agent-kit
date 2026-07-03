@@ -6,9 +6,13 @@
 | Formal language rule | yes | yes | yes |
 | Palette | yes | yes | yes |
 | Aside policy rules | yes | yes | yes |
-| Aside MCP implementation | shared MCP | shared MCP | shared MCP when configured |
+| Aside MCP implementation | shared MCP (native transcripts) | shared MCP (native rollout transcripts) | shared MCP plugin (native wire transcripts) |
 | Dispatch policy rules | yes | yes | yes |
-| Dispatch MCP implementation | shared MCP | shared MCP | shared MCP when configured |
+| Dispatch MCP implementation | shared MCP | shared MCP | shared MCP plugin (`--roots` required) |
+| Dispatch backends | codex / opencode / claude | codex / opencode / claude | codex / opencode / claude |
+| Harness surface rule | (inserts into shared files) | codex-surface | kimi-surface |
+| Prefs files (aside/dispatch) | generated (interactive scripts) | generated (configure-prefs.sh) | generated (configure-prefs.sh) |
+| Rule delivery | CLAUDE.md + rules dir (auto-loaded) | single concatenated AGENTS.md | single concatenated AGENTS.md |
 | Workslate | Claude-only | no | no |
 | Hooks | Claude hooks | Codex command hooks | no default support |
 | Task tracker | workslate | update_plan plus goal tracking | TodoList |

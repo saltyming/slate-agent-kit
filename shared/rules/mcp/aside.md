@@ -7,14 +7,16 @@ Policy for the `aside` MCP server (`mcp__aside__aside_codex` / `aside_copilot` /
 
 Aside tools are independent of any harness-native advisor. If such a surface exists in the current environment, keep calling it at the lifecycle checkpoints defined by that harness — aside does not replace it. Aside tools are **not** strictly a supplement either: they fire on their own triggers, described below. In some environments only aside is available; those triggers still apply.
 
+{{@INSERT aside-native-advisor}}
+
 Two surfaces that may coexist:
 
 | Surface | What | When |
 |---|---|---|
 | harness-native advisor/reviewer (if available) | Native second-review surface. Transcript behavior and parameters are harness-specific. | Lifecycle checkpoints as that harness describes. Unchanged. |
-| `mcp__aside__aside_{codex,copilot}` | Cross-family second opinion via local CLIs. `include_transcript` defaults to `true` — the current conversation is forwarded automatically, **but in redacted form** (text passes through verbatim; `tool_use` / `tool_result` / `thinking` blocks are replaced with placeholders — see **Transcript redaction — aside ≠ advisor()** below). Both backends run read-only with file-read tools available, so they can inspect files the caller names by path — see **Backend capabilities** below. Hits paid third-party API quota. | Per the user's preference file (see below). Trigger list for `proactive` policy below. |
+| `mcp__aside__aside_{codex,copilot}` | Cross-family second opinion via local CLIs. `include_transcript` defaults to `true` — the current conversation is forwarded automatically, **but in redacted form** (text passes through verbatim; `tool_use` / `tool_result` / `thinking` blocks are replaced with placeholders — see **Transcript redaction** below). Both backends run read-only with file-read tools available, so they can inspect files the caller names by path — see **Backend capabilities** below. Hits paid third-party API quota. | Per the user's preference file (see below). Trigger list for `proactive` policy below. |
 
-**Relation to `dispatch` (the execution complement).** `aside` is *horizontal* consultation — a read-only second opinion; the agent stays in charge. Its sibling is **`dispatch`** (`{{DISPATCH_RULE_FILE}}`): *hierarchical* delegation that hands a **write-capable** execution step to an external codex and tracks it asynchronously. Same backend family (codex), opposite posture — `aside_codex` *asks*, `dispatch_submit` *does* (and edits files under a target dir). Don't conflate the surfaces: a read-only opinion is `aside`; entrusting a build / edit step to codex is `dispatch`, which carries its own approval gate and server guards. See also the delegation taxonomy in `{{DELEGATION_RULE_FILE}}`.
+**Relation to `dispatch`.** `aside` *asks* (read-only); `dispatch` *does* (write-capable, async). The full aside↔dispatch↔native-delegate taxonomy is stated once in `{{DELEGATION_RULE_FILE}}` — don't conflate the surfaces.
 
 ## Decision rules
 
@@ -69,7 +71,7 @@ If both surfaces exist, both run by default on these triggers, unless the user e
 
 ## Backend capabilities
 
-The aside MCP server spawns each CLI in the the active harness session's cwd with a read-only configuration. **Every backend can read files and grep the workspace itself** — the agent does not need to paste file contents in to let the backend "see" code. Capability matrix:
+The aside MCP server spawns each CLI in the active harness session's cwd with a read-only configuration. **Every backend can read files and grep the workspace itself** — the agent does not need to paste file contents in to let the backend "see" code. Capability matrix:
 
 | Backend | CLI flags | Read files | Grep | Web fetch | Write / exec | Notes |
 |---|---|---|---|---|---|---|
@@ -89,7 +91,7 @@ Do not paste whole files into `context` when a path reference would do. Agents w
 
 ## Transcript redaction — aside differs from native advisors
 
-`include_transcript=true` forwards the session's `.jsonl` transcript, but the aside renderer (`mcp-servers/aside/src/transcript.rs::render_content`) redacts tool-related content before it reaches the third-party CLI:
+`include_transcript=true` forwards a tail of the invoking harness's own session log — aside reads it **natively per harness** (Claude Code project transcripts, Codex rollouts excluding headless `codex exec` children, Kimi `wire.jsonl`; selection via `ASIDE_HARNESS`, set at registration) — but the renderer redacts tool-related content before it reaches the third-party CLI, identically across harnesses:
 
 | Content block | What the aside backend actually sees |
 |---|---|

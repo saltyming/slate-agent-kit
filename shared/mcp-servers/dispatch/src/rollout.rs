@@ -266,17 +266,44 @@ pub fn read_to_string(path: &Path) -> std::io::Result<String> {
 
 /// The session log path for a pinned claude session in `working_dir`.
 /// `working_dir` must already be canonical (dispatch canonicalizes at the
-/// working_dir guard) — Claude slugs the canonical cwd.
+/// working_dir guard). Claude's slug is *approximately* the canonical cwd with
+/// `/` → `-` — but the exact formula has edge cases (a leading-dot path
+/// component is observed to slug as `-`, not `.`), so callers must be prepared
+/// to fall back to `find_claude_session` when this path does not exist.
 pub fn claude_session_path(working_dir: &Path, sid: &str) -> PathBuf {
+    let slug = working_dir.to_string_lossy().replace('/', "-");
+    claude_projects_root()
+        .join(slug)
+        .join(format!("{sid}.jsonl"))
+}
+
+fn claude_projects_root() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_default();
-    let slug = working_dir.to_string_lossy().replace('/', "-");
-    PathBuf::from(home)
-        .join(".claude")
-        .join("projects")
-        .join(slug)
-        .join(format!("{sid}.jsonl"))
+    PathBuf::from(home).join(".claude").join("projects")
+}
+
+/// Locate a pinned claude session by scanning `~/.claude/projects/*/<sid>.jsonl`.
+/// The sid is a dispatch-pinned UUID, so a filename match is positive identity
+/// regardless of which slug directory Claude chose for the working dir.
+pub fn find_claude_session(sid: &str) -> Option<PathBuf> {
+    find_claude_session_in(&claude_projects_root(), sid)
+}
+
+fn find_claude_session_in(root: &Path, sid: &str) -> Option<PathBuf> {
+    if sid.is_empty() {
+        return None;
+    }
+    let name = format!("{sid}.jsonl");
+    let rd = std::fs::read_dir(root).ok()?;
+    for e in rd.flatten() {
+        let candidate = e.path().join(&name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Curate a Claude session JSONL string into the same compact timeline shape
@@ -816,6 +843,22 @@ mod tests {
         let p = claude_session_path(Path::new("/w/proj"), "sid-1");
         let s = p.to_string_lossy();
         assert!(s.ends_with(".claude/projects/-w-proj/sid-1.jsonl"), "{s}");
+    }
+
+    #[test]
+    fn find_claude_session_scans_project_dirs_by_pinned_sid() {
+        let root = test_root("claude-find");
+        // Claude chose a slug the formula can't predict (leading-dot mangling).
+        let dir = root.join("-w--hidden-proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pinned-sid.jsonl"), "{}\n").unwrap();
+        assert_eq!(
+            find_claude_session_in(&root, "pinned-sid"),
+            Some(dir.join("pinned-sid.jsonl"))
+        );
+        assert_eq!(find_claude_session_in(&root, "absent-sid"), None);
+        assert_eq!(find_claude_session_in(&root, ""), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

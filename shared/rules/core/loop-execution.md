@@ -1,5 +1,11 @@
 <!-- slate-agent-kit:common -->
-# Task Execution Protocol
+# The Execution Loop
+
+The inner loop: Understand → Plan → Execute, per task. This file owns the
+loop's procedure and the three scope/state gates — **GATE-SCOPE-CONFIRM**,
+**GATE-DEVIATION**, **GATE-GIT** — whose scope and state invariants
+are defined in `{{PRIMARY_MANUAL_FILE}}`. palette bindings for every gate live
+in `{{PALETTE_RULE_FILE}}` § Gate bindings.
 
 ## Before Starting
 
@@ -15,7 +21,7 @@
 - [ ] Identify dependencies and patterns
 - [ ] Verify correct path/directory
 - [ ] Create plan covering full scope
-- [ ] If target files already contain user-owned local changes (check `git status` / `git diff`), read them and plan to preserve — do NOT assume a clean baseline
+- [ ] If target files already contain user-owned local changes (check `git status` / `git diff`), read them and plan to preserve — never assume a clean baseline (INV-STATE-3)
 
 ## Investigation Mode
 
@@ -42,9 +48,9 @@ When asked to investigate, **ONLY investigate** — do NOT make code changes.
 [Any problems identified]
 ```
 
-## Plan Integrity: Scope Confirmation After Post-Inspection Deferral (HARD RULE)
+## GATE-SCOPE-CONFIRM: Scope Confirmation After Post-Inspection Deferral (HARD RULE)
 
-When a plan explicitly defers scope determination to post-inspection review, the inspection result is a **user-facing checkpoint**, not a license for you to decide scope and continue. Typical phrasings that mark this pattern:
+**GATE-SCOPE-CONFIRM — the procedure for INV-SCOPE-2's deferred-scope case.** When a plan explicitly defers scope determination to post-inspection review, the inspection result is a **user-facing checkpoint**, not a license for you to decide scope and continue. Typical phrasings that mark this pattern:
 
 - "Actual scope will be determined after reading the code"
 - "Scope TBD pending investigation"
@@ -52,9 +58,7 @@ When a plan explicitly defers scope determination to post-inspection review, the
 - "코드 확인 후 정한다" / "보고 정하자"
 - "Figure out what needs changing and we'll go from there"
 
-The same rule applies when inspection reveals that the approved plan itself reserved scope selection as a post-inspection decision point (the deferral phrasings above are explicit instances; equivalent phrasings also qualify). It does **NOT** apply to *supporting work required to make the approved behavior actually work* — tests, config, imports, minor refactors needed to satisfy the spec are in-scope and proceed without a fresh approval round. *Scope change* means you want to touch files, modules, or behaviors the plan did not name **and** those changes are not required to deliver what was already approved. If uncertain which side a change falls on, ask before acting — but do not paralyze execution on routine supporting work that is clearly required to satisfy the approved deliverable.
-
-**palette note.** palette's loop runs this same checkpoint every cycle: proposing a phase/story scope is a user-facing gate — report the proposed slice, wait for explicit approval, *then* hand off to implementation. The backlog *proposes* scope; the user's approval *authorizes* it. See `{{PALETTE_RULE_FILE}}`.
+The same rule applies when inspection reveals that the approved plan itself reserved scope selection as a post-inspection decision point (equivalent phrasings qualify). It does **NOT** apply to *supporting work required to make the approved behavior actually work* — tests, config, imports, minor refactors needed to satisfy the spec are in-scope and proceed without a fresh approval round (INV-SCOPE-1). *Scope change* means you want to touch files, modules, or behaviors the plan did not name **and** those changes are not required to deliver what was already approved. If uncertain which side a change falls on, ask before acting — but do not paralyze execution on routine supporting work that is clearly required to satisfy the approved deliverable.
 
 You MUST NOT, after completing inspection:
 
@@ -74,8 +78,8 @@ Required sequence:
 Clarifications — this rule still applies when:
 
 - **The revised scope looks like the "obvious" or "trivial" next step given what inspection revealed.** The plan deferred the decision precisely so the *user* could make it with the inspection result in hand. Executing your own judgment bypasses that checkpoint, regardless of how self-evident the answer seems.
-- **You only want to shrink scope, not expand it.** This is distinct from the rule below that forbids silently reducing a *defined* scope; this rule forbids unilaterally *defining* scope that was deferred to user review. The two are complementary — defined-scope shrinkage is already forbidden, and deferred-scope self-definition is forbidden here. A "small" unilateral definition is still a unilateral definition.
-- **You notice an adjacent bug or improvement.** The common collaboration rule says to *mention* adjacent observations — not to *act* on them inside the current task. A deferred-scope plan does not loosen that distinction.
+- **You only want to shrink scope, not expand it.** INV-SCOPE-1 forbids reducing a *defined* scope; this gate forbids unilaterally *defining* scope that was deferred to user review. The two are complementary. A "small" unilateral definition is still a unilateral definition.
+- **You notice an adjacent bug or improvement.** Collaboration (`{{PRIMARY_MANUAL_FILE}}`) says to *mention* adjacent observations — not to *act* on them inside the current task. A deferred-scope plan does not loosen that distinction.
 
 Rationale: the plan's "scope TBD" annotation is a gate, not a waiver. Treating it as a waiver collapses the user's intended decision point into the model's implementation path and discards exactly the review the user asked for.
 
@@ -89,40 +93,23 @@ Rationale: the plan's "scope TBD" annotation is a gate, not a waiver. Treating i
 5. **Implementation Plan** — step-by-step breakdown.
 6. **Risk Assessment** — what could go wrong?
 
-**Task-tracking trigger (solo work):** When implementing changes that touch 2+ files or produce 2+ distinct deliverables, populate the harness's tactical tracker (`{{TASK_TRACKER}}`) *before* writing any code. This is the first implementation action. If you realize mid-work that you skipped this, stop and populate the tracker immediately.
+**Task-tracking trigger:** When implementing changes that touch 2+ files or produce 2+ distinct deliverables, populate the harness's tactical tracker (`{{TASK_TRACKER}}`) *before* writing any code. This is the first implementation action. If you realize mid-work that you skipped this, stop and populate the tracker immediately. The tracker is the system of record for tactical progress — do not split coordination across synthetic shell scripts or external stores. In a palette-active project, tracker entries are the tactical *projection of an already-approved story's acceptance criteria* — a translation, not a second backlog and not new scope.
 
-`{{TASK_TRACKER}}` is the adapter-selected tactical tracker. Do not split coordination across synthetic shell scripts or external Notion-style stores. The tracker is the system of record for tactical progress in that harness.
+{{@INSERT execution-tracking}}
 
-**palette note.** In a palette-active project (`_palette/` present), the `{{TASK_TRACKER}}` entries you create here are the tactical *projection of an already-approved story's acceptance criteria* — a translation, not a second backlog and not new scope. See `{{PALETTE_RULE_FILE}}`.
+**Preserve user-owned local changes (INV-STATE-3 procedure).** Before editing any file, check `git status` / `git diff` for uncommitted changes. If an edit you are about to make would touch or clobber a user-owned hunk, stop and ask — even when the file itself is "in scope" for the current task; the user's uncommitted work has its own ownership independent of the task's file scope.
 
-**Preserve user-owned local changes.** Before editing any file, check `git status` / `git diff` for uncommitted changes. Any hunk the model did not make in this session is **user-owned**: do NOT overwrite it, do NOT assume a clean baseline, and do NOT incorporate it into your own edit without explicit authorization. If an edit you are about to make would touch or clobber a user-owned hunk, stop and ask. This applies even when the file itself is "in scope" for the current task — the user's uncommitted work has its own ownership independent of the task's file scope.
-
-**Execution Requirements:**
-- Complete the task **ENTIRELY** — no partial solutions.
-- **NO** shortcuts like "... similar for other files".
+**Execution Requirements (INV-SCOPE-1 in practice):**
+- Complete the task **ENTIRELY** — no partial solutions, no shortcuts like "… similar for other files".
 - Implement ALL necessary changes (files, functions, tests, config).
-- Break large tasks into phases, complete each fully.
-- Track progress with `{{TASK_TRACKER}}`.
-
-**Project policy — no silent scope reduction.** When a design document, implementation plan, or prose task description is provided, implement the **entire specified scope**. Do not shrink it. Do not substitute a "simpler approach." Do not produce stubs, placeholders, TODOs, or "for now" implementations. Do not defer any part of the specified scope to a follow-up PR, a subsequent commit, a "next round," or a future ticket — this is scope reduction even when announced openly. See `{{PRIMARY_MANUAL_FILE}}` Core Principles > Quality Standards for the full rule. The design document IS the specification — follow it completely. If you believe part of the spec is wrong, genuinely impossible, that you must reorder operations to prevent a regression, or that you need a design that deviates from the approved plan, do **not** act on that judgment — stop and re-request explicit approval per **Forced Spec/Plan Deviation: Re-request Approval** below.
-
-The system-prompt directive not to add unsolicited features or premature abstractions governs *unsolicited expansion* — don't refactor or introduce abstractions the user didn't ask for. It does NOT authorize *contracting* the asked-for scope. Those are different axes.
-
-**palette note.** palette's thin-slicing does not license contracting an approved scope: choosing a *thinner slice* is a planning-time, user-owned scope decision (which this project already mandates) made *before* approval — not the agent shrinking work already approved. Once a slice is approved, "implement the entire scope" applies to that slice, and deferring any of it to the backlog needs explicit, specific user consent. See `{{PALETTE_RULE_FILE}}`.
-
-**Project policy — create new files when the spec says so.** If the design document or task specifies creating new files, create them. The design document or task description constitutes the explicit case the system's "prefer editing existing files" preference isn't meant to block. This is specifically meant to suppress the agent-side failure mode of responding to "split `main.rs` into modules per the plan" by editing `main.rs` in place to avoid creating the new module files.
+- Break large tasks into phases, complete each fully; track with `{{TASK_TRACKER}}`.
+- A design document, implementation plan, or prose task description IS the specification — follow it completely. If you believe part of it is wrong, impossible, needs reordering, or needs a different design, do **not** act on that judgment — GATE-DEVIATION below.
+- **Create new files when the spec says so.** A design document or task that specifies new files constitutes the explicit case the harness's "prefer editing existing files" preference isn't meant to block — never respond to "split this into modules per the plan" by editing in place to avoid creating the module files.
 
 **Refactoring Guidelines:**
 
-When to refactor:
-- Code duplicated 3+ times
-- Function does too many things (>50 lines)
-- Clear naming/structure improvement
-
-When NOT to refactor:
-- Without test coverage
-- Mid-feature (complete feature first)
-- When it would touch unrelated code
+When to refactor: code duplicated 3+ times; a function doing too many things (>50 lines); a clear naming/structure improvement.
+When NOT to refactor: without test coverage; mid-feature (complete the feature first); when it would touch unrelated code.
 
 **Comment Discipline:**
 - Write comments only when the **WHY** is non-obvious. Do not explain WHAT code does — the code itself should be readable.
@@ -130,11 +117,9 @@ When NOT to refactor:
 - No boilerplate comments, no restating the function signature in prose.
 - **No chain-of-thought in output.** Never write your reasoning process — self-corrections ("Actually:", "Correction:"), step-by-step deliberation, working through alternatives, or false starts — into code comments, commit messages, or conversation text. Resolve your thinking internally. Only the final, correct conclusion belongs in output. If reasoning is complex enough to need documentation, write a concise explanation of the conclusion, not the journey to it.
 
-## Forced Spec/Plan Deviation: Re-request Approval (HARD RULE)
+## GATE-DEVIATION: Forced Spec/Plan Deviation — Re-request Approval (HARD RULE)
 
-Scope is **NEVER** reduced arbitrarily, and the agent **NEVER** decides a deviation on the user's behalf. This section is a *deviation gate*, not permission to reduce scope: when one of the three triggers below fires, you may only **pause and ask** — you may not implement the deviation, a reduction, or a preferred alternative on your own judgment.
-
-**palette note.** For a palette story, its `Done when` + `Not this story` **are** the "approved spec/plan" this gate protects. A forced deviation while implementing a story follows the same stop → preserve → propose → wait procedure; moving unmet acceptance criteria into the backlog is not an escape hatch. See `{{PALETTE_RULE_FILE}}`.
+**GATE-DEVIATION — the procedure for INV-SCOPE-3.** Scope is **NEVER** reduced arbitrarily, and the agent **NEVER** decides a deviation on the user's behalf. This is a *deviation gate*, not permission to reduce scope: when one of the three triggers below fires, you may only **pause and ask** — you may not implement the deviation, a reduction, or a preferred alternative on your own judgment.
 
 The ONLY three situations that justify deviating from the approved spec/plan — **each REQUIRES you to stop and re-request EXPLICIT user approval before proceeding**:
 
@@ -146,12 +131,12 @@ The ONLY three situations that justify deviating from the approved spec/plan —
 3. **A design decision that deviates from the approved plan.** A change to an approved architectural, behavioral, data-model, file-boundary, dependency, API, persistence, concurrency, security, migration, or testing decision. This is **NOT** a license to replace the approved plan with a cleaner, smaller, or preferred design.
    - *Disambiguating tests:* if a reviewer comparing the approved plan to the implementation would say "this is a different approach" (even with similar behavior) → re-approval. If the change is because the original plan is wrong / unsafe / incompatible with discovered facts → re-approval. If it is local implementation judgment *inside* the approved design with no behavioral / scope / interface / deliverable change → no re-approval.
 
-**Anything outside these three follows the existing no-reduction rule** (see the **Implementation** project policy above and `{{PRIMARY_MANUAL_FILE}}` Core Principles > Quality Standards).
+**Anything outside these three follows INV-SCOPE-1** — no reduction, period.
 
-**Anti-loophole — "I discovered it mid-way" is not a free pass.** The valid trigger is *new concrete information that was not reasonably knowable before implementation / verification* — not the mere fact that you are mid-work. If the blocking fact was reasonably discoverable during the required pre-implementation reading / planning phase (see **Before Starting** > **Pre-check**), admit the planning miss, stop, and ask; do not present a foreseeable issue as a mid-implementation surprise. Foreseeable "this scope is too large" concerns are still raised **before starting** (per `{{PRIMARY_MANUAL_FILE}}` Quality Standards), not at completion time.
+**Anti-loophole — "I discovered it mid-way" is not a free pass.** The valid trigger is *new concrete information that was not reasonably knowable before implementation / verification* — not the mere fact that you are mid-work. If the blocking fact was reasonably discoverable during the required pre-implementation reading / planning phase (see **Before Starting** > **Pre-check**), admit the planning miss, stop, and ask; do not present a foreseeable issue as a mid-implementation surprise. Foreseeable "this scope is too large" concerns are still raised **before starting** (INV-SCOPE-1), not at completion time.
 
 **Required action when a trigger fires:**
-1. **Preserve all work-so-far** — no rollback, deletion, blanking, or hiding of incomplete state (the same prohibition as **Undo / Revert Handling** subsection A below; deviation pressure and rollback pressure are adjacent failure modes).
+1. **Preserve all work-so-far** — no rollback, deletion, blanking, or hiding of incomplete state (INV-STATE-1; deviation pressure and rollback pressure are adjacent failure modes).
 2. State the **approved requirement** at issue.
 3. State the **concrete discovered fact** that forces the deviation.
 4. Explain **why** the existing scope cannot / should not proceed unchanged.
@@ -159,13 +144,13 @@ The ONLY three situations that justify deviating from the approved spec/plan —
 6. **Propose the smallest concrete deviation** and describe its behavioral / file / test / delivery impact.
 7. **Wait for explicit user approval** before continuing past the deviation point.
 
-This gate is the mirror of the scope-reduction prohibition it sits beside: the prohibition stops you from *quietly shrinking* the work; this gate stops you from *unilaterally changing* it. Both resolve the same way — surface it, propose, wait.
+This gate is the mirror of INV-SCOPE-1: the invariant stops you from *quietly shrinking* the work; this gate stops you from *unilaterally changing* it. Both resolve the same way — surface it, propose, wait.
 
 ## Undo / Revert Handling (HARD RULE)
 
-In a {{HARNESS_NAME}} session, "revert" / "undo" / "discard" / "roll back" / "되돌려" and equivalents refer by default to **reversing the edits the model made in this session** — not to running git operations. This section governs both how you respond to such user requests (subsection B) and when you are allowed to unwind your own work at all (subsection A). A narrow carve-out (subsection C) applies only when the user *explicitly names* a git command.
+In a {{HARNESS_NAME}} session, "revert" / "undo" / "discard" / "roll back" / "되돌려" and equivalents refer by default to **reversing the edits the model made in this session** — not to running git operations (INV-STATE-2). Subsection A is INV-STATE-1's procedure; subsection B handles user-requested undo; subsection C (**GATE-GIT**) is the narrow carve-out for explicitly named git commands.
 
-### A. Model-initiated rollback is forbidden
+### A. Model-initiated rollback is forbidden (INV-STATE-1 procedure)
 
 If you judge mid- or post-implementation that the scope is too large, that your approach was wrong, or that the work so far should be thrown away, you MUST NOT use any mechanism to undo, destroy, or hide the work. Forbidden mechanisms include (non-exhaustive — the list extends to any tool whose effect is to erase the incomplete state):
 
@@ -183,9 +168,9 @@ Required procedure when the trigger fires:
 
 **Distinct from normal iteration.** Fixing a bug you introduced earlier in the session, refactoring code you just wrote, or correcting typos inside the same approved scope is NOT rollback — it is normal forward development and is fine. Rollback is when you judge the *direction itself* was wrong and want to erase the work to start over or give up; that requires user direction, not self-judgment.
 
-**Observable test for the trigger.** If the net effect of the action you are about to take is to *remove* or *blank out* code / files you created earlier in this session **without replacing them with the approved deliverable**, that action is rollback — regardless of how you label it internally ("cleanup", "simplification", "refactor", "try a different approach"). Forward iteration always moves toward the approved deliverable; rollback moves away from it. Use this test to catch intent-mislabeling in yourself.
+**Observable test:** INV-STATE-1's — if the net effect removes or blanks code/files you created this session without replacing them with the approved deliverable, it is rollback, regardless of the label ("cleanup", "simplification", "refactor", "try a different approach"). Forward iteration moves toward the approved deliverable; rollback moves away from it.
 
-**Adjacent failure mode — deviation pressure.** When the impulse is not "erase the work" but "the scope / approach / order must *change*" (it is impossible as specified, the planned order would cause a regression, or the design must deviate from the plan), that is governed by **Forced Spec/Plan Deviation: Re-request Approval** above — same resolution: stop, preserve state, propose, wait for explicit approval; never act unilaterally.
+**Adjacent failure mode — deviation pressure.** When the impulse is not "erase the work" but "the scope / approach / order must *change*", that is GATE-DEVIATION above — same resolution: stop, preserve state, propose, wait.
 
 ### B. User-requested revert / undo: reverse session edits via file edits
 
@@ -202,12 +187,12 @@ Required procedure:
 3. **Confirm scope with the user.** Which edits specifically — all of them, just the most recent, a specific file, a specific hunk? If the user's phrasing is ambiguous, ask before touching anything.
 4. **Reverse the edits via {{EDIT_SURFACE}}.** Write the inverse operation: delete the lines you added, restore the lines you replaced, remove the files you created in this session.
 5. **Do NOT reach for git for session-edit undo.** Not `checkout --`, not `restore`, not `revert`, not `reset`, not `stash`, not any other git command. None of those are the right tool for undoing session edits. (See step 6 for the case where the user's request is actually about a commit / branch / ref, not session edits.)
-6. **If the user identifies a commit / branch / ref** (e.g., *"revert commit abc123"*, *"undo what's on main since yesterday"*, *"remove the commit you just made"*), stop and clarify which git operation they want — this is NOT session-edit undo regardless of whether the commit came from this session. Do not reinterpret it as file-edit undo. Subsection C applies once the user names a specific git command.
-7. **If the undo would require touching files the model did NOT edit in this session**, stop and clarify. Those files' state is user-owned, not session-owned; you need explicit authorization before changing them.
+6. **If the user identifies a commit / branch / ref** (e.g., *"revert commit abc123"*, *"undo what's on main since yesterday"*, *"remove the commit you just made"*), stop and clarify which git operation they want — this is NOT session-edit undo regardless of whether the commit came from this session. Do not reinterpret it as file-edit undo. GATE-GIT applies once the user names a specific git command.
+7. **If the undo would require touching files the model did NOT edit in this session**, stop and clarify (INV-STATE-3). Those files' state is user-owned, not session-owned; you need explicit authorization before changing them.
 
-### C. Explicit git-command requests (narrow carve-out, HARD RULE)
+### C. GATE-GIT: Explicit git-command requests (narrow carve-out, HARD RULE)
 
-A destructive git operation may be run ONLY when the user **explicitly names the git command** in their request — e.g., *"run `git reset --hard HEAD~1`"*, *"do `git checkout -- foo.ts`"*, *"use `git revert abc123`"*. Generic phrasings like "revert it", "undo that", "throw that away", "roll back", "되돌려" do NOT name a git command and fall under subsection B — do not translate them into git operations on your own.
+**GATE-GIT — the destructive-git pre-flight.** A destructive git operation may be run ONLY when the user **explicitly names the git command** in their request — e.g., *"run `git reset --hard HEAD~1`"*, *"do `git checkout -- foo.ts`"*, *"use `git revert abc123`"*. Generic phrasings like "revert it", "undo that", "throw that away", "roll back", "되돌려" do NOT name a git command and fall under subsection B — do not translate them into git operations on your own.
 
 When a git command is explicitly named, apply this pre-flight before running it:
 
@@ -221,17 +206,19 @@ When a git command is explicitly named, apply this pre-flight before running it:
 4. **Wait for explicit per-command authorization.** A "yes, run it" / "go ahead" against a specific proposed command counts; a generic "just run it" against an ambiguous earlier phrasing does not — re-propose until there is a specific authorized command.
 5. **Execute only the authorized command.** Do NOT substitute a different command even if it seems equivalent or safer. If the proposed command's blast radius worries you, say so in the proposal — but do not unilaterally switch commands.
 
-**Project-mandatory flags.** If project rules (see `{{GIT_WORKFLOW_RULE_FILE}}` > Commit Rules) require specific flags on the named command — for example the standing `--no-gpg-sign` requirement on `git commit` / `git commit --amend` / `git revert` / `git cherry-pick` — surface the modified command in your proposal (e.g., propose `git revert HEAD --no-gpg-sign`, not `git revert HEAD`) and get explicit authorization for the actual invocation. Silently appending mandatory flags to the user's exact phrasing is substitution; *surfacing* them in the proposal is not.
+**Project-mandatory flags.** If project rules (see `{{GIT_WORKFLOW_RULE_FILE}}` > Commit Rules) require specific flags on the named command — for example a standing `--no-gpg-sign` requirement on `git commit` / `git commit --amend` / `git revert` / `git cherry-pick` — surface the modified command in your proposal (e.g., propose `git revert HEAD --no-gpg-sign`, not `git revert HEAD`) and get explicit authorization for the actual invocation. Silently appending mandatory flags to the user's exact phrasing is substitution; *surfacing* them in the proposal is not.
 
 If the surgical option the user named does not exist, or if the user's named command would destroy more than they seem to intend, stop and describe exactly what else will be affected. Wait for the user to either authorize the broader blast radius explicitly or supply an alternative command.
 
 The user owns **what** to undo, **which specific command** runs, and **when** it runs. The model's role is to surface the option space and the blast radius of each candidate — not to choose or execute on the user's behalf.
 
+{{@INSERT execution-harness}}
+
 ## After Completion
 
-- [ ] All deliverables complete
+- [ ] All deliverables complete (INV-SCOPE-1)
 - [ ] No placeholders or TODOs remain
-- [ ] Tests pass (if applicable) — **actually verified, not assumed**
+- [ ] Tests pass (if applicable) — **actually verified, not assumed** (INV-VERIFY-1)
 - [ ] No regression in related features
 - [ ] Linting/type checking passes (if applicable)
-- [ ] Outcome reported faithfully — failures disclosed, not hidden
+- [ ] Outcome reported faithfully — failures disclosed, not hidden (INV-VERIFY-2)

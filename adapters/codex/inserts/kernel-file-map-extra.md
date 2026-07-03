@@ -1,0 +1,1 @@
+- `codex-agent-kit--codex-surface.md` — the Codex surface binding: loading model, `update_plan` / goal surface, `apply_patch`, tool discovery, Slate MCP registration.

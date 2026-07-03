@@ -837,14 +837,15 @@ impl Dispatch {
     /// where a poisoned row's session_id was copied from the same stale file.
     fn rollout_is_ours(&self, row: &store::TaskRow, path: &Path) -> bool {
         if row.backend == "claude" {
-            // Claude session ids are pinned at spawn, so identity is the
-            // deterministic path formula — no content scanning needed.
+            // Claude session ids are pinned at spawn (a dispatch-minted UUID),
+            // so a filename match on <sid>.jsonl is positive identity — the
+            // slug directory Claude chose is irrelevant.
             return row
                 .session_id
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .map(|sid| {
-                    path == rollout::claude_session_path(Path::new(&row.working_dir), sid)
+                    path.file_name().and_then(|n| n.to_str()) == Some(&format!("{sid}.jsonl"))
                 })
                 .unwrap_or(false);
         }
@@ -872,7 +873,12 @@ impl Dispatch {
         if row.backend == "claude" {
             let sid = row.session_id.as_deref().filter(|s| !s.is_empty())?;
             let p = rollout::claude_session_path(Path::new(&row.working_dir), sid);
-            return p.exists().then(|| (p, sid.to_string()));
+            if p.exists() {
+                return Some((p, sid.to_string()));
+            }
+            // Slug-formula miss (Claude's exact slugging has edge cases) —
+            // find the pinned sid's file wherever Claude put it.
+            return rollout::find_claude_session(sid).map(|p| (p, sid.to_string()));
         }
         if let Some(n) = row.nonce.as_deref().filter(|n| !n.is_empty()) {
             return rollout::locate_by_nonce(Path::new(&row.working_dir), n);
@@ -1208,7 +1214,9 @@ fn resolve_project_root(cwd: &Path) -> Option<PathBuf> {
 }
 
 /// Directories a project cwd can never be: filesystem root, $HOME itself, and
-/// anything under a harness home / Slate state home.
+/// anything under a harness home / Slate state home. Each root is
+/// canonicalized so a symlinked home (e.g. macOS `/var` → `/private/var` for a
+/// temp state home) still matches the canonicalized cwd.
 fn implausible_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let home = home_dir();
@@ -1232,6 +1240,9 @@ fn implausible_roots() -> Vec<PathBuf> {
         );
     }
     roots
+        .into_iter()
+        .map(|r| r.canonicalize().unwrap_or(r))
+        .collect()
 }
 
 fn plausible_fallback_root(canon: &Path, denied: &[PathBuf]) -> bool {

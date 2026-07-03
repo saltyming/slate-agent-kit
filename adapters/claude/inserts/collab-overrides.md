@@ -1,0 +1,5 @@
+**[OVERRIDE]** `"If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first."` / the Agent tool's `"## When not to use"` guidance.
+
+**This override applies to delegation tools only** (`Agent` and its write-capable `subagent_type`s, backgrounded teammates, and the `Workflow` tool); it does not narrow unrelated tools. The proactive-use directive applies **in full to read-only subagents** — `Explore`, `Plan`, `claude-code-guide` — which *reduce* the leader's context cost; use them freely. For **write-capable** delegation (a `general-purpose` subagent, a backgrounded teammate) **and for any `Workflow`**, GATE-DELEGATE applies: surface/propose → execute on the user's agreement — never spawn silently.
+
+Out of scope for this gate: aside tools (`mcp__aside__aside_*`) and built-in `advisor()` — consultations, not file-mutating delegates, governed by `claude-agent-kit--aside.md`. dispatch carries its own user-configured execution policy (`claude-agent-kit--dispatch.md`), which overrides GATE-DELEGATE for dispatch specifically when set to `proactive` + `auto`.

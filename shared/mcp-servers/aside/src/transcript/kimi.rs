@@ -63,7 +63,7 @@ fn locate_in(kimi_home: &Path, project_dir: &Path, now: SystemTime) -> Result<Lo
         );
     }
 
-    let mut matching: Option<Located> = None;
+    let mut matching: Vec<Located> = Vec::new();
     let mut newest_any: Option<Located> = None;
     for (dir, work) in sessions.values() {
         let wire = dir.join("agents").join("main").join("wire.jsonl");
@@ -72,17 +72,22 @@ fn locate_in(kimi_home: &Path, project_dir: &Path, now: SystemTime) -> Result<Lo
         };
         let loc = Located { path: wire, mtime };
         let work_canon = work.canonicalize().unwrap_or_else(|_| work.clone());
-        let slot = if work_canon == project_dir {
-            &mut matching
-        } else {
-            &mut newest_any
-        };
-        if slot.as_ref().map(|b| mtime > b.mtime).unwrap_or(true) {
-            *slot = Some(loc);
+        if work_canon == project_dir {
+            matching.push(loc);
+        } else if newest_any.as_ref().map(|b| mtime > b.mtime).unwrap_or(true) {
+            newest_any = Some(loc);
         }
     }
 
-    if let Some(best) = matching {
+    // Newest matching session that actually has renderable messages — a
+    // freshly-opened empty "New Session" must not shadow the real one.
+    matching.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    for loc in &matching {
+        if !render_file(&loc.path).is_empty() {
+            return Ok(loc.clone());
+        }
+    }
+    if let Some(best) = matching.into_iter().next() {
         return Ok(best);
     }
     // cwd-less fallback, freshness-gated. A future mtime (clock skew) counts
@@ -270,6 +275,32 @@ mod tests {
 
         let got = locate_in(&home, &proj, SystemTime::now()).unwrap();
         assert_eq!(got.path, mine);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn locate_skips_empty_newest_session_for_older_renderable_one() {
+        let home = setup_home("shadow");
+        let proj = home.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let proj = proj.canonicalize().unwrap();
+
+        let full = add_session(
+            &home,
+            "session_full",
+            &proj,
+            "{\"type\":\"context.append_message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n",
+        );
+        let empty = add_session(&home, "session_empty", &proj, "{\"type\":\"metadata\"}\n");
+        std::fs::File::options()
+            .append(true)
+            .open(&empty)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(5))
+            .unwrap();
+
+        let got = locate_in(&home, &proj, SystemTime::now()).unwrap();
+        assert_eq!(got.path, full, "empty newest session must not shadow the renderable one");
         let _ = std::fs::remove_dir_all(&home);
     }
 

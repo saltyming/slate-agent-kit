@@ -16,3 +16,5 @@ s#{{TASK_TRACKER}}#TodoList#g
 s#{{EDIT_SURFACE}}#Kimi's native edit/write tools#g
 s#{{DELEGATION_SURFACE}}#Agent / dispatch when installed#g
 s#{{FANOUT_DELEGATION_SURFACE}}#AgentSwarm#g
+s#{{KIT_PREFIX}}#kimi-agent-kit#g
+s#{{KIT_VERSION}}#0.2.0#g

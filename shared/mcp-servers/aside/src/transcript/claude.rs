@@ -20,13 +20,19 @@ fn slug(p: &Path) -> String {
 
 /// Find the newest session transcript for this project. Tries the canonical
 /// project-dir slug first, then the raw (uncanonicalized) cwd slug — Claude
-/// slugs whatever cwd the session ran in.
+/// slugs whatever cwd the session ran in. A third candidate covers Claude's
+/// observed leading-dot slugging edge case (a `.name` path component slugs as
+/// `-name`, so the separator+dot pair becomes `--`).
 pub(crate) fn locate(project_dir: &Path, raw_cwd: &Path, home: &Path) -> Result<Located, String> {
     let root = home.join(".claude").join("projects");
     let mut candidates = vec![root.join(slug(project_dir))];
     let raw = root.join(slug(raw_cwd));
-    if raw != candidates[0] {
+    if !candidates.contains(&raw) {
         candidates.push(raw);
+    }
+    let dotless = root.join(slug(project_dir).replace("-.", "--"));
+    if !candidates.contains(&dotless) {
+        candidates.push(dotless);
     }
     for dir in &candidates {
         if dir.is_dir()
