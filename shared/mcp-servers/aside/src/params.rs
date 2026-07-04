@@ -11,7 +11,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// Parameters for `aside_codex` / `aside_copilot`.
+/// Parameters for `aside_codex` / `aside_copilot` / `aside_claude`.
 ///
 /// All three tools share this schema. Backend-specific behaviour (argv
 /// construction, prompt transport) lives in `crate::backend`.
@@ -48,8 +48,10 @@ pub struct AskParams {
     /// Forwarded as a reasoning-effort flag where supported:
     /// * codex  → `-c model_reasoning_effort=<val>`
     /// * copilot → `--effort <val>`
+    /// * claude → `--effort <val>`
     ///
-    /// Valid values: `low` / `medium` / `high` / `xhigh` (or blank).
+    /// Valid values: `low` / `medium` / `high` / `xhigh` / `max`
+    /// where supported (or blank).
     pub reasoning_effort: Option<String>,
 
     /// Optional ordered fallback chain: if `model` fails with a transient

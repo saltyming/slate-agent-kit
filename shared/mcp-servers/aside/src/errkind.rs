@@ -5,8 +5,9 @@
 //! codebase's existing convention for small shared utility modules (see
 //! lenient.rs) rather than adding a shared workspace crate for ~100 lines.
 //!
-//! The pattern table was tuned against REAL captured stderr from all three
-//! backends (codex via both aside and dispatch, copilot, opencode), not
+//! The pattern table was tuned against REAL captured stderr/stdout from the
+//! backends that expose discriminating errors (codex via both aside and
+//! dispatch, copilot, claude, and dispatch's opencode), not
 //! guessed:
 //!   - codex, bad model, ChatGPT-account auth: a JSON body containing
 //!     `"type":"invalid_request_error"` and a message like "The 'X' model is
@@ -15,6 +16,8 @@
 //!     match on "not supported" instead.
 //!   - copilot, policy-denied access: "Access denied by policy settings" — no
 //!     401/403/"unauthorized" text at all.
+//!   - claude, bad model: "There's an issue with the selected model (X). It may
+//!     not exist or you may not have access to it." — reported on stdout.
 //!   - opencode, bad model: a generic, non-discriminating HTTP 500 —
 //!     `{"name":"UnknownError","data":{"message":"Unexpected server error.
 //!     Check server logs for details."}}`. There is no text to pattern-match
@@ -166,6 +169,23 @@ mod tests {
         // text, so this correctly (if unfortunately) falls through to Other.
         let text = r#"opencode API returned 500 Internal Server Error: {"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_7a99a2c3"}}"#;
         assert_eq!(classify(text), BackendErrorKind::Other);
+    }
+
+    #[test]
+    fn recognizes_real_captured_claude_bad_model_shape() {
+        // Captured live from `claude -p --model <bogus>` on 2026-07-05. claude
+        // exits non-zero but prints the discriminating error to STDOUT, while
+        // stderr carries only an unrelated "Advisor disabled" warning. This is
+        // the exact string `dispatch_failure_text` builds (stderr + stdout), so
+        // it also witnesses that the failure path must forward stdout — without
+        // it this classifies as `Other` and model_fallback never advances.
+        let text = "exit_code=Some(1) stderr=Warning: Advisor disabled — base \
+             model 'definitely-not-a-real-model-xyz-9999' has no advisor rank in \
+             the model catalog. stdout=There's an issue with the selected model \
+             (definitely-not-a-real-model-xyz-9999). It may not exist or you may \
+             not have access to it. Run --model to pick a different model.";
+        assert_eq!(classify(text), BackendErrorKind::ModelUnavailable);
+        assert!(classify(text).is_retry_worthy());
     }
 
     #[test]

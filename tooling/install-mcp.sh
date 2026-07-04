@@ -148,7 +148,8 @@ install_binary() {
   cp "$ib_src" "$ib_tmp"
   chmod 755 "$ib_tmp"
   if [ "$(uname -s)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
-    codesign --force --sign - "$ib_tmp" >/dev/null 2>&1 || true
+    codesign --force --sign - "$ib_tmp" >/dev/null 2>&1 || \
+      echo "WARNING: ad-hoc codesign failed for $(basename "$ib_dest"); macOS may SIGKILL the unsigned MCP binary on launch." >&2
   fi
   mv -f "$ib_tmp" "$ib_dest"
 }
@@ -179,9 +180,54 @@ detect_platform() {
   esac
   case "$(uname -s)" in
     Darwin) printf '%s-apple-darwin' "$arch" ;;
-    Linux) printf '%s-unknown-linux-gnu' "$arch" ;;
+    Linux)
+      # musl distros (Alpine, etc.) need the -musl asset; the glibc -gnu binary
+      # fails to exec there. Detect the musl loader / ldd banner rather than
+      # always assuming glibc.
+      if [ -f "/lib/ld-musl-${arch}.so.1" ] \
+        || { command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; }; then
+        printf '%s-unknown-linux-musl' "$arch"
+      else
+        printf '%s-unknown-linux-gnu' "$arch"
+      fi
+      ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT) printf '%s-pc-windows-msvc' "$arch" ;;
     *) echo "Error: unsupported OS $(uname -s) (set PLATFORM manually)" >&2; exit 1 ;;
   esac
+}
+
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    printf ''
+  fi
+}
+
+# verify_checksum <archive> <asset-filename> <have_checksums> <checksums-file>
+# Hard-fails on a mismatch; warns (does not abort) when the manifest, the entry,
+# or a sha256 tool is unavailable — verification is best-effort per release.
+verify_checksum() {
+  [ "$3" = "1" ] || return 0
+  _expected=$(awk -v f="$2" '$2 == f || $2 == "*" f { print $1; exit }' "$4")
+  if [ -z "$_expected" ]; then
+    echo "WARNING: no checksum entry for $2; not verified." >&2
+    return 0
+  fi
+  _actual=$(sha256_hex "$1")
+  if [ -z "$_actual" ]; then
+    echo "WARNING: no sha256 tool (sha256sum/shasum) found; $2 not verified." >&2
+    return 0
+  fi
+  if [ "$_expected" != "$_actual" ]; then
+    echo "Error: checksum mismatch for $2" >&2
+    echo "  expected: $_expected" >&2
+    echo "  actual:   $_actual" >&2
+    exit 1
+  fi
+  echo "  verified $2 (sha256)"
 }
 
 download_prebuilt() {
@@ -191,16 +237,44 @@ download_prebuilt() {
   else
     base="https://github.com/$SLATE_RELEASE_REPO/releases/download/$SLATE_RELEASE_TAG"
   fi
+  # Windows release assets are .zip (containing <name>.exe); every other target
+  # ships .tar.gz.
+  case "$platform" in
+    *windows*) arc_ext="zip"; bin_ext=".exe" ;;
+    *) arc_ext="tar.gz"; bin_ext="" ;;
+  esac
   dl_dir=$(mktemp -d)
   trap 'rm -rf "$dl_dir"' EXIT HUP INT TERM
   echo "Downloading prebuilt MCP servers ($platform, $SLATE_RELEASE_TAG)..."
+  # Fetch the release checksum manifest once. Present on current releases; older
+  # ones lack it (warn, or hard-fail under SLATE_REQUIRE_CHECKSUM=1).
+  have_checksums=0
+  if fetch "$base/checksums.txt" "$dl_dir/checksums.txt" 2>/dev/null; then
+    have_checksums=1
+  elif [ "${SLATE_REQUIRE_CHECKSUM:-0}" = "1" ]; then
+    echo "Error: no checksums.txt in this release and SLATE_REQUIRE_CHECKSUM=1." >&2
+    exit 1
+  else
+    echo "WARNING: release has no checksums.txt; binary integrity NOT verified." >&2
+  fi
   for name in aside dispatch; do
-    fetch "$base/$name-$platform.tar.gz" "$dl_dir/$name.tar.gz"
-    tar xzf "$dl_dir/$name.tar.gz" -C "$dl_dir"
+    fetch "$base/$name-$platform.$arc_ext" "$dl_dir/$name.$arc_ext"
+    verify_checksum "$dl_dir/$name.$arc_ext" "$name-$platform.$arc_ext" \
+      "$have_checksums" "$dl_dir/checksums.txt"
+    case "$arc_ext" in
+      zip)
+        command -v unzip >/dev/null 2>&1 || {
+          echo "Error: unzip is required to extract Windows release assets" >&2
+          exit 1
+        }
+        unzip -oq "$dl_dir/$name.$arc_ext" -d "$dl_dir"
+        ;;
+      *) tar xzf "$dl_dir/$name.$arc_ext" -C "$dl_dir" ;;
+    esac
   done
   mkdir -p "$BIN_DIR"
-  install_binary "$dl_dir/aside" "$ASIDE_BIN"
-  install_binary "$dl_dir/dispatch" "$DISPATCH_BIN"
+  install_binary "$dl_dir/aside$bin_ext" "$ASIDE_BIN$bin_ext"
+  install_binary "$dl_dir/dispatch$bin_ext" "$DISPATCH_BIN$bin_ext"
 }
 
 build_and_install() {
@@ -307,112 +381,8 @@ configure_kimi() {
     echo "until you re-run this script with --roots <workspace-root>." >&2
   fi
   mkdir -p "$KIMI_CODE_HOME/plugins/managed" "$KIMI_CODE_HOME/slate-agent-kit"
-  node - "$KIMI_CODE_HOME" "$ASIDE_BIN" "$DISPATCH_BIN" "$ROOTS" "$HOME/.kimi-code" <<'NODE'
-const fs = require("fs");
-const path = require("path");
-
-const [home, asideBin, dispatchBin, roots, defaultHome] = process.argv.slice(2);
-const pluginId = "slate-agent-kit-mcp";
-const pluginRoot = path.join(home, "plugins", "managed", pluginId);
-const installedPath = path.join(home, "plugins", "installed.json");
-const stateHome = path.join(home, "slate-agent-kit");
-
-fs.mkdirSync(pluginRoot, { recursive: true });
-fs.mkdirSync(path.dirname(installedPath), { recursive: true });
-fs.mkdirSync(stateHome, { recursive: true });
-
-// aside reads Kimi session logs natively via $KIMI_CODE_HOME; only pass it
-// through when this install targets a non-default home.
-const asideEnv = { ASIDE_HARNESS: "kimi" };
-if (path.resolve(home) !== path.resolve(defaultHome)) {
-  asideEnv.KIMI_CODE_HOME = home;
-}
-const dispatchEnv = { SLATE_AGENT_STATE_HOME: stateHome };
-if (roots) {
-  dispatchEnv.DISPATCH_EXTRA_ROOTS = roots;
-}
-if (path.resolve(home) !== path.resolve(defaultHome)) {
-  dispatchEnv.KIMI_CODE_HOME = home;
-}
-
-const manifest = {
-  name: pluginId,
-  version: "0.2.0",
-  description: "Shared Slate Agent Kit MCP servers for Kimi Code.",
-  keywords: ["slate-agent-kit", "mcp", "aside", "dispatch"],
-  mcpServers: {
-    aside: {
-      command: asideBin,
-      args: [],
-      cwd: pluginRoot,
-      env: asideEnv
-    },
-    dispatch: {
-      command: dispatchBin,
-      args: [],
-      cwd: pluginRoot,
-      env: dispatchEnv
-    }
-  },
-  interface: {
-    displayName: "Slate Agent Kit MCP",
-    shortDescription: "aside read-only consultation and dispatch execution delegation.",
-    developerName: "Slate Agent Kit"
-  }
-};
-
-fs.writeFileSync(
-  path.join(pluginRoot, "kimi.plugin.json"),
-  `${JSON.stringify(manifest, null, 2)}\n`
-);
-
-fs.writeFileSync(
-  path.join(pluginRoot, "SKILL.md"),
-  [
-    "# Slate Agent Kit MCP",
-    "",
-    "This local plugin exposes the shared Slate Agent Kit MCP servers to Kimi Code.",
-    "",
-    "- aside tools are read-only consultation tools.",
-    "- dispatch tools are write-capable execution delegation tools and must follow the dispatch approval gate.",
-    "",
-    "Expected MCP tool prefixes are harness-generated from this plugin id and server name, for example:",
-    "",
-    "- `mcp__plugin-slate-agent-kit-mcp_aside__aside_list`",
-    "- `mcp__plugin-slate-agent-kit-mcp_aside__aside_codex`",
-    "- `mcp__plugin-slate-agent-kit-mcp_dispatch__dispatch_submit`",
-    "- `mcp__plugin-slate-agent-kit-mcp_dispatch__dispatch_status`",
-    ""
-  ].join("\n")
-);
-
-let registry = { version: 1, plugins: [] };
-if (fs.existsSync(installedPath)) {
-  try {
-    registry = JSON.parse(fs.readFileSync(installedPath, "utf8"));
-  } catch {
-    registry = { version: 1, plugins: [] };
-  }
-}
-if (!Array.isArray(registry.plugins)) {
-  registry.plugins = [];
-}
-
-const now = new Date().toISOString();
-const existing = registry.plugins.find((p) => p && p.id === pluginId);
-registry.plugins = registry.plugins.filter((p) => p && p.id !== pluginId);
-registry.plugins.push({
-  id: pluginId,
-  root: pluginRoot,
-  source: "local",
-  enabled: true,
-  installedAt: existing && existing.installedAt ? existing.installedAt : now,
-  updatedAt: now,
-  originalSource: "local:slate-agent-kit"
-});
-
-fs.writeFileSync(installedPath, `${JSON.stringify(registry, null, 2)}\n`);
-NODE
+  node "$ROOT/tooling/kit-scripts/write-kimi-plugin.js" \
+    "$KIMI_CODE_HOME" "$ASIDE_BIN" "$DISPATCH_BIN" "$HOME/.kimi-code" "$ROOTS"
   echo "Configured Kimi MCP plugin in $KIMI_CODE_HOME/plugins/managed/slate-agent-kit-mcp"
 }
 

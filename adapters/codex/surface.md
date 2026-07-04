@@ -71,7 +71,7 @@ semantics.
 - `aside` and `dispatch` are registered as normal Codex MCP servers in
   `$CODEX_HOME/config.toml` via `codex mcp add` (slate's
   `tooling/install-mcp.sh --configure-codex`); expected tool names are
-  `mcp__aside__aside_list` / `aside_codex` / `aside_copilot` and
+  `mcp__aside__aside_list` / `aside_codex` / `aside_copilot` / `aside_claude` and
   `mcp__dispatch__dispatch_submit` / `dispatch_status` / `dispatch_wait` /
   `dispatch_logs` / `dispatch_steer` / `dispatch_cancel` / `dispatch_backends`.
 - The installer sets `ASIDE_HARNESS=codex`: aside reads the **Codex session

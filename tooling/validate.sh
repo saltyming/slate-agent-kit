@@ -97,7 +97,12 @@ check_rendered_file() {
     fail=1
     return
   fi
-  if grep -n '{{\|}}' "$f" >/dev/null; then
+  # A render leak is an unrendered TOKEN — `{{KIT_VERSION}}`, `{{@INSERT …}}`,
+  # `{{ASIDE_RULE_FILE}}` — which always opens `{{` + a token char (upper-case
+  # or `@`). Match that shape, not bare `{{`/`}}`: shell and PowerShell
+  # legitimately contain `}}` (e.g. nested `${VAR:=${VAR2:-}}`), which is not a
+  # leak, so a bare-brace check false-positives on copied scripts.
+  if grep -En '\{\{[A-Z@]' "$f" >/dev/null; then
     echo "unrendered placeholder in $f" >&2
     fail=1
   fi
@@ -153,9 +158,9 @@ done
 # Allowlist: the surfaces intentionally say "workslate is Claude-only".
 
 for kit in codex kimi; do
-  leaks=$(grep -rn 'workslate_task_\|advisor()\|Agent Team\|ScheduleWakeup\|ultracode\|CLAUDE\.md' \
+  leaks=$(grep -rEn 'workslate_task_|advisor\(\)|Agent Team|ScheduleWakeup|ultracode|CLAUDE\.md' \
       "$ROOT/kits/${kit}-agent-kit/${kit}-rules" "$ROOT/kits/${kit}-agent-kit/AGENTS.md" 2>/dev/null \
-    | grep -v 'workslate.*Claude-only\|Claude-only.*workslate' || true)
+    | grep -Ev 'workslate.*Claude-only|Claude-only.*workslate' || true)
   if [ -n "$leaks" ]; then
     echo "claude-only machinery leaked into $kit render:" >&2
     echo "$leaks" | head -5 >&2
@@ -163,7 +168,7 @@ for kit in codex kimi; do
   fi
 done
 
-claude_leaks=$(grep -rn 'AgentSwarm\|TodoList\|apply_patch\|KIMI_CODE_HOME\|CODEX_HOME\|update_plan' \
+claude_leaks=$(grep -rEn 'AgentSwarm|TodoList|apply_patch|KIMI_CODE_HOME|CODEX_HOME|update_plan' \
     "$ROOT/kits/claude-agent-kit/CLAUDE.md" "$ROOT/kits/claude-agent-kit/claude-rules" 2>/dev/null || true)
 if [ -n "$claude_leaks" ]; then
   echo "non-claude surface bindings leaked into claude render:" >&2
@@ -265,6 +270,41 @@ fi
 if ! grep -n "Claude Agent Operating Manual" "$ROOT/kits/claude-agent-kit/CLAUDE.md" >/dev/null 2>&1; then
   echo "claude adapter did not render Claude title" >&2
   fail=1
+fi
+
+# ── 10. installer sanity ──────────────────────────────────
+# Guards the per-kit installers — previously untested. The signature check below
+# would have caught the claude/kimi `--uninstall` no-op (install.sh keyed on the
+# wrong signature and silently left every rule/skill installed).
+
+for kit in claude codex kimi; do
+  kd="$ROOT/kits/${kit}-agent-kit"
+  for f in install.sh Makefile install.ps1; do
+    [ -f "$kd/$f" ] || { echo "$kit: missing installer $f" >&2; fail=1; }
+  done
+  if [ -f "$kd/install.sh" ] && ! sh -n "$kd/install.sh" 2>/dev/null; then
+    echo "$kit: install.sh has a syntax error" >&2; fail=1
+  fi
+  # install.sh + Makefile uninstall must key on the shared signature, or
+  # `--uninstall` silently leaves every managed rule/skill in place.
+  for f in install.sh Makefile; do
+    if [ -f "$kd/$f" ] && ! grep -q 'slate-agent-kit:common' "$kd/$f"; then
+      echo "$kit: $f never references 'slate-agent-kit:common' (uninstall would no-op)" >&2
+      fail=1
+    fi
+  done
+done
+
+# Parse-check the PowerShell installers when pwsh is available (advisory otherwise).
+if command -v pwsh >/dev/null 2>&1; then
+  for kit in claude codex kimi; do
+    ps1="$ROOT/kits/${kit}-agent-kit/install.ps1"
+    [ -f "$ps1" ] || continue
+    errcount=$(pwsh -NoProfile -Command "\$e=[ref]\$null; \$null=[System.Management.Automation.Language.Parser]::ParseFile('$ps1', [ref]\$null, \$e); \$e.Value.Count" 2>/dev/null)
+    if [ "$errcount" != "0" ]; then
+      echo "$kit: install.ps1 has parse error(s)" >&2; fail=1
+    fi
+  done
 fi
 
 if [ "$fail" -eq 0 ]; then

@@ -11,9 +11,9 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wrapper::Parameters},
     model::{
         CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
-        ServerCapabilities, ServerInfo, Tool,
+        ProgressNotificationParam, ProgressToken, ServerCapabilities, ServerInfo, Tool,
     },
-    service::RequestContext,
+    service::{Peer, RequestContext},
     tool, tool_router,
 };
 use serde_json::json;
@@ -22,6 +22,12 @@ use tokio_util::sync::CancellationToken;
 use backend::{Backend, InvokeOutcome, invoke, version, which};
 use params::{AskParams, ListParams};
 use transcript::{TranscriptOutcome, render_transcript};
+
+/// How often to emit `notifications/progress` during a long backend call so a
+/// progress-aware MCP client resets its per-tool-call timeout instead of
+/// aborting a legitimately slow advisor run. Kept well under common client
+/// defaults (Codex's is on the order of minutes; 60s is another common one).
+const PROGRESS_INTERVAL_SECS: u64 = 15;
 
 // ── Aside server ──────────────────────────────────────────
 
@@ -43,18 +49,18 @@ impl Aside {
     }
 
     #[tool(
-        description = "List which backend CLIs (codex, copilot) are available on PATH, with their --version output. Call this when you're unsure which backends are installed on this machine."
+        description = "List which backend CLIs (codex, copilot, claude) are available on PATH, with their --version output. Call this when you're unsure which backends are installed on this machine."
     )]
     async fn aside_list(
         &self,
         Parameters(_params): Parameters<ListParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let mut report = Vec::new();
-        for backend in [Backend::Codex, Backend::Copilot] {
+        for backend in Backend::all() {
             let path = which(backend.binary());
             let entry = match path {
                 Some(p) => {
-                    let ver = version(backend)
+                    let ver = version(*backend)
                         .await
                         .unwrap_or_else(|| "(unknown)".to_string());
                     json!({
@@ -86,7 +92,9 @@ impl Aside {
         Parameters(params): Parameters<AskParams>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.dispatch(Backend::Codex, params, ctx.ct).await
+        let progress_token = ctx.meta.get_progress_token();
+        self.dispatch(Backend::Codex, params, ctx.ct, ctx.peer, progress_token)
+            .await
     }
 
     #[tool(
@@ -97,7 +105,22 @@ impl Aside {
         Parameters(params): Parameters<AskParams>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        self.dispatch(Backend::Copilot, params, ctx.ct).await
+        let progress_token = ctx.meta.get_progress_token();
+        self.dispatch(Backend::Copilot, params, ctx.ct, ctx.peer, progress_token)
+            .await
+    }
+
+    #[tool(
+        description = "Ask Anthropic's claude CLI for a second opinion. include_transcript defaults to true — the current harness conversation is forwarded by reading the harness's own session log natively (Claude Code project transcripts, Codex rollouts, Kimi Code wire logs), in REDACTED form (tool_use / tool_result / thinking blocks become placeholders; only text passes through). Runs `claude -p` in safe-mode, no-session-persistence, `--permission-mode plan`, with only built-in read/search/fetch tools (`Read,Grep,Glob,WebFetch`) exposed. NO shell exec, NO file mutation. **Prefer passing file paths in `question` / `context`** and let claude read them; embed an excerpt only for focused line-range questions or for off-disk tool output. reasoning_effort maps to claude --effort (low/medium/high/xhigh/max). model_fallback: an optional ordered list of models retried in turn on a transient backend error — the response notes when a fallback model answered instead of the first one tried. See the aside rule's Transcript redaction section. Costs third-party API quota."
+    )]
+    async fn aside_claude(
+        &self,
+        Parameters(params): Parameters<AskParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let progress_token = ctx.meta.get_progress_token();
+        self.dispatch(Backend::Claude, params, ctx.ct, ctx.peer, progress_token)
+            .await
     }
 
     async fn dispatch(
@@ -105,12 +128,45 @@ impl Aside {
         backend: Backend,
         params: AskParams,
         ct: CancellationToken,
+        peer: Peer<RoleServer>,
+        progress_token: Option<ProgressToken>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if params.question.trim().is_empty() {
             return Ok(CallToolResult::error(vec![Content::text(
                 "question is required".to_string(),
             )]));
         }
+
+        // A backend advisor call can legitimately run for minutes. If the client
+        // supplied a progressToken, tick `notifications/progress` on an interval
+        // for the whole call (transcript read + every fallback attempt) so a
+        // progress-aware client resets its tool-call timeout rather than aborting
+        // the run. Clients that sent no token get nothing extra (pure no-op). The
+        // ticker is torn down when `_progress_guard` drops at function return.
+        let label = backend.binary();
+        let _progress_guard = progress_token.map(move |token| {
+            let stop = CancellationToken::new();
+            let ticker_stop = stop.clone();
+            tokio::spawn(async move {
+                let mut progress: f64 = 0.0;
+                loop {
+                    tokio::select! {
+                        _ = ticker_stop.cancelled() => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(
+                            PROGRESS_INTERVAL_SECS,
+                        )) => {
+                            progress += 1.0;
+                            let param = ProgressNotificationParam::new(token.clone(), progress)
+                                .with_message(format!("aside {label} still working…"));
+                            if peer.notify_progress(param).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            stop.drop_guard()
+        });
 
         let include_transcript = params.include_transcript.unwrap_or(true);
 
@@ -172,7 +228,7 @@ impl Aside {
                 break;
             }
 
-            if let Some(text) = dispatch_failure_text(&outcome) {
+            if let Some(text) = dispatch_failure_text(backend, &outcome) {
                 let kind = errkind::classify(&text);
                 tracing::info!(
                     "aside: {} attempt {}/{} model={:?} failed kind={} detail={:.200}",
@@ -214,10 +270,27 @@ struct FallbackAttempt {
 
 /// Extract the text `errkind::classify` should judge from a non-success
 /// outcome. `None` for a success or a cancellation.
-fn dispatch_failure_text(outcome: &InvokeOutcome) -> Option<String> {
+///
+/// stdout is folded into the classification text only for `claude`, which prints
+/// its discriminating error (e.g. unknown/inaccessible model) to stdout while
+/// stderr carries only an incidental warning — mirroring dispatch's
+/// `failure_text`. It is deliberately NOT folded in for other backends: their
+/// errors surface on stderr, and their stdout can hold a partial answer that
+/// might spuriously match a transient-error pattern (e.g. a question *about*
+/// rate limits), which would trigger a wasted fallback retry.
+fn dispatch_failure_text(backend: Backend, outcome: &InvokeOutcome) -> Option<String> {
     match outcome {
-        InvokeOutcome::Failed { code, stderr } => {
-            Some(format!("exit_code={:?} stderr={}", code, stderr))
+        InvokeOutcome::Failed {
+            code,
+            stderr,
+            stdout,
+        } => {
+            let mut text = format!("exit_code={:?} stderr={}", code, stderr);
+            if backend == Backend::Claude {
+                text.push_str(" stdout=");
+                text.push_str(stdout);
+            }
+            Some(text)
         }
         InvokeOutcome::Spawn(msg) => Some(msg.clone()),
         InvokeOutcome::NotFound { .. } | InvokeOutcome::Ok { .. } | InvokeOutcome::Cancelled => {
@@ -305,13 +378,22 @@ fn render_outcome(
         InvokeOutcome::NotFound { binary, hint } => CallToolResult::error(vec![Content::text(
             format!("backend_not_found: `{}` is not on PATH — {}", binary, hint),
         )]),
-        InvokeOutcome::Failed { code, stderr } => {
+        InvokeOutcome::Failed {
+            code,
+            stderr,
+            stdout,
+        } => {
             let mut body = format!(
                 "backend_error: {} exited with status {:?}\n\nstderr:\n{}",
                 backend.binary(),
                 code,
                 stderr
             );
+            // Surface stdout when present: some CLIs (claude) print the real
+            // error there while stderr holds only an incidental warning.
+            if !stdout.trim().is_empty() {
+                body.push_str(&format!("\n\nstdout:\n{}", stdout));
+            }
             if let Some(n) = &note {
                 body.push_str(&format!(
                     "\n\n{n} — chain exhausted; this is the final attempt's error."
@@ -334,14 +416,16 @@ fn render_outcome(
 impl ServerHandler for Aside {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Cross-family second-opinion tools. Wraps locally-installed codex / copilot \
-             CLIs as MCP tools so the active harness can ask another model family for a second opinion. \
+            "Cross-family second-opinion tools. Wraps locally-installed codex / copilot / \
+             claude CLIs as MCP tools so the active harness can ask another model family \
+             or local advisor CLI for a second opinion. \
              include_transcript defaults to true — the current conversation is forwarded \
              automatically, but in REDACTED form: text blocks pass through, while tool_use / \
              tool_result / thinking blocks are replaced with placeholders. This differs from the \
-             harness-native advisor, when one exists, which may receive a different transcript. Both \
+             harness-native advisor, when one exists, which may receive a different transcript. All \
              backends run in read-only configurations that let them inspect files themselves: \
-             codex uses `-s read-only`; copilot uses `--available-tools=view,rg,glob,web_fetch`. \
+             codex uses `-s read-only`; copilot uses `--available-tools=view,rg,glob,web_fetch`; \
+             claude uses safe-mode + `--permission-mode plan` + `--tools Read,Grep,Glob,WebFetch`. \
              PREFER passing file paths in the `question` / `context` parameter and letting the \
              backend read them — this is cheaper than embedding, avoids the transcript's 100 KB \
              cap, and lets the backend pull in related files it decides it needs. Embed an \

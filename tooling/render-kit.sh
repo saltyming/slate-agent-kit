@@ -67,7 +67,12 @@ render() {
   src="$1"
   dest="$2"
   mkdir -p "$(dirname -- "$dest")"
-  awk -v dir="$inserts_dir" '
+  # POSIX sh has no `pipefail`, so a naive `awk … | sed > dest` would discard
+  # awk's exit status (the pipeline reports sed's) and write a truncated file on
+  # a missing insert — defeating the hard-error guard above. Stage awk to a temp,
+  # check its status, then run sed.
+  _render_tmp="$dest.render-tmp.$$"
+  if awk -v dir="$inserts_dir" '
     /^\{\{@INSERT [a-z0-9-]+\}\}$/ {
       name = $2
       sub(/\}\}$/, "", name)
@@ -87,7 +92,14 @@ render() {
     }
     { print }
     END { if (err) exit 1 }
-  ' "$src" | sed -f "$sed_script" > "$dest"
+  ' "$src" > "$_render_tmp"; then
+    sed -f "$sed_script" "$_render_tmp" > "$dest"
+    rm -f "$_render_tmp"
+  else
+    rm -f "$_render_tmp"
+    echo "render failed: $src (missing insert file or unreadable source)" >&2
+    exit 1
+  fi
 }
 
 render "$ROOT/shared/rules/core/kernel.md" "$primary"
@@ -108,15 +120,20 @@ for skill in palette-init palette-rules palette-spec palette-ui palette-ux; do
 done
 
 # Prefs templates render for every kit (configure-time values use @@NAME@@
-# placeholders, distinct from render-time {{TOKEN}}s). claude keeps its own
-# battle-tested interactive configure scripts; codex/kimi get the generic
-# configure-prefs.sh.
+# placeholders, distinct from render-time {{TOKEN}}s). All three kits use the
+# single shared configure-prefs.sh (interactive-first, injection-safe); claude
+# additionally keeps cak-common.sh for its custom-rules ingestion step.
 mkdir -p "$target/scripts"
 render "$ROOT/shared/prefs/aside-prefs.md.tmpl" "$target/scripts/${prefix}--aside-prefs.md.tmpl"
 render "$ROOT/shared/prefs/dispatch-prefs.md.tmpl" "$target/scripts/${prefix}--dispatch-prefs.md.tmpl"
-if [ "$harness" != "claude" ]; then
-  cp "$ROOT/tooling/kit-scripts/configure-prefs.sh" "$target/scripts/configure-prefs.sh"
-  chmod +x "$target/scripts/configure-prefs.sh"
+cp "$ROOT/tooling/kit-scripts/configure-prefs.sh" "$target/scripts/configure-prefs.sh"
+chmod +x "$target/scripts/configure-prefs.sh"
+# Windows twin used by install.ps1 (POSIX configure-prefs.sh can't run there).
+cp "$ROOT/tooling/kit-scripts/configure-prefs.ps1" "$target/scripts/configure-prefs.ps1"
+# Kimi's install.ps1 registers the MCP plugin natively on Windows (slate's POSIX
+# install-mcp.sh cannot run there), so it needs the shared plugin writer on disk.
+if [ "$harness" = "kimi" ]; then
+  cp "$ROOT/tooling/kit-scripts/write-kimi-plugin.js" "$target/scripts/write-kimi-plugin.js"
 fi
 
 echo "rendered $harness kit into $target"
