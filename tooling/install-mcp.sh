@@ -332,6 +332,29 @@ unconfigure_claude() {
   echo "Removed Claude user-scope MCP registrations (aside, dispatch)"
 }
 
+# codex_set_tool_timeout <server> <seconds> — set (or, with an empty <seconds>,
+# remove) `tool_timeout_sec` under [mcp_servers.<server>] in the Codex config.
+# Codex exposes no `codex mcp add` flag for this (config.toml-only, default 60s),
+# so we edit the block codex just wrote. Inserted as a direct key right after the
+# table header, ahead of the [.env] sub-table; re-running is idempotent.
+codex_set_tool_timeout() {
+  cts_cfg="$CODEX_HOME/config.toml"
+  [ -f "$cts_cfg" ] || return 0
+  awk -v server="mcp_servers.$1" -v secs="$2" '
+    BEGIN { tgt = "[" server "]"; intgt = 0; done = 0 }
+    {
+      if ($0 ~ /^\[/) {
+        intgt = ($0 == tgt)
+        print
+        if (intgt && !done && secs != "") { print "tool_timeout_sec = " secs; done = 1 }
+        next
+      }
+      if (intgt && $0 ~ /^[ \t]*tool_timeout_sec[ \t]*=/) next
+      print
+    }
+  ' "$cts_cfg" > "$cts_cfg.slate-tmp" && mv "$cts_cfg.slate-tmp" "$cts_cfg"
+}
+
 configure_codex() {
   command -v "$CODEX_BIN" >/dev/null 2>&1 || {
     echo "Error: $CODEX_BIN is required for --configure-codex." >&2
@@ -343,6 +366,11 @@ configure_codex() {
   CODEX_HOME="$CODEX_HOME" "$CODEX_BIN" mcp add aside \
     --env ASIDE_HARNESS=codex \
     -- "$ASIDE_BIN"
+  # aside blocks for the whole backend call (a claude -p / codex advisor run can
+  # take many minutes), which would otherwise trip Codex's per-tool-call timeout.
+  # Raise it to 30 minutes for aside. (dispatch tool calls are bounded — submit
+  # returns immediately and dispatch_wait is capped — so it keeps the default.)
+  codex_set_tool_timeout aside 1800
   if [ -n "$ROOTS" ]; then
     CODEX_HOME="$CODEX_HOME" "$CODEX_BIN" mcp add dispatch \
       --env SLATE_AGENT_STATE_HOME="$CODEX_HOME/slate-agent-kit" \
@@ -366,6 +394,9 @@ unconfigure_codex() {
   }
   CODEX_HOME="$CODEX_HOME" "$CODEX_BIN" mcp remove aside >/dev/null 2>&1 || true
   CODEX_HOME="$CODEX_HOME" "$CODEX_BIN" mcp remove dispatch >/dev/null 2>&1 || true
+  # `codex mcp remove` deletes the whole [mcp_servers.aside] block (tool_timeout_sec
+  # with it); strip explicitly too so no orphaned override can linger.
+  codex_set_tool_timeout aside ""
   echo "Removed Codex MCP registrations from $CODEX_HOME/config.toml"
 }
 
