@@ -135,6 +135,11 @@ pub struct SteerParams {
     pub model: Option<String>,
     /// Optional reasoning effort for the follow-up run.
     pub reasoning_effort: Option<String>,
+    /// Override the one-active-dispatch-per-working_dir guard for this resumed run.
+    /// Omitted → inherit the parent task's persisted allow_concurrent; set → override
+    /// it (so `false` re-enforces the guard even if the parent bypassed it).
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub allow_concurrent: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]

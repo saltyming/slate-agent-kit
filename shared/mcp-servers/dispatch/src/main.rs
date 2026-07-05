@@ -168,6 +168,7 @@ impl Dispatch {
                 nonce: Some(nonce.clone()),
                 rollout_start_line: None,
                 model_fallback: model_fallback_json,
+                allow_concurrent,
             };
             let enforce_dir = if allow_concurrent {
                 None
@@ -473,7 +474,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "Interrupt a delegated task and steer it with a NEW instruction, continuing the SAME backend session (its accumulated context + the files it already wrote are preserved when the backend supports sessions). If the task is still running it is cancelled first; then the backend resumes the session with your instruction. Creates a new linked task (parent_id = the steered task) so the turn history shows in dispatch_list. Returns the new id — poll dispatch_status / dispatch_logs. Use this for mid-flight 'no, do it this way instead' redirection."
+        description = "Interrupt a delegated task and steer it with a NEW instruction, continuing the SAME backend session (its accumulated context + the files it already wrote are preserved when the backend supports sessions). If the task is still running it is cancelled first; then the backend resumes the session with your instruction. Creates a new linked task (parent_id = the steered task) so the turn history shows in dispatch_list. Returns the new id — poll dispatch_status / dispatch_logs. Use this for mid-flight 'no, do it this way instead' redirection. Inherits the parent task's allow_concurrent by default; pass allow_concurrent to override the one-run-per-working_dir guard for the resumed run — needed to steer a task in a directory that has OTHER concurrent runs (allow_concurrent=false re-enforces the guard even if the parent bypassed it)."
     )]
     async fn dispatch_steer(
         &self,
@@ -575,6 +576,10 @@ impl Dispatch {
         let eff_effort =
             nonempty(p.reasoning_effort.clone()).or_else(|| parent.reasoning_effort.clone());
         let eff_sandbox = parent.sandbox.clone();
+        // A steer inherits the parent's persisted allow_concurrent unless the steer
+        // call sets it explicitly (Some(false) is a real override, not "unset").
+        let eff_allow_concurrent =
+            effective_allow_concurrent(p.allow_concurrent, parent.allow_concurrent);
 
         let new_id = {
             let mut conn = match self.lock_db() {
@@ -598,13 +603,19 @@ impl Dispatch {
                 // mid-resumed-session is a materially harder problem than a
                 // fresh-attempt fallback and is out of scope here.
                 model_fallback: None,
+                // Persist the *effective* value so a chain of steers keeps inheriting.
+                allow_concurrent: eff_allow_concurrent,
             };
             match store::insert_queued(
                 &mut conn,
                 &new,
                 self.owner_pid,
                 &self.owner_instance,
-                Some(parent.working_dir.as_str()),
+                if eff_allow_concurrent {
+                    None
+                } else {
+                    Some(parent.working_dir.as_str())
+                },
             ) {
                 Ok(store::InsertOutcome::Created(nid)) => nid,
                 Ok(store::InsertOutcome::Conflict(existing)) => {
@@ -657,7 +668,8 @@ impl Dispatch {
             "sandbox": eff_sandbox,
             "model": eff_model,
             "reasoning_effort": eff_effort,
-            "note": "steering: the backend session was resumed with your new instruction (it inherits the echoed sandbox/model/reasoning_effort unless you overrode them) — poll dispatch_status / dispatch_logs",
+            "allow_concurrent": eff_allow_concurrent,
+            "note": "steering: the backend session was resumed with your new instruction (it inherits the echoed sandbox/model/reasoning_effort/allow_concurrent unless you overrode them) — poll dispatch_status / dispatch_logs",
         })))
     }
 
@@ -1090,6 +1102,13 @@ fn reentry_refusal() -> Option<CallToolResult> {
     } else {
         None
     }
+}
+
+/// A steer inherits the parent task's persisted allow_concurrent unless the steer
+/// call sets it explicitly. `Some(false)` is a real override (re-enforce the guard),
+/// distinct from `None` (inherit) — hence `unwrap_or(parent)`, NOT `unwrap_or(false)`.
+fn effective_allow_concurrent(param: Option<bool>, parent: bool) -> bool {
+    param.unwrap_or(parent)
 }
 
 fn nonempty(o: Option<String>) -> Option<String> {
@@ -1630,5 +1649,15 @@ mod tests {
             "state dir without a project root must not be keyed to a real path: {}",
             p.display()
         );
+    }
+
+    #[test]
+    fn effective_allow_concurrent_precedence() {
+        // No steer override → inherit the parent's persisted value.
+        assert!(effective_allow_concurrent(None, true));
+        assert!(!effective_allow_concurrent(None, false));
+        // Explicit steer value overrides the parent (both directions).
+        assert!(effective_allow_concurrent(Some(true), false));
+        assert!(!effective_allow_concurrent(Some(false), true));
     }
 }

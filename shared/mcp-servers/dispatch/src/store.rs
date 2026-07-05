@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS dispatch_tasks (
     rollout_start_line INTEGER,
     model_fallback   TEXT,
     final_model      TEXT,
-    fallback_history TEXT
+    fallback_history TEXT,
+    allow_concurrent INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_plan_status ON dispatch_tasks(plan_id, status);
 CREATE INDEX IF NOT EXISTS idx_dispatch_dir_status  ON dispatch_tasks(working_dir, status);
@@ -72,7 +73,7 @@ CREATE TABLE IF NOT EXISTS dispatch_counters (
 const COLS: &str = "id, plan_id, backend, working_dir, title, spec_json, prompt, status, \
 model, reasoning_effort, sandbox, backend_version, argv, owner_pid, owner_instance, child_pid, \
 exit_code, result, error, created_at, started_at, finished_at, session_id, rollout_path, parent_id, \
-nonce, rollout_start_line, model_fallback, final_model, fallback_history";
+nonce, rollout_start_line, model_fallback, final_model, fallback_history, allow_concurrent";
 
 pub fn init(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA_SQL)?;
@@ -88,6 +89,7 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
         ("model_fallback", "TEXT"),
         ("final_model", "TEXT"),
         ("fallback_history", "TEXT"),
+        ("allow_concurrent", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         let _ = conn.execute(
             &format!("ALTER TABLE dispatch_tasks ADD COLUMN {col} {decl}"),
@@ -123,6 +125,10 @@ pub struct NewTask {
     /// transient backend error. None/empty for dispatch_steer follow-ups — a
     /// resumed session stays on one model.
     pub model_fallback: Option<String>,
+    /// Whether this task bypasses the one-run-per-working_dir guard. Persisted
+    /// (mirrors submit's `allow_concurrent`) so a steer chain can inherit it.
+    /// Stored as INTEGER 0/1.
+    pub allow_concurrent: bool,
 }
 
 /// A full row read back from the DB.
@@ -164,6 +170,9 @@ pub struct TaskRow {
     /// JSON array of `{model, error_kind, detail}` for every fallback attempt that
     /// was tried and discarded before `final_model`. Absent/null if no retry happened.
     pub fallback_history: Option<String>,
+    /// Whether this task bypasses the one-run-per-working_dir guard. A steer
+    /// inherits it from the parent unless the steer call overrides it.
+    pub allow_concurrent: bool,
 }
 
 fn row_from(r: &Row) -> rusqlite::Result<TaskRow> {
@@ -198,6 +207,7 @@ fn row_from(r: &Row) -> rusqlite::Result<TaskRow> {
         model_fallback: r.get(27)?,
         final_model: r.get(28)?,
         fallback_history: r.get(29)?,
+        allow_concurrent: r.get(30)?,
     })
 }
 
@@ -224,6 +234,7 @@ impl TaskRow {
             "finished_at": self.finished_at,
             "parent_id": self.parent_id,
             "final_model": self.final_model,
+            "allow_concurrent": self.allow_concurrent,
         });
         if include_result {
             v["result"] = json!(self.result);
@@ -326,8 +337,8 @@ pub fn insert_queued(
         "INSERT INTO dispatch_tasks \
          (id, plan_id, backend, working_dir, title, spec_json, prompt, status, \
           model, reasoning_effort, sandbox, owner_pid, owner_instance, parent_id, \
-          nonce, rollout_start_line, model_fallback) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+          nonce, rollout_start_line, model_fallback, allow_concurrent) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             id,
             t.plan_id,
@@ -346,6 +357,7 @@ pub fn insert_queued(
             t.nonce,
             t.rollout_start_line,
             t.model_fallback,
+            t.allow_concurrent,
         ],
     )?;
     tx.execute(
@@ -514,6 +526,7 @@ mod tests {
             nonce: None,
             rollout_start_line: None,
             model_fallback: None,
+            allow_concurrent: false,
         }
     }
 
@@ -587,6 +600,79 @@ mod tests {
         let b = insert_queued(&mut c, &sample_task(), 1, "i1", None).unwrap();
         assert!(matches!(a, InsertOutcome::Created(_)));
         assert!(matches!(b, InsertOutcome::Created(_)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The persisted `allow_concurrent` flag round-trips through insert + read
+    /// (this is the first bool column, so the 0/1 mapping is asserted explicitly).
+    #[test]
+    fn allow_concurrent_persists_round_trip() {
+        let path =
+            std::env::temp_dir().join(format!("dispatch-ac-roundtrip-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut c = open(&path);
+        init(&c).unwrap();
+
+        let mut t_true = sample_task();
+        t_true.allow_concurrent = true;
+        let id_true = match insert_queued(&mut c, &t_true, 1, "i1", None).unwrap() {
+            InsertOutcome::Created(id) => id,
+            InsertOutcome::Conflict(_) => panic!("expected Created"),
+        };
+        let mut t_false = sample_task();
+        t_false.allow_concurrent = false;
+        let id_false = match insert_queued(&mut c, &t_false, 1, "i1", None).unwrap() {
+            InsertOutcome::Created(id) => id,
+            InsertOutcome::Conflict(_) => panic!("expected Created"),
+        };
+
+        assert!(get(&c, &id_true).unwrap().unwrap().allow_concurrent);
+        assert!(!get(&c, &id_false).unwrap().unwrap().allow_concurrent);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A `dispatch.db` created before the column existed still opens, migrates,
+    /// and reads back with `allow_concurrent` backfilled to false.
+    #[test]
+    fn migration_adds_allow_concurrent_to_old_db() {
+        let path =
+            std::env::temp_dir().join(format!("dispatch-ac-migrate-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        // The current schema WITHOUT the allow_concurrent column (a pre-change DB).
+        let old_schema = "\
+CREATE TABLE dispatch_tasks (
+    id TEXT PRIMARY KEY, plan_id TEXT, backend TEXT NOT NULL DEFAULT 'codex',
+    working_dir TEXT NOT NULL, title TEXT, spec_json TEXT NOT NULL, prompt TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued', model TEXT, reasoning_effort TEXT,
+    sandbox TEXT NOT NULL DEFAULT 'workspace-write', backend_version TEXT, argv TEXT,
+    owner_pid INTEGER, owner_instance TEXT, child_pid INTEGER, exit_code INTEGER,
+    result TEXT, error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at TEXT, finished_at TEXT, session_id TEXT, rollout_path TEXT, parent_id TEXT,
+    nonce TEXT, rollout_start_line INTEGER, model_fallback TEXT, final_model TEXT,
+    fallback_history TEXT
+);
+CREATE TABLE dispatch_counters (scope TEXT PRIMARY KEY, next_id INTEGER NOT NULL DEFAULT 1);
+";
+        {
+            let c = open(&path);
+            c.execute_batch(old_schema).unwrap();
+            c.execute(
+                "INSERT INTO dispatch_tasks (id, backend, working_dir, spec_json, prompt) \
+                 VALUES ('d-1', 'codex', '/tmp/x', '{}', 'noop')",
+                [],
+            )
+            .unwrap();
+        }
+        // Reopen (as new code would) and migrate.
+        let c = open(&path);
+        init(&c).unwrap();
+        let row = get(&c, "d-1")
+            .unwrap()
+            .expect("old row still readable after migration");
+        assert!(
+            !row.allow_concurrent,
+            "an old row must backfill allow_concurrent to false"
+        );
         let _ = std::fs::remove_file(&path);
     }
 }
