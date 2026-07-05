@@ -83,6 +83,12 @@ pub struct SubmitParams {
 pub struct StatusParams {
     /// Task id, e.g. "d-7".
     pub id: String,
+    /// Also return the accepted `spec`, the rendered `prompt`, and `argv`. Default
+    /// false — status is compact by default so repeated polling of a long run does
+    /// not re-echo the whole spec every call. Set true to re-read the submitted
+    /// spec (e.g. for a task this session did not submit).
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub include_spec: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]

@@ -226,7 +226,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "Get the status and (when terminal) the captured result / error of a dispatched task by id. Statuses: queued, running, succeeded, failed, cancelled, interrupted."
+        description = "Get the status and (when terminal) the captured result / error of a dispatched task by id. Compact by default: the accepted spec, the rendered prompt, and argv are OMITTED so repeated polling of a long run doesn't re-echo the whole spec every call — pass include_spec=true to include them (e.g. to read the accepted spec of a task this session did not submit). Statuses: queued, running, succeeded, failed, cancelled, interrupted."
     )]
     async fn dispatch_status(
         &self,
@@ -241,7 +241,7 @@ impl Dispatch {
             Err(e) => return Ok(e),
         };
         match store::get(&conn, id) {
-            Ok(Some(row)) => Ok(json_ok(row.to_json(true))),
+            Ok(Some(row)) => Ok(json_ok(row.to_json(true, p.include_spec.unwrap_or(false)))),
             Ok(None) => Ok(err_struct(
                 ErrCode::NoSuchTask,
                 format!("no task with id {id:?}"),
@@ -263,7 +263,7 @@ impl Dispatch {
         };
         match store::list(&conn, nonempty_ref(&p.plan_id), nonempty_ref(&p.status)) {
             Ok(rows) => {
-                let tasks: Vec<Value> = rows.iter().map(|r| r.to_json(false)).collect();
+                let tasks: Vec<Value> = rows.iter().map(|r| r.to_json(false, false)).collect();
                 Ok(json_ok(json!({ "count": tasks.len(), "tasks": tasks })))
             }
             Err(e) => Ok(err_struct(ErrCode::DbError, format!("db error: {e}"))),
@@ -459,10 +459,15 @@ impl Dispatch {
         let kinds = p
             .kinds
             .unwrap_or_else(|| rollout::default_kinds(&row.backend));
+        // Elide the dispatch-authored prompt echo only for fresh submits — a
+        // steered task (parent_id set) carries a new user instruction that must
+        // stay visible, and its pre-steer lines are already trimmed by
+        // rollout_start_line. Never elides under raw=true (handled above).
+        let elide = row.parent_id.is_none().then_some(row.prompt.as_str());
         let rendered = if row.backend == "claude" {
-            rollout::curate_claude(&jsonl, &kinds)
+            rollout::curate_claude(&jsonl, &kinds, elide)
         } else {
-            rollout::curate(&jsonl, &kinds)
+            rollout::curate(&jsonl, &kinds, elide)
         };
         let (text, s, e, capped) = rollout::window(&rendered.lines, start, end);
         Ok(json_ok(json!({
@@ -674,7 +679,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "Bounded long-poll: block until a dispatched task reaches a terminal status (succeeded / failed / cancelled / interrupted) or timeout_ms elapses (default 30s, capped at 120s), then return compact task status plus a small curated `log_tail` and `timed_out` flag. This is NOT an unbounded wait — a multi-minute run times out with `timed_out: true` and a non-terminal status. dispatch has NO push notification: if the task is still non-terminal, either re-invoke dispatch_wait now to keep blocking, or — if ending the turn — schedule a follow-up dispatch_status/dispatch_wait check first where the active harness has a scheduling mechanism, or otherwise tell the user explicitly the task is still running and they'll need to ask you to check back. Ending the turn with nothing armed and no signal to the user strands the task with no way to learn it finished. Use dispatch_logs for the full timeline and dispatch_status for the full captured result/spec."
+        description = "Bounded long-poll: block until a dispatched task reaches a terminal status (succeeded / failed / cancelled / interrupted) or timeout_ms elapses (default 30s, capped at 120s), then return compact task status plus a small curated `log_tail` and `timed_out` flag. This is NOT an unbounded wait — a multi-minute run times out with `timed_out: true` and a non-terminal status. dispatch has NO push notification: if the task is still non-terminal, either re-invoke dispatch_wait now to keep blocking, or — if ending the turn — schedule a follow-up dispatch_status/dispatch_wait check first where the active harness has a scheduling mechanism, or otherwise tell the user explicitly the task is still running and they'll need to ask you to check back. Ending the turn with nothing armed and no signal to the user strands the task with no way to learn it finished. Use dispatch_logs for the full timeline and dispatch_status for the captured result (add include_spec=true there to also re-read the accepted spec/prompt)."
     )]
     async fn dispatch_wait(
         &self,
@@ -742,7 +747,7 @@ impl Dispatch {
     }
 
     fn wait_json(&self, row: &store::TaskRow, waited_ms: u64, timed_out: bool) -> Value {
-        let mut v = row.to_json(false);
+        let mut v = row.to_json(false, false);
         v["timed_out"] = json!(timed_out);
         v["waited_ms"] = json!(waited_ms);
         v["has_result"] = json!(row.result.is_some());
@@ -758,7 +763,7 @@ impl Dispatch {
         v["next"] = json!({
             "wait": format!("dispatch_wait(id={})", row.id),
             "logs": format!("dispatch_logs(id={}) for the full curated timeline", row.id),
-            "status": format!("dispatch_status(id={}) for captured result/error/spec", row.id),
+            "status": format!("dispatch_status(id={}) for the captured result/error (add include_spec=true to also re-read the submitted spec)", row.id),
         });
         v
     }
@@ -788,10 +793,12 @@ impl Dispatch {
             }
         };
         let kinds = rollout::default_kinds(&row.backend);
+        // Fresh-submit only (steer keeps its new instruction visible) — see dispatch_logs.
+        let elide = row.parent_id.is_none().then_some(row.prompt.as_str());
         let rendered = if row.backend == "claude" {
-            rollout::curate_claude(&jsonl, &kinds)
+            rollout::curate_claude(&jsonl, &kinds, elide)
         } else {
-            rollout::curate(&jsonl, &kinds)
+            rollout::curate(&jsonl, &kinds, elide)
         };
         let (text, s, e, capped) = rollout::window_with_limits(
             &rendered.lines,

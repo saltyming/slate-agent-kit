@@ -212,10 +212,13 @@ fn row_from(r: &Row) -> rusqlite::Result<TaskRow> {
 }
 
 impl TaskRow {
-    /// JSON view for tool output. `include_result` controls whether the (large)
-    /// captured stdout/error is inlined — list responses omit it, status
-    /// includes it.
-    pub fn to_json(&self, include_result: bool) -> Value {
+    /// JSON view for tool output. `include_result` inlines the (large) captured
+    /// stdout/error plus operational/fallback detail — list responses omit it,
+    /// status includes it. `include_spec` inlines the (very large) request-side
+    /// audit fields — the accepted `spec`, the rendered `prompt` (a second copy of
+    /// the spec), and `argv`; omitted by default so repeated polling of a task
+    /// does not re-echo its whole spec on every call.
+    pub fn to_json(&self, include_result: bool, include_spec: bool) -> Value {
         let mut v = json!({
             "id": self.id,
             "plan_id": self.plan_id,
@@ -239,10 +242,6 @@ impl TaskRow {
         if include_result {
             v["result"] = json!(self.result);
             v["error"] = json!(self.error);
-            v["argv"] = json!(self.argv);
-            v["prompt"] = json!(self.prompt);
-            v["spec"] = serde_json::from_str::<Value>(&self.spec_json)
-                .unwrap_or_else(|_| json!(self.spec_json));
             v["owner_pid"] = json!(self.owner_pid);
             v["owner_instance"] = json!(self.owner_instance);
             v["session_id"] = json!(self.session_id);
@@ -284,6 +283,12 @@ impl TaskRow {
                     failed.join(", "),
                 ));
             }
+        }
+        if include_spec {
+            v["argv"] = json!(self.argv);
+            v["prompt"] = json!(self.prompt);
+            v["spec"] = serde_json::from_str::<Value>(&self.spec_json)
+                .unwrap_or_else(|_| json!(self.spec_json));
         }
         v
     }
@@ -674,5 +679,83 @@ CREATE TABLE dispatch_counters (scope TEXT PRIMARY KEY, next_id INTEGER NOT NULL
             "an old row must backfill allow_concurrent to false"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Insert a task with the given spec_json + prompt, read it back, and stamp
+    /// terminal result/error/argv so the `to_json` views can be exercised.
+    fn terminal_row(tag: &str, spec_json: &str, prompt: &str) -> TaskRow {
+        let path =
+            std::env::temp_dir().join(format!("dispatch-tojson-{tag}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut c = open(&path);
+        init(&c).unwrap();
+        let mut t = sample_task();
+        t.spec_json = spec_json.to_string();
+        t.prompt = prompt.to_string();
+        let id = match insert_queued(&mut c, &t, 1, "i1", None).unwrap() {
+            InsertOutcome::Created(id) => id,
+            InsertOutcome::Conflict(_) => panic!("expected Created"),
+        };
+        let mut row = get(&c, &id).unwrap().unwrap();
+        row.result = Some("build ok".to_string());
+        row.error = Some("a warning".to_string());
+        row.argv = Some(r#"["codex","exec"]"#.to_string());
+        let _ = std::fs::remove_file(&path);
+        row
+    }
+
+    /// Compact status (the default) must drop the giant spec/prompt/argv but keep
+    /// the terminal result/error — the fused-boolean hazard: flipping status to
+    /// `to_json(false)` would silently drop result/error too.
+    #[test]
+    fn status_compact_omits_spec_prompt_argv_but_keeps_result() {
+        let row = terminal_row(
+            "compact",
+            r#"{"objective":"do the thing"}"#,
+            "RENDERED PROMPT",
+        );
+        let v = row.to_json(true, false);
+        assert!(v.get("result").is_some(), "compact status must keep result");
+        assert!(v.get("error").is_some(), "compact status must keep error");
+        assert!(v.get("spec").is_none(), "compact status must omit spec");
+        assert!(v.get("prompt").is_none(), "compact status must omit prompt");
+        assert!(v.get("argv").is_none(), "compact status must omit argv");
+    }
+
+    /// `include_spec=true` re-adds the accepted spec (parsed), the rendered prompt,
+    /// and argv, without dropping the terminal result.
+    #[test]
+    fn status_verbose_includes_spec() {
+        let row = terminal_row(
+            "verbose",
+            r#"{"objective":"do the thing"}"#,
+            "RENDERED PROMPT",
+        );
+        let v = row.to_json(true, true);
+        assert!(
+            v["spec"].is_object(),
+            "include_spec re-parses spec_json to an object"
+        );
+        assert_eq!(v["spec"]["objective"], json!("do the thing"));
+        assert!(
+            v.get("prompt").is_some(),
+            "include_spec returns the rendered prompt"
+        );
+        assert!(v.get("argv").is_some(), "include_spec returns argv");
+        assert!(v.get("result").is_some(), "result stays alongside the spec");
+    }
+
+    /// The list form (`to_json(false, false)`) stays minimal: no result, no spec.
+    #[test]
+    fn list_form_omits_result_and_spec() {
+        let row = terminal_row("list", r#"{"objective":"x"}"#, "RENDERED PROMPT");
+        let v = row.to_json(false, false);
+        assert!(v.get("result").is_none(), "list omits the captured result");
+        assert!(v.get("error").is_none(), "list omits error");
+        assert!(v.get("spec").is_none(), "list omits spec");
+        assert!(v.get("prompt").is_none(), "list omits prompt");
+        assert!(v.get("id").is_some());
+        assert!(v.get("status").is_some());
+        assert!(v.get("allow_concurrent").is_some());
     }
 }

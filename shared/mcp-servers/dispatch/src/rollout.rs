@@ -64,9 +64,10 @@ pub struct Rendered {
 /// Curate a rollout JSONL string into a compact timeline, keeping only the
 /// selected `kinds`. Unparseable lines (e.g. a half-written trailing line while
 /// codex is still appending) are skipped.
-pub fn curate(jsonl: &str, kinds: &[String]) -> Rendered {
+pub fn curate(jsonl: &str, kinds: &[String], elide_prompt: Option<&str>) -> Rendered {
     let mut lines = Vec::new();
     let mut part_indexes: HashMap<String, usize> = HashMap::new();
+    let mut elided = false;
     for raw in jsonl.lines() {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -79,6 +80,19 @@ pub fn curate(jsonl: &str, kinds: &[String]) -> Rendered {
         if let Some((kind, line)) = render(&o)
             && kinds.iter().any(|k| k == kind)
         {
+            // Collapse the backend's echo of the dispatch-authored prompt (and its
+            // duplicate re-echo) to a one-line placeholder — it re-states the whole
+            // spec the caller already has.
+            let line = match elide_prompt {
+                Some(p) if message_content(&o).is_some_and(|c| is_prompt_echo(c, p)) => {
+                    if elided {
+                        continue;
+                    }
+                    elided = true;
+                    elided_prompt_line(p)
+                }
+                _ => line,
+            };
             if let Some(part_id) = part_id(&o) {
                 if let Some(idx) = part_indexes.get(part_id).copied() {
                     lines[idx] = line;
@@ -102,6 +116,43 @@ fn part_id(o: &Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+/// Collapse whitespace and strip a trailing `[dispatch-task: …]` marker so a
+/// backend's verbatim echo of the dispatch-authored prompt can be recognized
+/// even if it reflowed the text or dropped the marker.
+fn canonicalize_prompt(s: &str) -> String {
+    let s = match s.rfind("[dispatch-task:") {
+        Some(idx) => &s[..idx],
+        None => s,
+    };
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// True when `content` is a backend echo of the dispatch-authored `prompt`.
+fn is_prompt_echo(content: &str, prompt: &str) -> bool {
+    canonicalize_prompt(content) == canonicalize_prompt(prompt)
+}
+
+/// The one-line placeholder that replaces an elided prompt echo.
+fn elided_prompt_line(prompt: &str) -> String {
+    format!(
+        "[dispatch prompt elided — {} bytes; re-read with dispatch_status include_spec=true]",
+        prompt.len()
+    )
+}
+
+/// Raw user/agent message text of a codex/OpenCode event, if it is one — the
+/// candidate a prompt-echo check runs against.
+fn message_content(o: &Value) -> Option<&str> {
+    if o.get("type")?.as_str()? != "event_msg" {
+        return None;
+    }
+    let p = o.get("payload")?;
+    match p.get("type").and_then(Value::as_str).unwrap_or("") {
+        "user_message" | "agent_message" => p.get("message").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
 fn render(o: &Value) -> Option<(&'static str, String)> {
     let t = o.get("type")?.as_str()?;
     let p = o.get("payload")?;
@@ -120,12 +171,18 @@ fn render(o: &Value) -> Option<(&'static str, String)> {
             format!("[user] {}", flatten(field_str(p, "message")))
         }
         ("event_msg", "agent_message") => {
+            let flat = flatten(field_str(p, "message"));
+            // opencode/MiniMax sometimes emits a bare "</think>" / "<think>" as an
+            // agent message — pure noise, drop it (exact match only, never a substring).
+            if flat == "</think>" || flat == "<think>" {
+                return None;
+            }
             let backend = o
                 .get("backend")
                 .and_then(|v| v.as_str())
                 .or_else(|| p.get("backend").and_then(|v| v.as_str()))
                 .unwrap_or("codex");
-            format!("[{backend}] {}", flatten(field_str(p, "message")))
+            format!("[{backend}] {flat}")
         }
         ("response_item", "custom_tool_call") => {
             let name = field_str(p, "name");
@@ -312,8 +369,9 @@ fn find_claude_session_in(root: &Path, sid: &str) -> Option<PathBuf> {
 /// with `message.content` blocks (`text`, `tool_use`, `tool_result`,
 /// `thinking`); other entry types (queue-operation, attachment, summary, …)
 /// are noise. There are no explicit lifecycle events in this format.
-pub fn curate_claude(jsonl: &str, kinds: &[String]) -> Rendered {
+pub fn curate_claude(jsonl: &str, kinds: &[String], elide_prompt: Option<&str>) -> Rendered {
     let mut lines = Vec::new();
+    let mut elided = false;
     for raw in jsonl.lines() {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -333,8 +391,18 @@ pub fn curate_claude(jsonl: &str, kinds: &[String]) -> Rendered {
         match content {
             Value::String(s) => {
                 if !s.trim().is_empty() && kinds.iter().any(|k| k == "messages") {
-                    let tag = if ty == "user" { "user" } else { "claude" };
-                    lines.push(format!("[{tag}] {}", flatten(s)));
+                    match elide_prompt {
+                        Some(p) if ty == "user" && is_prompt_echo(s, p) => {
+                            if !elided {
+                                elided = true;
+                                lines.push(elided_prompt_line(p));
+                            }
+                        }
+                        _ => {
+                            let tag = if ty == "user" { "user" } else { "claude" };
+                            lines.push(format!("[{tag}] {}", flatten(s)));
+                        }
+                    }
                 }
             }
             Value::Array(items) => {
@@ -346,8 +414,19 @@ pub fn curate_claude(jsonl: &str, kinds: &[String]) -> Rendered {
                             if t.trim().is_empty() {
                                 continue;
                             }
-                            let tag = if ty == "user" { "user" } else { "claude" };
-                            ("messages", format!("[{tag}] {}", flatten(t)))
+                            match elide_prompt {
+                                Some(p) if ty == "user" && is_prompt_echo(t, p) => {
+                                    if elided {
+                                        continue;
+                                    }
+                                    elided = true;
+                                    ("messages", elided_prompt_line(p))
+                                }
+                                _ => {
+                                    let tag = if ty == "user" { "user" } else { "claude" };
+                                    ("messages", format!("[{tag}] {}", flatten(t)))
+                                }
+                            }
                         }
                         "thinking" => {
                             let t = item.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
@@ -600,7 +679,7 @@ mod tests {
 
     #[test]
     fn curate_keeps_signal_drops_noise_and_tolerates_partial_tail() {
-        let r = curate(SAMPLE, &default_kinds("codex"));
+        let r = curate(SAMPLE, &default_kinds("codex"), None);
         // default kinds exclude reasoning; keep: started, user, tool, edit, codex, complete = 6
         assert_eq!(r.total, 6, "lines: {:?}", r.lines);
         assert!(r.lines.iter().any(|l| l.starts_with("[user]")));
@@ -619,7 +698,7 @@ mod tests {
     #[test]
     fn curate_reasoning_opt_in() {
         let kinds: Vec<String> = vec!["reasoning".to_string()];
-        let r = curate(SAMPLE, &kinds);
+        let r = curate(SAMPLE, &kinds, None);
         assert_eq!(r.total, 1);
         assert_eq!(r.lines[0], "[thinking] (reasoning)");
     }
@@ -645,7 +724,7 @@ mod tests {
         let jsonl = r#"
 {"type":"response_item","payload":{"type":"reasoning","text":"checking the state","partID":"part-reasoning"},"backend":"opencode"}
 "#;
-        let r = curate(jsonl, &default_kinds("opencode"));
+        let r = curate(jsonl, &default_kinds("opencode"), None);
         assert_eq!(r.total, 1);
         assert_eq!(r.lines[0], "[thinking] checking the state");
     }
@@ -658,7 +737,7 @@ mod tests {
 {"type":"event_msg","payload":{"type":"agent_message","message":"final","partID":"part-text"},"backend":"opencode"}
 {"type":"response_item","payload":{"type":"reasoning","text":"final thought","partID":"part-reasoning"},"backend":"opencode"}
 "#;
-        let r = curate(jsonl, &default_kinds("opencode"));
+        let r = curate(jsonl, &default_kinds("opencode"), None);
         assert_eq!(r.total, 2, "lines: {:?}", r.lines);
         assert_eq!(r.lines[0], "[opencode] final");
         assert_eq!(r.lines[1], "[thinking] final thought");
@@ -671,15 +750,15 @@ mod tests {
 {"type":"response_item","payload":{"type":"custom_tool_call_output","output":"file contents here"}}
 "#;
         // default kinds (both backends) keep the call, drop the raw result
-        let r = curate(jsonl, &default_kinds("opencode"));
+        let r = curate(jsonl, &default_kinds("opencode"), None);
         assert_eq!(r.total, 1, "lines: {:?}", r.lines);
         assert!(r.lines[0].starts_with("[tool] read"));
-        let r_codex = curate(jsonl, &default_kinds("codex"));
+        let r_codex = curate(jsonl, &default_kinds("codex"), None);
         assert_eq!(r_codex.total, 1, "lines: {:?}", r_codex.lines);
 
         // explicit opt-in surfaces the result
         let kinds: Vec<String> = vec!["tool_results".to_string()];
-        let r2 = curate(jsonl, &kinds);
+        let r2 = curate(jsonl, &kinds, None);
         assert_eq!(r2.total, 1);
         assert_eq!(r2.lines[0], "[result] file contents here");
     }
@@ -693,7 +772,7 @@ mod tests {
              {{\"type\":\"response_item\",\"payload\":{{\"type\":\"reasoning\",\"text\":\"{long}\"}},\"backend\":\"opencode\"}}\n\
              {{\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"{long}\"}}}}\n"
         );
-        let r = curate(&jsonl, &default_kinds("opencode"));
+        let r = curate(&jsonl, &default_kinds("opencode"), None);
         assert_eq!(r.total, 3, "lines: {:?}", r.lines);
         for line in &r.lines {
             assert!(!line.ends_with('…'), "signal line was truncated: {line}");
@@ -710,7 +789,7 @@ mod tests {
              {{\"type\":\"response_item\",\"payload\":{{\"type\":\"custom_tool_call_output\",\"output\":\"{long_output}\"}}}}\n"
         );
         let kinds: Vec<String> = vec!["tools".to_string(), "tool_results".to_string()];
-        let r = curate(&jsonl, &kinds);
+        let r = curate(&jsonl, &kinds, None);
         assert_eq!(r.total, 2, "lines: {:?}", r.lines);
         assert!(
             r.lines[0].ends_with('…'),
@@ -825,7 +904,7 @@ mod tests {
                 .replace('\n', " "),
         ]
         .join("\n");
-        let r = curate_claude(&jsonl, &default_kinds("claude"));
+        let r = curate_claude(&jsonl, &default_kinds("claude"), None);
         // defaults include reasoning (plaintext) but exclude tool_results
         assert_eq!(r.total, 5, "lines: {:?}", r.lines);
         assert_eq!(r.lines[0], "[user] do the task");
@@ -834,7 +913,7 @@ mod tests {
         assert!(r.lines[3].starts_with("[tool] Bash:"));
         assert_eq!(r.lines[4], "[edit] Edit main.rs");
 
-        let results_only = curate_claude(&jsonl, &["tool_results".to_string()]);
+        let results_only = curate_claude(&jsonl, &["tool_results".to_string()], None);
         assert_eq!(results_only.total, 1);
         assert_eq!(results_only.lines[0], "[result] test output here");
     }
@@ -884,5 +963,132 @@ mod tests {
         assert_eq!(got, Some((marked, "bbb".to_string())));
         assert!(locate_by_nonce_in(&root, Path::new("/w"), "absent").is_none());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── prompt-echo elision (Part B) ──────────────────────────
+
+    /// opencode logs the dispatch prompt twice — as a `user_message` and again as
+    /// an `agent_message` re-echo. Both collapse to ONE placeholder (the marker is
+    /// stripped and whitespace normalized before matching), and real activity after
+    /// them survives.
+    #[test]
+    fn curate_elides_initial_prompt_and_duplicate_echo() {
+        let prompt =
+            "Do the thing with SECRET_OBJECTIVE_TOKEN.\nConstraints: none.\n[dispatch-task: abc-1]";
+        // the [opencode] re-echo dropped the marker and reflowed whitespace — still matches.
+        let jsonl = format!(
+            "{}\n{}\n{}\n",
+            json!({"type":"event_msg","payload":{"type":"user_message","message": prompt}}),
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"Do the thing with SECRET_OBJECTIVE_TOKEN.   Constraints: none."},"backend":"opencode"}),
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"real progress here"},"backend":"opencode"}),
+        );
+        let r = curate(&jsonl, &default_kinds("opencode"), Some(prompt));
+        assert_eq!(
+            r.lines.len(),
+            2,
+            "prompt + duplicate → one placeholder; real msg survives"
+        );
+        assert!(r.lines[0].contains("dispatch prompt elided"));
+        assert!(
+            !r.lines.iter().any(|l| l.contains("SECRET_OBJECTIVE_TOKEN")),
+            "the spec must not appear anywhere in the curated log"
+        );
+        assert!(r.lines.iter().any(|l| l.contains("real progress here")));
+    }
+
+    /// The elision matches by CONTENT, not position — a later `[user]` turn that is
+    /// NOT the dispatch prompt (e.g. a steer instruction) must survive. This is the
+    /// analogue of the `unwrap_or(parent)` hazard: a position rule would eat it.
+    #[test]
+    fn curate_content_match_spares_a_different_user_turn() {
+        let prompt = "Initial dispatch objective ALPHA.\n[dispatch-task: t-1]";
+        let jsonl = format!(
+            "{}\n{}\n",
+            json!({"type":"event_msg","payload":{"type":"user_message","message": prompt}}),
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"steer: now also do BETA"}}),
+        );
+        let r = curate(&jsonl, &default_kinds("opencode"), Some(prompt));
+        assert!(r.lines.iter().any(|l| l.contains("dispatch prompt elided")));
+        assert!(
+            !r.lines.iter().any(|l| l.contains("ALPHA")),
+            "the matched prompt is gone"
+        );
+        assert!(
+            r.lines
+                .iter()
+                .any(|l| l.contains("steer: now also do BETA")),
+            "a non-prompt user turn (a steer) must not be eaten"
+        );
+    }
+
+    /// codex records the dispatch prompt as a `user_message` among the first events
+    /// (the same shape `locate_by_nonce` relies on), so the same canonical-match
+    /// elision fires for codex — Part B is not opencode-only.
+    #[test]
+    fn curate_elides_codex_initial_prompt() {
+        let prompt = "Codex objective DELTA.\n[dispatch-task: cx-1]";
+        let jsonl = format!(
+            "{}\n{}\n",
+            json!({"type":"event_msg","payload":{"type":"user_message","message": prompt}}),
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"codex reply"}}),
+        );
+        let r = curate(&jsonl, &default_kinds("codex"), Some(prompt));
+        assert!(
+            r.lines.iter().any(|l| l.contains("dispatch prompt elided")),
+            "codex prompt elides"
+        );
+        assert!(!r.lines.iter().any(|l| l.contains("DELTA")));
+        assert!(r.lines.iter().any(|l| l.contains("codex reply")));
+    }
+
+    /// Claude records the prompt as a `user` text content block == row.prompt, so
+    /// elision fires; the assistant's own turns are untouched.
+    #[test]
+    fn curate_claude_elides_initial_prompt() {
+        let prompt = "Claude objective GAMMA here.\n[dispatch-task: c-1]";
+        let jsonl = format!(
+            "{}\n{}\n",
+            json!({"type":"user","message":{"content":[{"type":"text","text": prompt}]}}),
+            json!({"type":"assistant","message":{"content":[{"type":"text","text":"working on it"}]}}),
+        );
+        let r = curate_claude(&jsonl, &default_kinds("claude"), Some(prompt));
+        assert!(r.lines.iter().any(|l| l.contains("dispatch prompt elided")));
+        assert!(
+            !r.lines.iter().any(|l| l.contains("GAMMA")),
+            "claude prompt elided"
+        );
+        assert!(
+            r.lines.iter().any(|l| l.contains("working on it")),
+            "assistant turn survives"
+        );
+    }
+
+    /// `elide_prompt = None` (the steered-task path) leaves the log untouched.
+    #[test]
+    fn curate_without_elide_prompt_keeps_everything() {
+        let jsonl = format!(
+            "{}\n",
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"some prompt text"}}),
+        );
+        let r = curate(&jsonl, &default_kinds("codex"), None);
+        assert!(
+            r.lines.iter().any(|l| l.contains("some prompt text")),
+            "None => nothing elided"
+        );
+        assert!(!r.lines.iter().any(|l| l.contains("elided")));
+    }
+
+    /// A bare `</think>` agent message is dropped (exact match only); real output stays.
+    #[test]
+    fn curate_drops_bare_think_markers() {
+        let jsonl = format!(
+            "{}\n{}\n",
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"</think>"},"backend":"opencode"}),
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"actual output"},"backend":"opencode"}),
+        );
+        let r = curate(&jsonl, &default_kinds("opencode"), None);
+        assert_eq!(r.lines.len(), 1, "the bare think marker is dropped");
+        assert!(!r.lines.iter().any(|l| l.contains("think>")));
+        assert!(r.lines[0].contains("actual output"));
     }
 }
