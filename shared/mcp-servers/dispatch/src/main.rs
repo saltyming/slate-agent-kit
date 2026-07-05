@@ -103,6 +103,9 @@ impl Dispatch {
         &self,
         Parameters(p): Parameters<SubmitParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Some(refusal) = reentry_refusal() {
+            return Ok(refusal);
+        }
         if p.objective.trim().is_empty() {
             return Ok(err_struct(ErrCode::InvalidParams, "objective is required"));
         }
@@ -476,6 +479,9 @@ impl Dispatch {
         &self,
         Parameters(p): Parameters<SteerParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Some(refusal) = reentry_refusal() {
+            return Ok(refusal);
+        }
         let id = p.id.trim();
         if id.is_empty() {
             return Ok(err_struct(ErrCode::InvalidParams, "id is required"));
@@ -1030,6 +1036,7 @@ enum ErrCode {
     UnknownBackend,
     RolloutUnreadable,
     DbError,
+    Reentrant,
 }
 
 impl ErrCode {
@@ -1045,6 +1052,7 @@ impl ErrCode {
             ErrCode::UnknownBackend => "unknown_backend",
             ErrCode::RolloutUnreadable => "rollout_unreadable",
             ErrCode::DbError => "db_error",
+            ErrCode::Reentrant => "reentrant",
         }
     }
 }
@@ -1058,6 +1066,30 @@ fn err_struct(code: ErrCode, msg: impl Into<String>) -> CallToolResult {
     }))
     .unwrap_or_else(|_| msg.clone());
     CallToolResult::error(vec![Content::text(body)])
+}
+
+/// Refuse the call if this dispatch server is itself running inside a
+/// dispatch-spawned backend (the `DISPATCH_REENTRY_DEPTH` env marker is present).
+/// Returns the structured refusal so `dispatch_submit` / `dispatch_steer` can
+/// short-circuit before any enqueue or spawn — which is what stops
+/// `backend → dispatch → backend → …` recursion. A dispatch backend consulting
+/// *aside* is deliberately unaffected (that path uses a separate marker).
+fn reentry_refusal() -> Option<CallToolResult> {
+    let depth = backend::reentry_depth();
+    if depth >= backend::REENTRY_CEILING {
+        Some(err_struct(
+            ErrCode::Reentrant,
+            format!(
+                "this dispatch server is running inside a dispatch-spawned backend ({}={}); \
+                 nested dispatch runs are refused to prevent recursive backend spawning. Do the \
+                 work in the current backend session instead.",
+                backend::REENTRY_DEPTH_ENV,
+                depth
+            ),
+        ))
+    } else {
+        None
+    }
 }
 
 fn nonempty(o: Option<String>) -> Option<String> {

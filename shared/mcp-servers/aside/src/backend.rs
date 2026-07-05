@@ -22,6 +22,62 @@ use tokio_util::sync::CancellationToken;
 const MAX_CAPTURED_STDERR: usize = 2 * 1024;
 const MAX_CAPTURED_STDOUT: usize = 50 * 1024;
 
+/// Env var marking how deep we are inside aside-spawned backends.
+///
+/// A top-level harness call has it unset (depth 0). Every backend aside spawns
+/// carries the incremented value, and the child inherits it down its whole
+/// process tree — including any `aside` MCP server the child itself boots from
+/// its own config. The tool layer refuses a call whose depth is already at the
+/// ceiling, so a spawned backend can never recursively re-enter aside. This is a
+/// defense-in-depth net; the primary guarantee is that each backend is spawned
+/// with no MCP servers at all (codex `--ignore-user-config`, claude `--safe-mode`,
+/// copilot's tool whitelist).
+pub const REENTRY_DEPTH_ENV: &str = "ASIDE_REENTRY_DEPTH";
+
+/// Depth at or above which a call is refused. `1` = no nesting: a top-level call
+/// (depth 0) proceeds; anything aside itself spawned (depth ≥ 1) is refused.
+pub const REENTRY_CEILING: u32 = 1;
+
+/// Parse a re-entry depth from the raw env value. Fail-closed: unset/empty is a
+/// legitimate top-level call (0); a present-but-malformed value is treated as
+/// past the ceiling (`u32::MAX`) so a corrupt marker refuses rather than
+/// silently permitting recursion.
+fn parse_reentry_depth(raw: Option<&str>) -> u32 {
+    match raw {
+        None => 0,
+        Some(s) if s.trim().is_empty() => 0,
+        Some(s) => s.trim().parse::<u32>().unwrap_or(u32::MAX),
+    }
+}
+
+/// Current re-entry depth, read from the environment. Uses `var_os` so a
+/// present-but-non-Unicode value fails closed (`u32::MAX`) instead of being
+/// misread as unset (which `env::var().ok()` would do).
+pub fn reentry_depth() -> u32 {
+    depth_from_env(std::env::var_os(REENTRY_DEPTH_ENV).as_deref())
+}
+
+/// Pure core of `reentry_depth`, split out for testing: unset → 0; valid Unicode
+/// → `parse_reentry_depth`; present-but-non-Unicode (malformed) → `u32::MAX`.
+fn depth_from_env(raw: Option<&std::ffi::OsStr>) -> u32 {
+    match raw {
+        None => 0,
+        Some(v) => match v.to_str() {
+            Some(s) => parse_reentry_depth(Some(s)),
+            None => u32::MAX,
+        },
+    }
+}
+
+/// Stamp the next depth (current + 1, saturating) on a child command so a
+/// backend aside spawns — and anything it in turn spawns — inherits the marker.
+fn stamp_reentry_depth(cmd: &mut Command) {
+    cmd.env(
+        REENTRY_DEPTH_ENV,
+        reentry_depth().saturating_add(1).to_string(),
+    );
+}
+
 /// Which CLI we're talking to. Each variant maps to a concrete command builder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -128,6 +184,9 @@ pub async fn invoke(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
+    // Mark the child (and its whole process tree) as aside-spawned so a nested
+    // aside call from within the backend is refused before it can recurse.
+    stamp_reentry_depth(&mut cmd);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -218,12 +277,18 @@ fn build_command(
 ) -> BuiltCommand {
     match backend {
         Backend::Codex => {
-            // codex -s read-only -a never [-m MODEL] [-c model_reasoning_effort=EFF] exec "<PROMPT>"
+            // codex -s read-only -a never [-m MODEL] [-c model_reasoning_effort=EFF]
+            //       exec --ignore-user-config "<PROMPT>"
             //   -s read-only: sandbox blocks file writes / shell side effects but ALLOWS reads,
             //                 so codex can open files the caller references by path.
             //   -a never:     skip approval prompts (non-interactive)
             //   -c ...:       TOML config override for reasoning effort
             //   exec:         non-interactive subcommand; prompt is the positional arg
+            //   --ignore-user-config: do NOT load ~/.codex/config.toml for this run, so the
+            //                 spawned codex carries NO MCP servers (neither aside nor dispatch)
+            //                 and cannot recurse back into aside. Auth still resolves from
+            //                 CODEX_HOME (auth.json is separate). Flag is an `exec` subcommand
+            //                 flag, so it MUST come after `exec` (codex 0.142.x).
             let mut cmd = Command::new("codex");
             cmd.arg("-s").arg("read-only");
             cmd.arg("-a").arg("never");
@@ -234,6 +299,7 @@ fn build_command(
                 cmd.arg("-c").arg(format!("model_reasoning_effort={}", eff));
             }
             cmd.arg("exec");
+            cmd.arg("--ignore-user-config");
             cmd.arg(prompt);
             BuiltCommand {
                 argv: vec!["codex".into()],
@@ -365,6 +431,10 @@ pub async fn version(backend: Backend) -> Option<String> {
     let _ = which(backend.binary())?;
     let output = Command::new(backend.binary())
         .arg("--version")
+        .env(
+            REENTRY_DEPTH_ENV,
+            reentry_depth().saturating_add(1).to_string(),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -414,5 +484,67 @@ mod tests {
         let copilot = build_command(Backend::Copilot, "prompt body", None, None);
         assert_eq!(codex.prompt_transport, PromptTransport::Argv);
         assert_eq!(copilot.prompt_transport, PromptTransport::Argv);
+    }
+
+    #[test]
+    fn codex_disables_user_config_after_exec() {
+        let built = build_command(Backend::Codex, "prompt body", Some("gpt-5.5"), Some("high"));
+        let args: Vec<String> = built
+            .cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let exec_pos = args.iter().position(|a| a == "exec").expect("exec present");
+        let ignore_pos = args
+            .iter()
+            .position(|a| a == "--ignore-user-config")
+            .expect("--ignore-user-config present");
+        assert!(
+            ignore_pos > exec_pos,
+            "--ignore-user-config must come after `exec`: {args:?}"
+        );
+    }
+
+    #[test]
+    fn parse_reentry_depth_fails_closed() {
+        assert_eq!(parse_reentry_depth(None), 0, "unset is top-level");
+        assert_eq!(parse_reentry_depth(Some("")), 0, "empty is top-level");
+        assert_eq!(parse_reentry_depth(Some("  ")), 0, "blank is top-level");
+        assert_eq!(parse_reentry_depth(Some("0")), 0);
+        assert_eq!(parse_reentry_depth(Some("1")), 1);
+        assert_eq!(parse_reentry_depth(Some(" 2 ")), 2);
+        // malformed markers fail closed (>= ceiling) rather than reading as 0.
+        assert_eq!(parse_reentry_depth(Some("abc")), u32::MAX);
+        assert_eq!(parse_reentry_depth(Some("-1")), u32::MAX);
+        assert!(parse_reentry_depth(Some("abc")) >= REENTRY_CEILING);
+    }
+
+    #[test]
+    fn depth_from_env_fails_closed_on_non_unicode() {
+        use std::ffi::OsStr;
+        assert_eq!(depth_from_env(None), 0, "unset is top-level");
+        assert_eq!(depth_from_env(Some(OsStr::new(""))), 0);
+        assert_eq!(depth_from_env(Some(OsStr::new("1"))), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let bad = OsStr::from_bytes(&[0xff, 0xfe]); // invalid UTF-8
+            assert_eq!(
+                depth_from_env(Some(bad)),
+                u32::MAX,
+                "present-but-non-Unicode marker must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn stamped_child_carries_reentry_marker() {
+        let mut cmd = Command::new("true");
+        stamp_reentry_depth(&mut cmd);
+        let marked = cmd.as_std().get_envs().any(|(k, v)| {
+            k == std::ffi::OsStr::new(REENTRY_DEPTH_ENV) && v.is_some_and(|v| !v.is_empty())
+        });
+        assert!(marked, "child command must carry {REENTRY_DEPTH_ENV}");
     }
 }

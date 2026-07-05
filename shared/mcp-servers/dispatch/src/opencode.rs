@@ -202,6 +202,10 @@ fn spawn_server(working_dir: &Path, port: u16) -> Result<tokio::process::Child, 
         cmd
     };
 
+    // Mark the opencode server (and its whole subtree) as dispatch-spawned so a
+    // nested dispatch submit/steer from within the opencode session is refused.
+    backend::stamp_reentry_depth(&mut cmd);
+
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

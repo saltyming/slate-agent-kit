@@ -28,6 +28,70 @@ use tokio_util::sync::CancellationToken;
 const MAX_STDOUT: usize = 200 * 1024;
 const MAX_STDERR: usize = 16 * 1024;
 
+/// Env var marking that this dispatch server is running inside a
+/// dispatch-spawned backend.
+///
+/// A top-level call has it unset (depth 0). Every backend dispatch spawns
+/// carries the incremented value; if the backend passes its process env down to
+/// the `dispatch` MCP server it boots from its config, that nested dispatch sees
+/// the marker and `dispatch_submit` / `dispatch_steer` refuse the call.
+///
+/// This works for **claude** and **opencode** (both forward process env to their
+/// MCP children — verified empirically). It does NOT work for **codex**, which
+/// launches MCP servers with a clean env plus only their configured `env` table,
+/// so the marker never reaches a codex-booted dispatch server. codex is therefore
+/// guarded separately, fail-closed, by `-c mcp_servers.dispatch.enabled=false` on
+/// its spawn (see `build_command`'s codex arm) — the marker below is the guard
+/// for the other two backends and defense-in-depth generally. A dispatch backend
+/// calling *aside* stays allowed (a different marker, and aside is left enabled);
+/// only dispatch→dispatch is blocked.
+pub(crate) const REENTRY_DEPTH_ENV: &str = "DISPATCH_REENTRY_DEPTH";
+
+/// Depth at or above which a submit/steer is refused. `1` = no nesting.
+pub(crate) const REENTRY_CEILING: u32 = 1;
+
+/// Parse a re-entry depth from the raw env value. Fail-closed: unset/empty is a
+/// legitimate top-level call (0); a present-but-malformed value is treated as
+/// past the ceiling (`u32::MAX`) so a corrupt marker refuses rather than
+/// silently permitting recursion.
+fn parse_reentry_depth(raw: Option<&str>) -> u32 {
+    match raw {
+        None => 0,
+        Some(s) if s.trim().is_empty() => 0,
+        Some(s) => s.trim().parse::<u32>().unwrap_or(u32::MAX),
+    }
+}
+
+/// Current re-entry depth, read from the environment. Uses `var_os` so a
+/// present-but-non-Unicode value fails closed (`u32::MAX`) instead of being
+/// misread as unset (which `env::var().ok()` would do).
+pub(crate) fn reentry_depth() -> u32 {
+    depth_from_env(std::env::var_os(REENTRY_DEPTH_ENV).as_deref())
+}
+
+/// Pure core of `reentry_depth`, split out for testing: unset → 0; valid Unicode
+/// → `parse_reentry_depth`; present-but-non-Unicode (malformed) → `u32::MAX`.
+fn depth_from_env(raw: Option<&std::ffi::OsStr>) -> u32 {
+    match raw {
+        None => 0,
+        Some(v) => match v.to_str() {
+            Some(s) => parse_reentry_depth(Some(s)),
+            None => u32::MAX,
+        },
+    }
+}
+
+/// Stamp the next depth (current + 1, saturating) on a spawned child so the
+/// backend — and anything it spawns, including a nested dispatch server — inherits
+/// the marker. Called for every backend spawn path (codex/claude via
+/// `spawn_child`, opencode via `opencode::spawn_server`).
+pub(crate) fn stamp_reentry_depth(cmd: &mut Command) {
+    cmd.env(
+        REENTRY_DEPTH_ENV,
+        reentry_depth().saturating_add(1).to_string(),
+    );
+}
+
 /// Which coding-agent CLI we delegate to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -91,12 +155,22 @@ pub fn build_command(backend: Backend, spec: &SpawnSpec) -> (Command, Vec<String
     match backend {
         Backend::Codex => {
             // codex -C <dir> -s <sandbox> -a never [-m MODEL] [-c model_reasoning_effort=EFF]
+            //       -c mcp_servers.dispatch.enabled=false
             //       exec [resume <sid>] [--skip-git-repo-check]   (prompt on stdin)
             //   -C <dir>:     working root, set explicitly (and recorded in argv) to match
             //                 the cmd.current_dir below — so the rollout's cwd is unambiguous.
             //   -s <sandbox>: workspace-write lets codex edit files under cwd; read-only is
             //                 read-only; danger-full-access drops the sandbox (server-gated).
             //   -a never:     non-interactive — never pause for an approval prompt.
+            //   -c mcp_servers.dispatch.enabled=false: disable the `dispatch` MCP server in the
+            //                 spawned codex so it cannot re-invoke dispatch (fork-bomb recursion).
+            //                 codex does NOT pass its process env to the MCP servers it boots
+            //                 (verified empirically), so the DISPATCH_REENTRY_DEPTH marker never
+            //                 reaches a codex-booted dispatch server — this config override is the
+            //                 fail-closed guard for the codex backend specifically (claude and
+            //                 opencode DO propagate env, so the marker covers them). `aside` is
+            //                 left enabled: a dispatch backend may still consult it (a legitimate
+            //                 read-only cross-surface call).
             //   exec:         non-interactive subcommand. With no positional PROMPT, codex reads
             //                 instructions from stdin, which dodges OS argv-length limits.
             //   --skip-git-repo-check: permit running when working_dir is not a git repo.
@@ -116,6 +190,10 @@ pub fn build_command(backend: Backend, spec: &SpawnSpec) -> (Command, Vec<String
                 args.push("-c".into());
                 args.push(format!("model_reasoning_effort={}", eff));
             }
+            // Fail-closed anti-recursion guard for codex (see comment above). A top-level `-c`
+            // config override, so it precedes `exec` like the reasoning-effort override.
+            args.push("-c".into());
+            args.push("mcp_servers.dispatch.enabled=false".into());
             args.push("exec".into());
             if let Some(sid) = spec.resume_session {
                 // codex exec resume <session_id>: continue the prior session with the
@@ -302,6 +380,11 @@ pub fn spawn_child(backend: Backend, spec: &SpawnSpec, prompt: &str) -> Result<S
     };
     #[cfg(not(unix))]
     let mut cmd = built_cmd;
+
+    // Mark the child (and, via env inheritance through the pdeath guard, the real
+    // backend and anything it spawns) as dispatch-spawned, so a nested dispatch
+    // submit/steer from within the backend is refused before it can recurse.
+    stamp_reentry_depth(&mut cmd);
 
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
@@ -608,5 +691,83 @@ mod tests {
         assert!(s.contains("--resume old-sid"));
         assert!(s.contains("--fork-session"));
         assert!(s.contains("--session-id new-sid"));
+    }
+
+    #[test]
+    fn codex_argv_disables_only_dispatch_mcp_before_exec() {
+        let spec = SpawnSpec {
+            working_dir: Path::new("/w"),
+            sandbox: "workspace-write",
+            model: None,
+            reasoning_effort: None,
+            skip_git_repo_check: false,
+            resume_session: None,
+            pin_session: None,
+        };
+        let (_c, argv) = build_command(Backend::Codex, &spec);
+        let joined = argv.join(" ");
+        // dispatch MCP server disabled (fail-closed guard: codex doesn't propagate
+        // the DISPATCH_REENTRY_DEPTH marker to its MCP children).
+        assert!(
+            joined.contains("-c mcp_servers.dispatch.enabled=false"),
+            "codex must disable the dispatch MCP server: {joined}"
+        );
+        // aside stays enabled so dispatch→aside remains allowed.
+        assert!(
+            !joined.contains("mcp_servers.aside"),
+            "aside must NOT be disabled: {joined}"
+        );
+        // the override is a top-level `-c`, so it must precede `exec`.
+        let disable_pos = argv
+            .iter()
+            .position(|a| a == "mcp_servers.dispatch.enabled=false")
+            .unwrap();
+        let exec_pos = argv.iter().position(|a| a == "exec").unwrap();
+        assert!(
+            disable_pos < exec_pos,
+            "the -c disable must come before `exec`: {joined}"
+        );
+    }
+
+    #[test]
+    fn parse_reentry_depth_fails_closed() {
+        assert_eq!(parse_reentry_depth(None), 0, "unset is top-level");
+        assert_eq!(parse_reentry_depth(Some("")), 0, "empty is top-level");
+        assert_eq!(parse_reentry_depth(Some("  ")), 0, "blank is top-level");
+        assert_eq!(parse_reentry_depth(Some("0")), 0);
+        assert_eq!(parse_reentry_depth(Some("1")), 1);
+        assert_eq!(parse_reentry_depth(Some(" 2 ")), 2);
+        // malformed markers fail closed (>= ceiling) rather than reading as 0.
+        assert_eq!(parse_reentry_depth(Some("abc")), u32::MAX);
+        assert_eq!(parse_reentry_depth(Some("-1")), u32::MAX);
+        assert!(parse_reentry_depth(Some("abc")) >= REENTRY_CEILING);
+    }
+
+    #[test]
+    fn depth_from_env_fails_closed_on_non_unicode() {
+        use std::ffi::OsStr;
+        assert_eq!(depth_from_env(None), 0, "unset is top-level");
+        assert_eq!(depth_from_env(Some(OsStr::new(""))), 0);
+        assert_eq!(depth_from_env(Some(OsStr::new("1"))), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let bad = OsStr::from_bytes(&[0xff, 0xfe]); // invalid UTF-8
+            assert_eq!(
+                depth_from_env(Some(bad)),
+                u32::MAX,
+                "present-but-non-Unicode marker must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn stamped_child_carries_reentry_marker() {
+        let mut cmd = Command::new("true");
+        stamp_reentry_depth(&mut cmd);
+        let marked = cmd.as_std().get_envs().any(|(k, v)| {
+            k == std::ffi::OsStr::new(REENTRY_DEPTH_ENV) && v.is_some_and(|v| !v.is_empty())
+        });
+        assert!(marked, "spawned child must carry {REENTRY_DEPTH_ENV}");
     }
 }

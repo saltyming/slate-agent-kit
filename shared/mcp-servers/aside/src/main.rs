@@ -131,6 +131,22 @@ impl Aside {
         peer: Peer<RoleServer>,
         progress_token: Option<ProgressToken>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Refuse a nested advisor call before doing anything else (no validation,
+        // no progress ticker, no transcript read, no spawn). If this aside server
+        // is itself running inside an aside-spawned backend, invoking a backend
+        // again would recurse (aside → backend → aside → …). A spawned backend
+        // inherits ASIDE_REENTRY_DEPTH; a top-level harness call does not.
+        let depth = backend::reentry_depth();
+        if depth >= backend::REENTRY_CEILING {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "aside_reentry_blocked: this aside server is running inside an aside-spawned \
+                 backend ({}={}); nested advisor calls are refused to prevent recursive backend \
+                 spawning. An aside backend is a read-only advisor and must not itself call aside.",
+                backend::REENTRY_DEPTH_ENV,
+                depth
+            ))]));
+        }
+
         if params.question.trim().is_empty() {
             return Ok(CallToolResult::error(vec![Content::text(
                 "question is required".to_string(),
