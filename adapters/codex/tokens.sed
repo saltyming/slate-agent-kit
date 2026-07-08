@@ -17,4 +17,4 @@ s#{{EDIT_SURFACE}}#apply_patch for manual file edits#g
 s#{{DELEGATION_SURFACE}}#Codex read-only delegates, write-capable delegates, or dispatch#g
 s#{{FANOUT_DELEGATION_SURFACE}}#Codex fan-out or multi-agent surfaces#g
 s#{{KIT_PREFIX}}#codex-agent-kit#g
-s#{{KIT_VERSION}}#0.4.3#g
+s#{{KIT_VERSION}}#0.4.4#g

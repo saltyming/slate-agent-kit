@@ -2,7 +2,7 @@
 # {{KIT_DISPLAY_NAME}} Operating Manual
 
 **Version**: {{KIT_VERSION}}
-**Last Updated**: 2026-07-03
+**Last Updated**: 2026-07-08
 
 > Operating rules for {{HARNESS_NAME}} agents. This kernel defines the
 > **invariants** (each stated exactly once, with a stable ID) and names the
