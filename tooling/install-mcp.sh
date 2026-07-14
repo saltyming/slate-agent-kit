@@ -332,27 +332,146 @@ unconfigure_claude() {
   echo "Removed Claude user-scope MCP registrations (aside, dispatch)"
 }
 
-# codex_set_tool_timeout <server> <seconds> — set (or, with an empty <seconds>,
-# remove) `tool_timeout_sec` under [mcp_servers.<server>] in the Codex config.
-# Codex exposes no `codex mcp add` flag for this (config.toml-only, default 60s),
-# so we edit the block codex just wrote. Inserted as a direct key right after the
+# codex_set_server_key <server> <key> <toml-value> — set (or, with an empty
+# <toml-value>, remove) a direct key under [mcp_servers.<server>] in the Codex
+# config. Codex exposes no `codex mcp add` flags for these (config.toml-only), so
+# we edit the block codex just wrote. Inserted as a direct key right after the
 # table header, ahead of the [.env] sub-table; re-running is idempotent.
-codex_set_tool_timeout() {
-  cts_cfg="$CODEX_HOME/config.toml"
-  [ -f "$cts_cfg" ] || return 0
-  awk -v server="mcp_servers.$1" -v secs="$2" '
-    BEGIN { tgt = "[" server "]"; intgt = 0; done = 0 }
+# <toml-value> is written verbatim, so string values must carry their own quotes.
+codex_set_server_key() {
+  cssk_cfg="$CODEX_HOME/config.toml"
+  [ -f "$cssk_cfg" ] || return 0
+  awk -v server="mcp_servers.$1" -v key="$2" -v val="$3" '
+    BEGIN { tgt = "[" server "]"; pat = "^[ \t]*" key "[ \t]*="; intgt = 0; done = 0 }
     {
       if ($0 ~ /^\[/) {
         intgt = ($0 == tgt)
         print
-        if (intgt && !done && secs != "") { print "tool_timeout_sec = " secs; done = 1 }
+        if (intgt && !done && val != "") { print key " = " val; done = 1 }
         next
       }
-      if (intgt && $0 ~ /^[ \t]*tool_timeout_sec[ \t]*=/) next
+      if (intgt && $0 ~ pat) next
       print
     }
-  ' "$cts_cfg" > "$cts_cfg.slate-tmp" && mv "$cts_cfg.slate-tmp" "$cts_cfg"
+  ' "$cssk_cfg" > "$cssk_cfg.slate-tmp" && mv "$cssk_cfg.slate-tmp" "$cssk_cfg"
+}
+
+# codex_set_code_mode_ns <add|remove> <namespace> — list (or unlist) an MCP tool
+# namespace in [features.code_mode] so Codex hands its tools to the model as
+# plain blocking function calls instead of routing them through a code-mode cell.
+#
+# Since Codex 0.144 the model reaches MCP tools from inside a code-mode `exec`
+# cell, which yields after yield_time_ms (10s by default) and leaves the model to
+# poll with `wait`. An aside call blocks for the whole backend run — minutes with
+# a reasoning-heavy model — so the model sees "still running" over and over,
+# eventually terminates the cell and reports the backend as unresponsive, losing
+# an answer that was about to arrive. Outside code mode the call simply blocks
+# until it returns (bounded by tool_timeout_sec), so there is no exit to take.
+#
+# Both keys are required — setting only one of them does not leave a usable aside
+# surface: excluded_tool_namespaces on its own drops the tools from the model's
+# view entirely. The namespace is the MCP tool prefix Codex derives from the
+# server name (`mcp__aside`), not the server name itself. Namespaces already
+# listed under either key are preserved.
+codex_set_code_mode_ns() {
+  cscm_cfg="$CODEX_HOME/config.toml"
+  [ -f "$cscm_cfg" ] || return 0
+  if awk -v mode="$1" -v ns="$2" -v cfg="$cscm_cfg" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function parse(line, key, arr,   inner, t, i, cnt, v) {
+      if (line !~ /\]/) {
+        printf("install-mcp.sh: %s in [features.code_mode] spans several lines in %s;\n", key, cfg) > "/dev/stderr"
+        printf("  refusing to rewrite it. Collapse it onto one line and re-run.\n") > "/dev/stderr"
+        failed = 1
+        exit 2
+      }
+      inner = line
+      sub(/^[^[]*\[/, "", inner)
+      sub(/\].*$/, "", inner)
+      cnt = split(inner, t, ",")
+      arr[0] = 0
+      for (i = 1; i <= cnt; i++) {
+        v = trim(t[i])
+        gsub(/^"|"$/, "", v)
+        if (v != "") { arr[0]++; arr[arr[0]] = v }
+      }
+    }
+    function has(arr, v,   i) { for (i = 1; i <= arr[0]; i++) if (arr[i] == v) return 1; return 0 }
+    function put(arr, v) { if (!has(arr, v)) { arr[0]++; arr[arr[0]] = v } }
+    function drop(arr, v,   i, m, keep) {
+      m = 0
+      for (i = 1; i <= arr[0]; i++) if (arr[i] != v) keep[++m] = arr[i]
+      for (i = 1; i <= arr[0]; i++) delete arr[i]
+      for (i = 1; i <= m; i++) arr[i] = keep[i]
+      arr[0] = m
+    }
+    function render(key, arr,   i, s) {
+      s = ""
+      for (i = 1; i <= arr[0]; i++) s = s (i > 1 ? ", " : "") "\"" arr[i] "\""
+      return key " = [" s "]"
+    }
+    function dump(   i, keep) {
+      if (add) { put(X, ns); put(D, ns) } else { drop(X, ns); drop(D, ns) }
+      keep = (X[0] > 0 || D[0] > 0)
+      for (i = 1; i <= bn; i++) if (trim(body[i]) != "") keep = 1
+      if (!keep) return
+      print target
+      if (X[0] > 0) print render(KX, X)
+      if (D[0] > 0) print render(KD, D)
+      for (i = 1; i <= bn; i++) print body[i]
+    }
+    BEGIN {
+      add = (mode == "add")
+      target = "[features.code_mode]"
+      KX = "excluded_tool_namespaces"
+      KD = "direct_only_tool_namespaces"
+      X[0] = 0; D[0] = 0
+      in_cm = 0; in_feat = 0; saw = 0; bn = 0; failed = 0
+    }
+    /^[ \t]*\[/ {
+      hdr = trim($0)
+      if (in_cm) { dump(); in_cm = 0; bn = 0 }
+      in_feat = 0
+      if (hdr == target) { saw = 1; in_cm = 1; next }
+      if (hdr == "[features]") in_feat = 1
+      print
+      next
+    }
+    {
+      # A scalar features.code_mode would make the [features.code_mode] table a
+      # TOML duplicate key and break every Codex session; never silently drop it.
+      if (in_feat && $0 ~ /^[ \t]*code_mode[ \t]*=/) {
+        printf("install-mcp.sh: [features] in %s sets a scalar `code_mode` key, which collides\n", cfg) > "/dev/stderr"
+        printf("  with the [features.code_mode] table aside needs. Remove that line and re-run.\n") > "/dev/stderr"
+        failed = 1
+        exit 2
+      }
+      if (in_cm) {
+        if ($0 ~ ("^[ \t]*" KX "[ \t]*=")) { parse($0, KX, X); next }
+        if ($0 ~ ("^[ \t]*" KD "[ \t]*=")) { parse($0, KD, D); next }
+        body[++bn] = $0
+        next
+      }
+      print
+    }
+    END {
+      if (failed) exit 2
+      if (in_cm) { dump() }
+      else if (add && !saw) {
+        put(X, ns); put(D, ns)
+        print ""
+        print target
+        print render(KX, X)
+        print render(KD, D)
+      }
+    }
+  ' "$cscm_cfg" > "$cscm_cfg.slate-tmp"; then
+    mv "$cscm_cfg.slate-tmp" "$cscm_cfg"
+  else
+    rm -f "$cscm_cfg.slate-tmp"
+    echo "install-mcp.sh: aborted; $cscm_cfg left unchanged." >&2
+    exit 1
+  fi
 }
 
 configure_codex() {
@@ -370,7 +489,14 @@ configure_codex() {
   # take many minutes), which would otherwise trip Codex's per-tool-call timeout.
   # Raise it to 30 minutes for aside. (dispatch tool calls are bounded — submit
   # returns immediately and dispatch_wait is capped — so it keeps the default.)
-  codex_set_tool_timeout aside 1800
+  codex_set_server_key aside tool_timeout_sec 1800
+  # Codex classes an MCP tool as approval-required unless told otherwise, and a
+  # headless `codex exec` (approval_policy=never) has nobody to approve it — the
+  # call comes back as `user cancelled MCP tool call` before the backend is even
+  # spawned, which is why a dispatch-spawned Codex backend cannot consult aside.
+  # Every aside tool is a read-only advisor, so pre-approving them is honest.
+  # (dispatch is write-capable and deliberately keeps the default approval path.)
+  codex_set_server_key aside default_tools_approval_mode '"approve"'
   if [ -n "$ROOTS" ]; then
     CODEX_HOME="$CODEX_HOME" "$CODEX_BIN" mcp add dispatch \
       --env SLATE_AGENT_STATE_HOME="$CODEX_HOME/slate-agent-kit" \
@@ -384,6 +510,9 @@ configure_codex() {
     echo "dispatch_submit will reject working_dirs (no_project_root) until you re-run" >&2
     echo "with --roots <workspace-root>." >&2
   fi
+  # Last, so that a config this cannot safely rewrite still leaves both servers
+  # registered — the user fixes the conflict it names and re-runs.
+  codex_set_code_mode_ns add mcp__aside
   echo "Configured Codex MCP servers in $CODEX_HOME/config.toml"
 }
 
@@ -394,9 +523,12 @@ unconfigure_codex() {
   }
   CODEX_HOME="$CODEX_HOME" "$CODEX_BIN" mcp remove aside >/dev/null 2>&1 || true
   CODEX_HOME="$CODEX_HOME" "$CODEX_BIN" mcp remove dispatch >/dev/null 2>&1 || true
-  # `codex mcp remove` deletes the whole [mcp_servers.aside] block (tool_timeout_sec
-  # with it); strip explicitly too so no orphaned override can linger.
-  codex_set_tool_timeout aside ""
+  # `codex mcp remove` deletes the whole [mcp_servers.aside] block (its direct keys
+  # with it); strip explicitly too so no orphaned override can linger. The code-mode
+  # exclusion lives outside that block, so it has to be unlisted on its own.
+  codex_set_server_key aside tool_timeout_sec ""
+  codex_set_server_key aside default_tools_approval_mode ""
+  codex_set_code_mode_ns remove mcp__aside
   echo "Removed Codex MCP registrations from $CODEX_HOME/config.toml"
 }
 
