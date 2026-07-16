@@ -468,9 +468,19 @@ impl ServerHandler for Aside {
              cap, and lets the backend pull in related files it decides it needs. Embed an \
              excerpt only when you want to focus the backend on a specific line range, or when \
              the data is transient tool output (command stdout, API response, staged diff) that \
-             is not on disk. Set include_transcript=false for decontextualised questions. Each \
-             call consumes the user's third-party API quota; see the harness-rendered aside rule \
-             and aside preferences file for usage policy, preferred backend, default models, and \
+             is not on disk. Set include_transcript=false for decontextualised questions. \
+             FRAME QUESTIONS AS ASSESSMENTS, not confirmations: state your own diagnosis or fix \
+             as a hypothesis to check ('tell me if that's wrong and why'), never as settled fact \
+             — a leading question anchors the backend on your framing instead of the evidence, \
+             and this matters most exactly when you are most confident. COST DISCIPLINE: one \
+             question per call, no loops, no re-asking the same question rephrased; consolidate \
+             related questions into one prompt when they share context. Configure model_fallback \
+             instead of manually re-invoking after a transient failure — the server's own \
+             fallback retry is one logical call, not a duplicate. Backends are spawned with NO \
+             MCP servers at all (aside→aside or aside→dispatch recursion is structurally \
+             impossible), so never instruct a backend to call MCP tools. Each call consumes the \
+             user's third-party API quota; see the harness-rendered aside rule and aside \
+             preferences file for usage policy, preferred backend, default models, and \
              reasoning effort.",
         )
     }

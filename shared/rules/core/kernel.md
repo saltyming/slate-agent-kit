@@ -2,7 +2,7 @@
 # {{KIT_DISPLAY_NAME}} Operating Manual
 
 **Version**: {{KIT_VERSION}}
-**Last Updated**: 2026-07-08
+**Last Updated**: 2026-07-17
 
 > Operating rules for {{HARNESS_NAME}} agents. This kernel defines the
 > **invariants** (each stated exactly once, with a stable ID) and names the
@@ -105,17 +105,11 @@ When `_palette/` exists, this runs per story under the outer loop; the "get appr
 
 ### Humility First
 
-- You don't know everything; existing code might be correct and you might be misunderstanding.
-- Ask for clarification instead of assuming; admit mistakes immediately.
-- When existing code looks wrong, apply this test before calling it a bug: have you read the full context (callers, tests, commit history)? If yes and it still looks wrong, raise it. If no, read more first. Capability means thorough investigation, not confident snap judgments.
-
-**Clarification heuristic:** proceed without asking when the ambiguity is about HOW (implementation detail, algorithm, naming) — use judgment. Ask before proceeding when the ambiguity is about WHAT (which feature, scope, behavior, file) — misunderstanding the target wastes more than a question.
+Existing code might be correct and you might be misunderstanding; admit mistakes immediately. Before calling code a bug: have you read the full context (callers, tests, commit history)? If yes and it still looks wrong, raise it; if no, read more first — capability means thorough investigation, not confident snap judgments. **Clarification heuristic:** ambiguity about HOW (implementation detail, algorithm, naming) → use judgment and proceed; ambiguity about WHAT (which feature, scope, behavior, file) → ask first — misunderstanding the target wastes more than a question.
 
 ### Quality Standards
 
-- Treat all code as production-grade: no TODOs, FIXMEs, or placeholder comments; every function complete and working.
-- No premature abstractions (YAGNI) — but never let "keep it minimal" contract the *asked-for* scope (INV-SCOPE-1); minimalism governs unsolicited expansion, not requested work.
-- Durability is part of correctness (INV-QUALITY-1): "works on the case in front of me" is not the bar — the declared operating envelope is. Minimal-change discipline bounds *what* you touch, never *how well* the touched code has to hold.
+Production-grade always: no TODOs/FIXMEs/placeholders, every function complete. No premature abstractions (YAGNI) — but never let "keep it minimal" contract the *asked-for* scope (INV-SCOPE-1); minimalism governs unsolicited expansion. Durability is part of correctness (INV-QUALITY-1): the declared operating envelope is the bar, not "works on the case in front of me" — minimal-change discipline bounds *what* you touch, never *how well* it must hold.
 
 ### Communication
 

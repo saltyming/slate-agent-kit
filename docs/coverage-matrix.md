@@ -85,3 +85,22 @@ changed — flagged for user review).
    quote is trimmed to a reference in inserts/collab-overrides.md; the scoping
    rule (delegation tools only; read-only free; write-capable gated;
    aside/advisor out of scope; dispatch policy carve-out) is fully preserved.
+
+## v11.0.0 subtraction release — relocations
+
+The v11 corpus subtraction moved operational mechanics out of the standing
+rules into just-in-time surfaces. Semantics preserved unless marked; the
+standing rules keep every INV-*/GATE-* definition, trigger list, and
+decision-shaping boundary example. Enforced by validate.sh § 8b byte budgets.
+
+| Was (standing rules) | Now | Status |
+|---|---|---|
+| aside backend-capability matrix, transcript-redaction table, path-vs-excerpt examples, model/effort mechanics | aside server instructions + per-tool descriptions | moved |
+| dispatch tool-by-tool async model, spec field list, logs paging/steering mechanics, server-guard enumeration | dispatch server instructions + per-tool descriptions | moved |
+| palette artifact schemas, RST house style, scoring-rubric prose | `_palette/templates/*` scaffolded by palette-init (SKILL.md carries the pack) | moved |
+| palette rubric weighting/bands | `_palette/templates/rubrics.md` (condensed, formulas intact) | moved |
+| workslate task-system rules (ws:/team: namespaces, task_init sessions, footer) | removed with the feature — tactical tracking is the harness-native task list (the TASK_TRACKER render token) | superseded |
+| workslate msg_send startup sequence + HARD guards prose | delegation-surfaces insert (compressed); mechanics in workslate tool descriptions; SubagentStart auto-registration + SendMessage bridge hook remove most startup steps | superseded |
+| kernel [OVERRIDE] quotes of harness system-prompt text | ghost quotes deleted; surviving interpretation rules restated quote-free in kernel-overrides insert (live-conflict check 2026-07-17: only commit/PR attribution remains a real conflict — kept in git-overrides) | superseded |
+| GATE-SCOPE-CONFIRM / GATE-DEVIATION / GATE-GIT rationale paragraphs and long enumerations | condensed in loop-execution.md; every trigger, disambiguating test, and required sequence preserved | moved |
+| Agent-Teams patterns/limitations tables, completion-report long form | delegation-surfaces insert, condensed | moved |

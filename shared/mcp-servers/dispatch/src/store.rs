@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS dispatch_tasks (
     model_fallback   TEXT,
     final_model      TEXT,
     fallback_history TEXT,
-    allow_concurrent INTEGER NOT NULL DEFAULT 0
+    allow_concurrent INTEGER NOT NULL DEFAULT 0,
+    restart_of       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_plan_status ON dispatch_tasks(plan_id, status);
 CREATE INDEX IF NOT EXISTS idx_dispatch_dir_status  ON dispatch_tasks(working_dir, status);
@@ -73,7 +74,8 @@ CREATE TABLE IF NOT EXISTS dispatch_counters (
 const COLS: &str = "id, plan_id, backend, working_dir, title, spec_json, prompt, status, \
 model, reasoning_effort, sandbox, backend_version, argv, owner_pid, owner_instance, child_pid, \
 exit_code, result, error, created_at, started_at, finished_at, session_id, rollout_path, parent_id, \
-nonce, rollout_start_line, model_fallback, final_model, fallback_history, allow_concurrent";
+nonce, rollout_start_line, model_fallback, final_model, fallback_history, allow_concurrent, \
+restart_of";
 
 pub fn init(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA_SQL)?;
@@ -90,6 +92,7 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
         ("final_model", "TEXT"),
         ("fallback_history", "TEXT"),
         ("allow_concurrent", "INTEGER NOT NULL DEFAULT 0"),
+        ("restart_of", "TEXT"),
     ] {
         let _ = conn.execute(
             &format!("ALTER TABLE dispatch_tasks ADD COLUMN {col} {decl}"),
@@ -129,6 +132,11 @@ pub struct NewTask {
     /// (mirrors submit's `allow_concurrent`) so a steer chain can inherit it.
     /// Stored as INTEGER 0/1.
     pub allow_concurrent: bool,
+    /// For an automatic-restart successor: the task id whose unassociated run was
+    /// killed and re-run as this fresh task. Distinct from `parent_id`, which
+    /// means steer/resume (an inherited backend session) — a restart is a brand
+    /// new session and must never be treated as a resume by log association.
+    pub restart_of: Option<String>,
 }
 
 /// A full row read back from the DB.
@@ -173,6 +181,8 @@ pub struct TaskRow {
     /// Whether this task bypasses the one-run-per-working_dir guard. A steer
     /// inherits it from the parent unless the steer call overrides it.
     pub allow_concurrent: bool,
+    /// Set on an automatic-restart successor: the id of the task it re-runs.
+    pub restart_of: Option<String>,
 }
 
 fn row_from(r: &Row) -> rusqlite::Result<TaskRow> {
@@ -208,6 +218,7 @@ fn row_from(r: &Row) -> rusqlite::Result<TaskRow> {
         final_model: r.get(28)?,
         fallback_history: r.get(29)?,
         allow_concurrent: r.get(30)?,
+        restart_of: r.get(31)?,
     })
 }
 
@@ -239,6 +250,9 @@ impl TaskRow {
             "final_model": self.final_model,
             "allow_concurrent": self.allow_concurrent,
         });
+        if self.restart_of.is_some() {
+            v["restart_of"] = json!(self.restart_of);
+        }
         if include_result {
             v["result"] = json!(self.result);
             v["error"] = json!(self.error);
@@ -342,8 +356,8 @@ pub fn insert_queued(
         "INSERT INTO dispatch_tasks \
          (id, plan_id, backend, working_dir, title, spec_json, prompt, status, \
           model, reasoning_effort, sandbox, owner_pid, owner_instance, parent_id, \
-          nonce, rollout_start_line, model_fallback, allow_concurrent) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+          nonce, rollout_start_line, model_fallback, allow_concurrent, restart_of) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             id,
             t.plan_id,
@@ -363,6 +377,7 @@ pub fn insert_queued(
             t.rollout_start_line,
             t.model_fallback,
             t.allow_concurrent,
+            t.restart_of,
         ],
     )?;
     tx.execute(
@@ -440,14 +455,18 @@ pub fn set_fallback_result(
     Ok(())
 }
 
-/// Mark a stranded task (owner process died) as interrupted.
-pub fn mark_interrupted(conn: &Connection, id: &str, reason: &str) -> rusqlite::Result<()> {
+/// Mark a stranded task (owner process died, or an auto-restarted run) as
+/// interrupted — but only while the row is still active. The conditional guard
+/// makes the transition safe against a racing terminal write (e.g. the owning
+/// executor finishing successfully between a liveness check and this update):
+/// a terminal row is never clobbered. Returns the number of rows changed
+/// (1 = transitioned, 0 = the row was already terminal or missing).
+pub fn mark_interrupted(conn: &Connection, id: &str, reason: &str) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE dispatch_tasks SET status = ?1, error = ?2, finished_at = datetime('now') \
-         WHERE id = ?3",
+         WHERE id = ?3 AND status IN ('queued', 'running')",
         params![STATUS_INTERRUPTED, reason, id],
-    )?;
-    Ok(())
+    )
 }
 
 // ── reads ─────────────────────────────────────────────────
@@ -485,6 +504,18 @@ pub fn active_for_dir(conn: &Connection, working_dir: &str) -> rusqlite::Result<
         "SELECT id FROM dispatch_tasks WHERE working_dir = ?1 \
          AND status IN ('queued', 'running') ORDER BY rowid LIMIT 1",
         params![working_dir],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// The id of the fresh task that automatically re-ran `id` after its original
+/// run was killed unassociated — surfaced on the interrupted row's status so
+/// the chain is discoverable from either side.
+pub fn restart_successor(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT id FROM dispatch_tasks WHERE restart_of = ?1 ORDER BY rowid LIMIT 1",
+        params![id],
         |r| r.get(0),
     )
     .optional()
@@ -532,6 +563,7 @@ mod tests {
             rollout_start_line: None,
             model_fallback: None,
             allow_concurrent: false,
+            restart_of: None,
         }
     }
 
@@ -677,6 +709,82 @@ CREATE TABLE dispatch_counters (scope TEXT PRIMARY KEY, next_id INTEGER NOT NULL
         assert!(
             !row.allow_concurrent,
             "an old row must backfill allow_concurrent to false"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `mark_interrupted` transitions only active rows — a terminal row is never
+    /// clobbered by a racing liveness check (the live-reconcile race codex review
+    /// flagged: owner looks dead at read time, but the executor already finished).
+    #[test]
+    fn mark_interrupted_is_conditional_on_active() {
+        let path =
+            std::env::temp_dir().join(format!("dispatch-interrupt-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut c = open(&path);
+        init(&c).unwrap();
+
+        let id = match insert_queued(&mut c, &sample_task(), 1, "i1", None).unwrap() {
+            InsertOutcome::Created(id) => id,
+            InsertOutcome::Conflict(_) => panic!("expected Created"),
+        };
+        assert_eq!(mark_interrupted(&c, &id, "r1").unwrap(), 1);
+        assert_eq!(
+            mark_interrupted(&c, &id, "r2").unwrap(),
+            0,
+            "an already-terminal row must not transition again"
+        );
+        let row = get(&c, &id).unwrap().unwrap();
+        assert_eq!(row.status, STATUS_INTERRUPTED);
+        assert_eq!(row.error.as_deref(), Some("r1"), "r2 must not overwrite r1");
+
+        let id2 = match insert_queued(&mut c, &sample_task(), 1, "i1", None).unwrap() {
+            InsertOutcome::Created(id) => id,
+            InsertOutcome::Conflict(_) => panic!("expected Created"),
+        };
+        finish(&c, &id2, STATUS_SUCCEEDED, Some(0), Some("ok"), None).unwrap();
+        assert_eq!(
+            mark_interrupted(&c, &id2, "late").unwrap(),
+            0,
+            "a succeeded row must never be clobbered to interrupted"
+        );
+        assert_eq!(get(&c, &id2).unwrap().unwrap().status, STATUS_SUCCEEDED);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `restart_of` round-trips through insert + read, the successor is
+    /// discoverable from the original id, and `to_json` surfaces the field only
+    /// when set (so plain tasks don't grow a null key).
+    #[test]
+    fn restart_of_round_trips_and_successor_lookup() {
+        let path = std::env::temp_dir().join(format!("dispatch-restart-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut c = open(&path);
+        init(&c).unwrap();
+
+        let id1 = match insert_queued(&mut c, &sample_task(), 1, "i1", None).unwrap() {
+            InsertOutcome::Created(id) => id,
+            InsertOutcome::Conflict(_) => panic!("expected Created"),
+        };
+        let mut succ = sample_task();
+        succ.restart_of = Some(id1.clone());
+        let id2 = match insert_queued(&mut c, &succ, 1, "i1", None).unwrap() {
+            InsertOutcome::Created(id) => id,
+            InsertOutcome::Conflict(_) => panic!("expected Created"),
+        };
+
+        let row1 = get(&c, &id1).unwrap().unwrap();
+        let row2 = get(&c, &id2).unwrap().unwrap();
+        assert_eq!(row2.restart_of.as_deref(), Some(id1.as_str()));
+        assert_eq!(
+            restart_successor(&c, &id1).unwrap().as_deref(),
+            Some(id2.as_str())
+        );
+        assert_eq!(restart_successor(&c, &id2).unwrap(), None);
+        assert_eq!(row2.to_json(false, false)["restart_of"], json!(id1));
+        assert!(
+            row1.to_json(false, false).get("restart_of").is_none(),
+            "plain tasks must not grow a restart_of key"
         );
         let _ = std::fs::remove_file(&path);
     }

@@ -97,7 +97,7 @@ struct Dispatch {
 #[tool_router]
 impl Dispatch {
     #[tool(
-        description = "Delegate ONE execution step to a coding-agent backend (codex, opencode, or claude) running headless and WRITE-CAPABLE in `working_dir` — it may modify files there. Runs ASYNCHRONOUSLY: returns a task id immediately; poll dispatch_status(id) for progress and the result. Provide a structured spec — objective (required), working_dir (required, absolute), and optional target_files / constraints / acceptance — plus optional free-form context / details; the server renders them into the backend prompt. working_dir is rejected unless it canonicalizes within the project root (widen with the DISPATCH_EXTRA_ROOTS env var). sandbox defaults to workspace-write; danger-full-access is rejected unless the server enables it. One active run per working_dir unless allow_concurrent=true. model_fallback: an optional ordered list of models tried in turn on a transient backend error (rate limit, quota, model unavailable) — dispatch_status reports final_model/fallback_history when a retry occurred; not honored by dispatch_steer. POLICY: initiate dispatch according to the harness-rendered dispatch preferences file (`conservative` / `preference-only` / `proactive`) — under `proactive` + `auto`, submit directly for suitable steps; this policy governs dispatch specifically and is not subject to the general write-capable delegation propose-and-wait default used elsewhere. APPROVAL: before the FIRST dispatch in a session, confirm working_dir + the step scope + the approval granularity (per-step vs batch) with the user when approval mode is ask; skip that confirmation only when approval mode is auto."
+        description = "Delegate ONE execution step to a coding-agent backend (codex, opencode, or claude) running headless and WRITE-CAPABLE in `working_dir` — it may modify files there. Runs ASYNCHRONOUSLY: returns a task id immediately; poll dispatch_status(id) for progress and the result. Provide a structured spec — objective (required), working_dir (required, absolute), and optional target_files / constraints / acceptance — plus optional free-form context / details; the server renders them into the backend prompt. working_dir is rejected unless it canonicalizes within the project root (widen with the DISPATCH_EXTRA_ROOTS env var). sandbox defaults to workspace-write; danger-full-access is rejected unless the server enables it. One active run per working_dir unless allow_concurrent=true. model_fallback: an optional ordered list of models tried in turn on a transient backend error (rate limit, quota, model unavailable) — dispatch_status reports final_model/fallback_history when a retry occurred; not honored by dispatch_steer. Watchdog: a fresh codex submit whose backend log never associates within ~30s (DISPATCH_RESTART_UNASSOCIATED_SECS; 0=off) AND whose working_dir shows no writes is killed and auto-resubmitted ONCE as a fresh task — the old row goes interrupted with restarted_as pointing at the successor. POLICY: initiate dispatch according to the harness-rendered dispatch preferences file (`conservative` / `preference-only` / `proactive`) — under `proactive` + `auto`, submit directly for suitable steps; this policy governs dispatch specifically and is not subject to the general write-capable delegation propose-and-wait default used elsewhere. APPROVAL: before the FIRST dispatch in a session, confirm working_dir + the step scope + the approval granularity (per-step vs batch) with the user when approval mode is ask; skip that confirmation only when approval mode is auto."
     )]
     async fn dispatch_submit(
         &self,
@@ -169,6 +169,7 @@ impl Dispatch {
                 rollout_start_line: None,
                 model_fallback: model_fallback_json,
                 allow_concurrent,
+                restart_of: None,
             };
             let enforce_dir = if allow_concurrent {
                 None
@@ -211,6 +212,8 @@ impl Dispatch {
             nonce: Some(nonce),
             rollout_path: None,
             model_fallback,
+            allow_concurrent,
+            restart_of: None,
         };
         executor::spawn(self.db.clone(), self.registry.clone(), job);
 
@@ -226,7 +229,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "Get the status and (when terminal) the captured result / error of a dispatched task by id. Compact by default: the accepted spec, the rendered prompt, and argv are OMITTED so repeated polling of a long run doesn't re-echo the whole spec every call — pass include_spec=true to include them (e.g. to read the accepted spec of a task this session did not submit). Statuses: queued, running, succeeded, failed, cancelled, interrupted."
+        description = "Get the status and (when terminal) the captured result / error of a dispatched task by id. Compact by default: the accepted spec, the rendered prompt, and argv are OMITTED so repeated polling of a long run doesn't re-echo the whole spec every call — pass include_spec=true to include them (e.g. to read the accepted spec of a task this session did not submit). Statuses: queued, running, succeeded, failed, cancelled, interrupted. ACTIVE tasks also report child_process_alive, log_associated, and log_last_write_age_seconds. Read these carefully before judging a run stuck: a LIVE process with a quiet/old log is INCONCLUSIVE — the backend may be inside a long-running tool or MCP call (e.g. a multi-minute cross-family consultation at high reasoning effort) that emits no log events until it returns. Do not cancel or steer on silence alone; child_process_alive=false, or an interrupted/failed status, is the real failure signal. An interrupted row that the server auto-restarted carries restarted_as (the successor id); the successor carries restart_of."
     )]
     async fn dispatch_status(
         &self,
@@ -236,17 +239,27 @@ impl Dispatch {
         if id.is_empty() {
             return Ok(err_struct(ErrCode::InvalidParams, "id is required"));
         }
-        let conn = match self.lock_db() {
-            Ok(c) => c,
-            Err(e) => return Ok(e),
+        let row = {
+            let conn = match self.lock_db() {
+                Ok(c) => c,
+                Err(e) => return Ok(e),
+            };
+            match store::get(&conn, id) {
+                Ok(r) => r,
+                Err(e) => return Ok(err_struct(ErrCode::DbError, format!("db error: {e}"))),
+            }
         };
-        match store::get(&conn, id) {
-            Ok(Some(row)) => Ok(json_ok(row.to_json(true, p.include_spec.unwrap_or(false)))),
-            Ok(None) => Ok(err_struct(
+        match row {
+            Some(row) => {
+                let row = self.live_reconcile(&row).unwrap_or(row);
+                let mut v = row.to_json(true, p.include_spec.unwrap_or(false));
+                self.augment_observability(&mut v, &row);
+                Ok(json_ok(v))
+            }
+            None => Ok(err_struct(
                 ErrCode::NoSuchTask,
                 format!("no task with id {id:?}"),
             )),
-            Err(e) => Ok(err_struct(ErrCode::DbError, format!("db error: {e}"))),
         }
     }
 
@@ -395,7 +408,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "Show a curated, live-updating timeline of what a delegated run is doing. Codex logs are read from codex's rollout; OpenCode logs are dispatch-owned normalized JSONL; Claude logs are read from the session file under ~/.claude/projects (the session id is pinned at spawn). Noise (system prompts, token counts, encrypted codex reasoning, raw tool-call output) is filtered out; signal (user/backend messages, tool-call invocations, file edits, lifecycle, and plaintext OpenCode/Claude reasoning) is kept, and never truncated per-field — only the total response is size-capped (see line_start/line_end). Works WHILE the task is still running. Page with line_start/line_end (1-based; omitted = the tail) to avoid output limits — total_lines tells you how to page. kinds filters categories (lifecycle/messages/tools/edits/reasoning/tool_results; by default codex excludes reasoning while opencode and claude include it; tool_results — raw tool-call output — is excluded by default for every backend, request it explicitly). raw=true returns the underlying JSONL."
+        description = "Show a curated, live-updating timeline of what a delegated run is doing. Codex logs are read from codex's rollout; OpenCode logs are dispatch-owned normalized JSONL; Claude logs are read from the session file under ~/.claude/projects (the session id is pinned at spawn). Noise (system prompts, token counts, encrypted codex reasoning, raw tool-call output) is filtered out; signal (user/backend messages, tool-call invocations, file edits, lifecycle, and plaintext OpenCode/Claude reasoning) is kept, and never truncated per-field — only the total response is size-capped (see line_start/line_end). Works WHILE the task is still running. Page with line_start/line_end (1-based; omitted = the tail) to avoid output limits — total_lines tells you how to page. kinds filters categories (lifecycle/messages/tools/edits/reasoning/tool_results; by default codex excludes reasoning while opencode and claude include it; tool_results — raw tool-call output — is excluded by default for every backend, request it explicitly). raw=true returns the underlying JSONL. A quiet log on a RUNNING task is INCONCLUSIVE, not a hang: backends sit silent for minutes inside long tool/MCP calls (e.g. an aside consultation at high reasoning effort). Judge liveness by dispatch_status's child_process_alive + log_last_write_age_seconds, not by log silence."
     )]
     async fn dispatch_logs(
         &self,
@@ -427,7 +440,7 @@ impl Dispatch {
             None => {
                 return Ok(json_ok(json!({
                     "id": id, "status": row.status, "session_pending": true, "log": "",
-                    "note": "no backend log associated yet — the run may not have written its log, or its association is still pending; try again shortly",
+                    "note": "no backend log associated yet — the run may not have written its log, or its association is still pending; try again shortly. A fresh codex submit that stays unassociated ~30s with no working-dir writes is auto-restarted once by the server (dispatch_status shows restarted_as when that happened).",
                 })));
             }
         };
@@ -610,6 +623,7 @@ impl Dispatch {
                 model_fallback: None,
                 // Persist the *effective* value so a chain of steers keeps inheriting.
                 allow_concurrent: eff_allow_concurrent,
+                restart_of: None,
             };
             match store::insert_queued(
                 &mut conn,
@@ -661,6 +675,8 @@ impl Dispatch {
             nonce: None,
             rollout_path: parent_rollout.as_deref().map(PathBuf::from),
             model_fallback: None,
+            allow_concurrent: eff_allow_concurrent,
+            restart_of: None,
         };
         executor::spawn(self.db.clone(), self.registry.clone(), job);
 
@@ -713,6 +729,9 @@ impl Dispatch {
                 }
                 Err(e) => return Ok(err_struct(ErrCode::DbError, format!("db error: {e}"))),
             };
+            // A dead-owner task terminates the wait now rather than spinning to
+            // the timeout on a row nothing will ever finish.
+            let row = self.live_reconcile(&row).unwrap_or(row);
             if !store::is_active(&row.status) {
                 let v = self.wait_json(&row, waited_ms, false);
                 return Ok(json_ok(v));
@@ -748,6 +767,7 @@ impl Dispatch {
 
     fn wait_json(&self, row: &store::TaskRow, waited_ms: u64, timed_out: bool) -> Value {
         let mut v = row.to_json(false, false);
+        self.augment_observability(&mut v, row);
         v["timed_out"] = json!(timed_out);
         v["waited_ms"] = json!(waited_ms);
         v["has_result"] = json!(row.result.is_some());
@@ -776,7 +796,7 @@ impl Dispatch {
                 "shown_lines": "0-0",
                 "byte_capped": false,
                 "text": "",
-                    "note": "no backend log associated yet — the run may not have written its log, or its association is still pending",
+                    "note": "no backend log associated yet — the run may not have written its log, or its association is still pending (a fresh codex submit stuck like this ~30s with no working-dir writes is auto-restarted once; see restarted_as)",
             });
         };
         let jsonl = match rollout::read_to_string(Path::new(&rollout_path)) {
@@ -815,6 +835,65 @@ impl Dispatch {
             "kinds": kinds,
             "text": text,
         })
+    }
+
+    /// Live reconcile at read time: an ACTIVE row whose owning dispatch server
+    /// process is gone gets conditionally marked interrupted right now, rather
+    /// than lingering as a phantom `running` until some server's next boot.
+    /// Returns the refreshed row when a transition happened. The conditional
+    /// `mark_interrupted` makes the race with a normal terminal write safe.
+    fn live_reconcile(&self, row: &store::TaskRow) -> Option<store::TaskRow> {
+        if !store::is_active(&row.status) {
+            return None;
+        }
+        // owner_pid is always recorded at insert; a missing one is a legacy row
+        // that boot reconciliation owns — don't guess here.
+        let owner_dead = matches!(row.owner_pid, Some(p) if !process_alive(p as i32));
+        if !owner_dead {
+            return None;
+        }
+        let conn = self.db.lock().ok()?;
+        let n = store::mark_interrupted(
+            &conn,
+            &row.id,
+            "owning dispatch server exited while the task was active (reconciled at read time)",
+        )
+        .unwrap_or(0);
+        if n == 1 {
+            store::get(&conn, &row.id).ok().flatten()
+        } else {
+            None
+        }
+    }
+
+    /// Observability fields for status/wait responses. For an ACTIVE row:
+    /// `child_process_alive` (the spawned process-group leader — on Unix the
+    /// pdeath guard, which lives exactly as long as the backend subtree),
+    /// `log_associated`, and `log_last_write_age_seconds` (mtime age of the
+    /// associated backend log — a liveness-of-output signal, NOT proof of
+    /// semantic progress or of a hang: a live process with an old log may be
+    /// inside a long tool/MCP call). For an interrupted row that was
+    /// auto-restarted: `restarted_as`, the successor's id.
+    fn augment_observability(&self, v: &mut Value, row: &store::TaskRow) {
+        if store::is_active(&row.status) {
+            if let Some(pid) = row.child_pid {
+                v["child_process_alive"] = json!(process_alive(pid as i32));
+            }
+            let rollout = self.resolve_rollout(row);
+            v["log_associated"] = json!(rollout.is_some());
+            if let Some(age) = rollout
+                .as_deref()
+                .and_then(|p| mtime_age_seconds(Path::new(p)))
+            {
+                v["log_last_write_age_seconds"] = json!(age);
+            }
+        }
+        if row.status == store::STATUS_INTERRUPTED
+            && let Ok(conn) = self.db.lock()
+            && let Ok(Some(succ)) = store::restart_successor(&conn, &row.id)
+        {
+            v["restarted_as"] = json!(succ);
+        }
     }
 
     /// Resolve a task's backend log path. A cached value is trusted only if it still
@@ -1118,6 +1197,18 @@ fn effective_allow_concurrent(param: Option<bool>, parent: bool) -> bool {
     param.unwrap_or(parent)
 }
 
+/// Seconds since `p` was last written. A future mtime (clock skew) reads as 0
+/// — "just now" — rather than an error.
+fn mtime_age_seconds(p: &Path) -> Option<u64> {
+    let m = std::fs::metadata(p).ok()?.modified().ok()?;
+    Some(
+        SystemTime::now()
+            .duration_since(m)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    )
+}
+
 fn nonempty(o: Option<String>) -> Option<String> {
     o.filter(|s| !s.trim().is_empty())
 }
@@ -1371,14 +1462,13 @@ fn reconcile(conn: &rusqlite::Connection) {
             None => true,
         };
         if dead {
-            if let Err(e) = store::mark_interrupted(
+            match store::mark_interrupted(
                 conn,
                 &id,
                 "owning dispatch server is no longer running (reconciled at startup)",
             ) {
-                tracing::warn!("dispatch: reconcile mark_interrupted({id}) failed: {e}");
-            } else {
-                reconciled += 1;
+                Ok(n) => reconciled += n,
+                Err(e) => tracing::warn!("dispatch: reconcile mark_interrupted({id}) failed: {e}"),
             }
         }
     }
@@ -1401,11 +1491,21 @@ impl ServerHandler for Dispatch {
              hard guards a misbehaving model cannot bypass: working_dir must canonicalize within \
              the project root (or a DISPATCH_EXTRA_ROOTS-allowlisted root), the sandbox ceiling \
              blocks danger-full-access unless DISPATCH_ALLOW_DANGER is set, and only one run is \
-             allowed per working_dir unless allow_concurrent. The behavioral dispatch policy — \
-             when to initiate dispatch (a `proactive` prefs policy means submitting directly, \
-             without a propose-and-wait step), and whether to confirm working_dir, step scope, \
-             and approval granularity before the first dispatch of a session — lives in \
-             the harness-rendered dispatch rule and dispatch preferences file.",
+             allowed per working_dir unless allow_concurrent. SUPERVISION: dispatch_wait is the \
+             non-busy way to block (bounded long-poll — re-invoke on timeout); dispatch_logs \
+             shows a live curated timeline; dispatch_steer interrupts a run and resumes the SAME \
+             backend session with a new instruction (turn granularity — prior context and files \
+             written are preserved). A quiet log on a live process is INCONCLUSIVE (long MCP/tool \
+             calls emit nothing until they return) — judge by child_process_alive and \
+             log_last_write_age_seconds in dispatch_status, never by silence alone. `succeeded` \
+             means exit 0, not that the change is correct — review the captured result. A fresh \
+             codex submit whose log never associates within ~30s with no working-dir writes is \
+             auto-restarted once (restart_of/restarted_as link the pair; \
+             DISPATCH_RESTART_UNASSOCIATED_SECS tunes, 0 disables). The behavioral dispatch \
+             policy — when to initiate dispatch (a `proactive` prefs policy means submitting \
+             directly, without a propose-and-wait step), and whether to confirm working_dir, \
+             step scope, and approval granularity before the first dispatch of a session — lives \
+             in the harness-rendered dispatch rule and dispatch preferences file.",
         )
     }
 

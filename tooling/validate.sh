@@ -255,6 +255,41 @@ for pair in "codex:$codex_concat" "kimi:$kimi_concat"; do
   fi
 done
 
+# ── 8b. standing-corpus byte budgets (hard) ───────────────
+# The rendered standing rules are injected into every session; per-rule
+# compliance degrades as the corpus grows, so growth past these ceilings is a
+# regression, not a style issue. Raising a ceiling is a deliberate release
+# decision, never a drive-by. Prefs templates are user-owned config, excluded.
+
+corpus_bytes() {
+  total=0
+  for f in "$@"; do
+    [ -f "$f" ] || continue
+    n=$(wc -c < "$f")
+    total=$((total + n))
+  done
+  echo "$total"
+}
+
+claude_bytes=$(corpus_bytes "$ROOT/kits/claude-agent-kit/CLAUDE.md" \
+  $(ls "$ROOT"/kits/claude-agent-kit/claude-rules/*.md 2>/dev/null | grep -v 'prefs'))
+codex_bytes=$(corpus_bytes "$ROOT/kits/codex-agent-kit/AGENTS.md" \
+  $(ls "$ROOT"/kits/codex-agent-kit/codex-rules/*.md 2>/dev/null | grep -v 'prefs'))
+kimi_bytes=$(corpus_bytes "$ROOT/kits/kimi-agent-kit/AGENTS.md" \
+  $(ls "$ROOT"/kits/kimi-agent-kit/kimi-rules/*.md 2>/dev/null | grep -v 'prefs'))
+
+echo "standing corpus: claude=${claude_bytes}B codex=${codex_bytes}B kimi=${kimi_bytes}B"
+budget_check() {
+  kit="$1"; n="$2"; cap="$3"
+  if [ "$n" -gt "$cap" ]; then
+    echo "$kit standing corpus is ${n} bytes (budget ${cap}) — the corpus must shrink, not the budget" >&2
+    fail=1
+  fi
+}
+budget_check claude "$claude_bytes" 80000
+budget_check codex "$codex_bytes" 68000
+budget_check kimi "$kimi_bytes" 67000
+
 # ── 9. rendered titles ────────────────────────────────────
 
 if ! grep -n "Codex Agent Operating Manual" "$ROOT/kits/codex-agent-kit/AGENTS.md" >/dev/null 2>&1; then

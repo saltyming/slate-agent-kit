@@ -2,7 +2,7 @@
 │     │     fire-and-forget, self-contained prompts
 │     ├─ Coordinated streams that must talk / be steered → Agent Team (single implicit team):
 │     │     Agent(name=…, subagent_type=…, model="sonnet", run_in_background=true, prompt=<role-only>)
-│     │     task graph in team: namespace; steer via workslate_msg_send doorbell; leader verifies
+│     │     task graph via TaskCreate; mid-turn steering via the workslate doorbell; leader verifies
 │     ├─ Large breadth-first mechanical sweep → Workflow (separate tool; current-turn opt-in only)
 │     └─ External execution step (codex/opencode/claude backend) → dispatch_submit
 │           → poll dispatch_status / dispatch_wait / dispatch_logs / dispatch_steer

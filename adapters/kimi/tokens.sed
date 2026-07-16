@@ -17,4 +17,4 @@ s#{{EDIT_SURFACE}}#Kimi's native edit/write tools#g
 s#{{DELEGATION_SURFACE}}#Agent / dispatch when installed#g
 s#{{FANOUT_DELEGATION_SURFACE}}#AgentSwarm#g
 s#{{KIT_PREFIX}}#kimi-agent-kit#g
-s#{{KIT_VERSION}}#0.4.4#g
+s#{{KIT_VERSION}}#0.5.0#g
