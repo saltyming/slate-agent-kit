@@ -115,4 +115,4 @@ on top, following the same pattern as the v11.0.0 relocations table above.
 
 | Was (standing rules) | Now | Status |
 |---|---|---|
-| task-execution.md's Stop verify hook paragraph (`inserts/execution-harness.md`, verbatim per the row above) | removed — the hook itself was retired from claude-agent-kit's installer (`hooks.rs`'s `install_hooks()` no longer installs it; a pre-11.1.0 live entry self-cleans via `strip_stop_if_present` on next install/uninstall); cost/latency vs. value judged not worth it in daily use. `inserts/execution-harness.md` is now empty — no successor location. | superseded |
+| task-execution.md's Stop verify hook paragraph (`inserts/execution-harness.md`, verbatim per the row above) | removed — the hook itself was retired from claude-agent-kit's installer (`hooks.rs`'s `install_hooks()` no longer installs it; a pre-11.1.0 live entry self-cleans on next `install_hooks()` via the new `strip_stop_if_present` helper, or on `uninstall_hooks()` via its existing per-event `WS_HOOK_EVENTS` loop); cost/latency vs. value judged not worth it in daily use. `inserts/execution-harness.md` is now empty — no successor location. | superseded |
