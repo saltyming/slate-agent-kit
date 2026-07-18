@@ -104,3 +104,15 @@ decision-shaping boundary example. Enforced by validate.sh § 8b byte budgets.
 | kernel [OVERRIDE] quotes of harness system-prompt text | ghost quotes deleted; surviving interpretation rules restated quote-free in kernel-overrides insert (live-conflict check 2026-07-17: only commit/PR attribution remains a real conflict — kept in git-overrides) | superseded |
 | GATE-SCOPE-CONFIRM / GATE-DEVIATION / GATE-GIT rationale paragraphs and long enumerations | condensed in loop-execution.md; every trigger, disambiguating test, and required sequence preserved | moved |
 | Agent-Teams patterns/limitations tables, completion-report long form | delegation-surfaces insert, condensed | moved |
+
+## v11.1.0 — Stop verify hook removed
+
+The § Section headings row for `task-execution.md:238–277` records the Stop
+verify hook paragraph as `moved` (verbatim) into `inserts/execution-harness.md`
+as of the v10.0.0/v11.0.0 snapshot — that entry is left unchanged as an
+accurate point-in-time record. This table layers the subsequent v11.1.0 change
+on top, following the same pattern as the v11.0.0 relocations table above.
+
+| Was (standing rules) | Now | Status |
+|---|---|---|
+| task-execution.md's Stop verify hook paragraph (`inserts/execution-harness.md`, verbatim per the row above) | removed — the hook itself was retired from claude-agent-kit's installer (`hooks.rs`'s `install_hooks()` no longer installs it; a pre-11.1.0 live entry self-cleans via `strip_stop_if_present` on next install/uninstall); cost/latency vs. value judged not worth it in daily use. `inserts/execution-harness.md` is now empty — no successor location. | superseded |
