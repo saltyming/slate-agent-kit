@@ -17,4 +17,4 @@ s#{{EDIT_SURFACE}}#Edit / Write directly#g
 s#{{DELEGATION_SURFACE}}#Agent / Workflow / dispatch#g
 s#{{FANOUT_DELEGATION_SURFACE}}#Workflow#g
 s#{{KIT_PREFIX}}#claude-agent-kit#g
-s#{{KIT_VERSION}}#11.1.0#g
+s#{{KIT_VERSION}}#11.2.0#g

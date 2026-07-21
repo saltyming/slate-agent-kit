@@ -5,5 +5,5 @@
 │     │     task graph via TaskCreate; mid-turn steering via the workslate doorbell; leader verifies
 │     ├─ Large breadth-first mechanical sweep → Workflow (separate tool; current-turn opt-in only)
 │     └─ External execution step (codex/opencode/claude backend) → dispatch_submit
-│           → poll dispatch_status / dispatch_wait / dispatch_logs / dispatch_steer
+│           → poll dispatch_status / dispatch_logs / dispatch_steer
 │           (dispatch-prefs execution policy; proactive+auto → submit directly)

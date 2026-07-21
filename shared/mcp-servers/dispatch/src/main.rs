@@ -47,21 +47,11 @@ use serde_json::{Value, json};
 use backend::Backend;
 use params::{
     BackendsParams, CancelParams, ListParams, LogsParams, StatusParams, SteerParams, SubmitParams,
-    WaitParams,
 };
 
 /// How long `dispatch_steer` waits for the parent run to actually terminate after
 /// cancel before giving up (so the working_dir is free for the resume run).
 const STEER_TERMINATE_WAIT_MS: u64 = 30_000;
-
-/// `dispatch_wait` ceiling: a bounded long-poll, never an unbounded block — a held MCP
-/// call would hit the client/harness request timeout. The caller re-invokes if it
-/// times out. `WaitParams.timeout_ms` is clamped to this.
-const WAIT_MAX_TIMEOUT_MS: u64 = 120_000;
-const WAIT_DEFAULT_TIMEOUT_MS: u64 = 30_000;
-const WAIT_POLL_INTERVAL_MS: u64 = 300;
-const WAIT_LOG_TAIL_LINES: usize = 30;
-const WAIT_LOG_BYTE_CAP: usize = 8 * 1024;
 
 /// Tolerance subtracted from a legacy task's start time when validating its rollout by
 /// mtime — absorbs clock / ordering skew between the DB timestamp and the file.
@@ -693,61 +683,6 @@ impl Dispatch {
             "note": "steering: the backend session was resumed with your new instruction (it inherits the echoed sandbox/model/reasoning_effort/allow_concurrent unless you overrode them) — poll dispatch_status / dispatch_logs",
         })))
     }
-
-    #[tool(
-        description = "Bounded long-poll: block until a dispatched task reaches a terminal status (succeeded / failed / cancelled / interrupted) or timeout_ms elapses (default 30s, capped at 120s), then return compact task status plus a small curated `log_tail` and `timed_out` flag. This is NOT an unbounded wait — a multi-minute run times out with `timed_out: true` and a non-terminal status. dispatch has NO push notification: if the task is still non-terminal, either re-invoke dispatch_wait now to keep blocking, or — if ending the turn — schedule a follow-up dispatch_status/dispatch_wait check first where the active harness has a scheduling mechanism, or otherwise tell the user explicitly the task is still running and they'll need to ask you to check back. Ending the turn with nothing armed and no signal to the user strands the task with no way to learn it finished. Use dispatch_logs for the full timeline and dispatch_status for the captured result (add include_spec=true there to also re-read the accepted spec/prompt)."
-    )]
-    async fn dispatch_wait(
-        &self,
-        Parameters(p): Parameters<WaitParams>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let id = p.id.trim().to_string();
-        if id.is_empty() {
-            return Ok(err_struct(ErrCode::InvalidParams, "id is required"));
-        }
-        let timeout_ms = p
-            .timeout_ms
-            .map(|t| (t as u64).clamp(WAIT_POLL_INTERVAL_MS, WAIT_MAX_TIMEOUT_MS))
-            .unwrap_or(WAIT_DEFAULT_TIMEOUT_MS);
-
-        let mut waited_ms = 0u64;
-        loop {
-            let row = {
-                let conn = match self.lock_db() {
-                    Ok(c) => c,
-                    Err(e) => return Ok(e),
-                };
-                store::get(&conn, &id)
-            };
-            let row = match row {
-                Ok(Some(r)) => r,
-                Ok(None) => {
-                    return Ok(err_struct(
-                        ErrCode::NoSuchTask,
-                        format!("no task with id {id:?}"),
-                    ));
-                }
-                Err(e) => return Ok(err_struct(ErrCode::DbError, format!("db error: {e}"))),
-            };
-            // A dead-owner task terminates the wait now rather than spinning to
-            // the timeout on a row nothing will ever finish.
-            let row = self.live_reconcile(&row).unwrap_or(row);
-            if !store::is_active(&row.status) {
-                let v = self.wait_json(&row, waited_ms, false);
-                return Ok(json_ok(v));
-            }
-            if waited_ms >= timeout_ms {
-                let mut v = self.wait_json(&row, waited_ms, true);
-                v["note"] = json!(format!(
-                    "still {} after {waited_ms}ms — re-invoke dispatch_wait to keep waiting; inspect log_tail below or call dispatch_logs for the full timeline",
-                    row.status
-                ));
-                return Ok(json_ok(v));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(WAIT_POLL_INTERVAL_MS)).await;
-            waited_ms += WAIT_POLL_INTERVAL_MS;
-        }
-    }
 }
 
 // ── guards + helpers (non-tool impl) ──────────────────────
@@ -763,78 +698,6 @@ impl Dispatch {
         self.db
             .lock()
             .map_err(|e| err_struct(ErrCode::DbError, format!("database lock poisoned: {e}")))
-    }
-
-    fn wait_json(&self, row: &store::TaskRow, waited_ms: u64, timed_out: bool) -> Value {
-        let mut v = row.to_json(false, false);
-        self.augment_observability(&mut v, row);
-        v["timed_out"] = json!(timed_out);
-        v["waited_ms"] = json!(waited_ms);
-        v["has_result"] = json!(row.result.is_some());
-        v["has_error"] = json!(row.error.is_some());
-        if let Some(err) = row
-            .error
-            .as_deref()
-            .filter(|_| !store::is_active(&row.status))
-        {
-            v["error_preview"] = json!(preview_oneline(err, 1_000));
-        }
-        v["log_tail"] = self.wait_log_tail(row);
-        v["next"] = json!({
-            "wait": format!("dispatch_wait(id={})", row.id),
-            "logs": format!("dispatch_logs(id={}) for the full curated timeline", row.id),
-            "status": format!("dispatch_status(id={}) for the captured result/error (add include_spec=true to also re-read the submitted spec)", row.id),
-        });
-        v
-    }
-
-    fn wait_log_tail(&self, row: &store::TaskRow) -> Value {
-        let Some(rollout_path) = self.resolve_rollout(row) else {
-            return json!({
-                "session_pending": true,
-                "total_lines": 0,
-                "shown_lines": "0-0",
-                "byte_capped": false,
-                "text": "",
-                    "note": "no backend log associated yet — the run may not have written its log, or its association is still pending (a fresh codex submit stuck like this ~30s with no working-dir writes is auto-restarted once; see restarted_as)",
-            });
-        };
-        let jsonl = match rollout::read_to_string(Path::new(&rollout_path)) {
-            Ok(s) => trim_to_start_line(s, row.rollout_start_line),
-            Err(e) => {
-                return json!({
-                    "session_pending": false,
-                    "total_lines": 0,
-                    "shown_lines": "0-0",
-                    "byte_capped": false,
-                    "text": "",
-                    "error": format!("could not read rollout {rollout_path}: {e}"),
-                });
-            }
-        };
-        let kinds = rollout::default_kinds(&row.backend);
-        // Fresh-submit only (steer keeps its new instruction visible) — see dispatch_logs.
-        let elide = row.parent_id.is_none().then_some(row.prompt.as_str());
-        let rendered = if row.backend == "claude" {
-            rollout::curate_claude(&jsonl, &kinds, elide)
-        } else {
-            rollout::curate(&jsonl, &kinds, elide)
-        };
-        let (text, s, e, capped) = rollout::window_with_limits(
-            &rendered.lines,
-            None,
-            None,
-            WAIT_LOG_TAIL_LINES,
-            WAIT_LOG_BYTE_CAP,
-        );
-        json!({
-            "session_pending": false,
-            "total_lines": rendered.total,
-            "shown_lines": format!("{s}-{e}"),
-            "byte_capped": capped,
-            "kinds": kinds,
-            "text": text,
-        })
     }
 
     /// Live reconcile at read time: an ACTIVE row whose owning dispatch server
@@ -1217,16 +1080,6 @@ fn nonempty_ref(o: &Option<String>) -> Option<&str> {
     o.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
-fn preview_oneline(s: &str, cap: usize) -> String {
-    let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one.chars().count() > cap {
-        let cut: String = one.chars().take(cap).collect();
-        format!("{cut}…")
-    } else {
-        one
-    }
-}
-
 /// Monotonic counter for `make_nonce`.
 static NONCE_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -1491,8 +1344,8 @@ impl ServerHandler for Dispatch {
              hard guards a misbehaving model cannot bypass: working_dir must canonicalize within \
              the project root (or a DISPATCH_EXTRA_ROOTS-allowlisted root), the sandbox ceiling \
              blocks danger-full-access unless DISPATCH_ALLOW_DANGER is set, and only one run is \
-             allowed per working_dir unless allow_concurrent. SUPERVISION: dispatch_wait is the \
-             non-busy way to block (bounded long-poll — re-invoke on timeout); dispatch_logs \
+             allowed per working_dir unless allow_concurrent. SUPERVISION: poll dispatch_status \
+             for the current snapshot and (when terminal) the captured result; dispatch_logs \
              shows a live curated timeline; dispatch_steer interrupts a run and resumes the SAME \
              backend session with a new instruction (turn granularity — prior context and files \
              written are preserved). A quiet log on a live process is INCONCLUSIVE (long MCP/tool \

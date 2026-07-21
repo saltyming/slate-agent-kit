@@ -488,7 +488,7 @@ configure_codex() {
   # aside blocks for the whole backend call (a claude -p / codex advisor run can
   # take many minutes), which would otherwise trip Codex's per-tool-call timeout.
   # Raise it to 30 minutes for aside. (dispatch tool calls are bounded — submit
-  # returns immediately and dispatch_wait is capped — so it keeps the default.)
+  # returns immediately and status/logs are quick — so it keeps the default.)
   codex_set_server_key aside tool_timeout_sec 1800
   # Codex classes an MCP tool as approval-required unless told otherwise, and a
   # headless `codex exec` (approval_policy=never) has nobody to approve it — the

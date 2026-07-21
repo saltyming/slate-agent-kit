@@ -273,9 +273,8 @@ pub fn window(
     window_with_limits(lines, start, end, DEFAULT_TAIL_LINES, RENDER_BYTE_CAP)
 }
 
-/// Slice rendered lines with caller-specified default tail and byte cap. This is
-/// used by `dispatch_wait` to include a small progress tail without returning the
-/// larger `dispatch_logs` default window.
+/// Slice rendered lines with caller-specified default tail and byte cap. Backs
+/// `dispatch_logs`' windowing — `window` calls it with the default tail/cap.
 pub fn window_with_limits(
     lines: &[String],
     start: Option<usize>,

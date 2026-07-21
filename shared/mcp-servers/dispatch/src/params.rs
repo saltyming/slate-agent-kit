@@ -147,14 +147,3 @@ pub struct SteerParams {
     #[serde(default, deserialize_with = "lenient_opt_bool")]
     pub allow_concurrent: Option<bool>,
 }
-
-#[derive(Debug, Deserialize, JsonSchema, Default)]
-pub struct WaitParams {
-    /// Task id to wait on, e.g. "d-7".
-    pub id: String,
-    /// Bounded wait budget in milliseconds (default 30000, capped at 120000). The call
-    /// returns as soon as the task is terminal, or with `timed_out=true` at the cap —
-    /// re-invoke to keep waiting. This is a bounded long-poll, never an unbounded block.
-    #[serde(default, deserialize_with = "lenient_opt_u32")]
-    pub timeout_ms: Option<u32>,
-}
