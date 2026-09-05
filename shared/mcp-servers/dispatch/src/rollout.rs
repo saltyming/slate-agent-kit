@@ -60,8 +60,10 @@ fn kind_of(t: &str, pt: &str, item: Option<&str>) -> Option<&'static str> {
         ("event_msg", "item_completed") => match item? {
             "UserMessage" | "AgentMessage" => Some("messages"),
             "FileChange" => Some("edits"),
-            // CommandExecution / McpToolCall duplicate the response_item tool-call
-            // records rendered above; Reasoning carries no plaintext. Noise.
+            // CommandExecution duplicates the `custom_tool_call` record rendered
+            // above; McpToolCall likewise mirrors a `function_call` record (which
+            // the `tools` kind does not render — a pre-existing gap, unchanged
+            // here); Reasoning carries no plaintext. Noise.
             _ => None,
         },
         // noise: session_meta, turn_context, event_msg/token_count, response_item/message
@@ -223,13 +225,20 @@ fn render(o: &Value) -> Option<(&'static str, String)> {
                     }
                 }
                 "FileChange" => {
-                    // Same `changes` map as `patch_apply_end`; `status` replaces `success`.
-                    let ok = item.get("status").and_then(Value::as_str) != Some("failed");
-                    format!(
-                        "[edit{}] {}",
-                        if ok { "" } else { " FAILED" },
-                        patch_files(item)
-                    )
+                    // Same `changes` map as `patch_apply_end`; a `status` string
+                    // (`completed` / `failed` / `declined`) replaces `success`. Anything
+                    // but `completed` is surfaced verbatim so a declined or failed patch
+                    // never reads as an applied edit.
+                    let status = item
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("completed");
+                    let tag = if status == "completed" {
+                        String::new()
+                    } else {
+                        format!(" {}", status.to_ascii_uppercase())
+                    };
+                    format!("[edit{tag}] {}", patch_files(item))
                 }
                 _ => return None,
             }
@@ -772,10 +781,13 @@ mod tests {
         assert!(!joined.contains("injected"));
         assert!(!joined.contains("raw output"));
 
-        // a failed FileChange is flagged like a failed patch_apply_end
+        // a failed / declined FileChange is flagged, never shown as an applied edit
         let failed = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","changes":{"/w/b.rs":{"type":"update"}},"status":"failed"}}}"#;
         let r2 = curate(failed, &default_kinds("codex"), None);
         assert_eq!(r2.lines, vec!["[edit FAILED] update b.rs"]);
+        let declined = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","changes":{"/w/c.rs":{"type":"delete"}},"status":"declined"}}}"#;
+        let r3 = curate(declined, &default_kinds("codex"), None);
+        assert_eq!(r3.lines, vec!["[edit DECLINED] delete c.rs"]);
     }
 
     #[test]

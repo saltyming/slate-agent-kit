@@ -11,7 +11,10 @@
 //! delegations spawn).
 //!
 //! Conversational messages have been recorded in two schemas over codex's
-//! history, and a rollout carries exactly one of them (never both):
+//! history. Every rollout observed so far (several hundred, codex 0.142–0.153)
+//! carries exactly one of them, so a reader that accepts both renders each
+//! message once; a rollout that mixed them would show a message twice — a
+//! cosmetic duplicate, never a lost message or a mis-association:
 //!
 //! * legacy (codex-cli ≤ 0.147): `{"type":"event_msg","payload":{"type":
 //!   "user_message"|"agent_message","message":"…"}}`;

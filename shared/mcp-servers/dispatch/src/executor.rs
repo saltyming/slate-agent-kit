@@ -231,6 +231,18 @@ async fn run_attempt(
                 &render::nonce_marker(base),
                 &render::nonce_marker(&new_nonce),
             );
+            // The row must carry the identity this attempt actually embeds:
+            // dispatch_logs / dispatch_steer re-validate the cached rollout and
+            // re-locate by `row.nonce`'s FULL marker, so a row left on `<base>`
+            // would reject this attempt's rollout (and, if attempt 0's is still
+            // on disk, resolve to that failed attempt instead). Clearing the
+            // prior association at the same time fails closed until this
+            // attempt's own rollout is found.
+            if let Ok(conn) = db.lock()
+                && let Err(e) = store::set_attempt_nonce(&conn, &job.id, &new_nonce)
+            {
+                tracing::warn!("dispatch: set_attempt_nonce({}) failed: {e}", job.id);
+            }
             (Some(new_nonce), std::borrow::Cow::Owned(swapped))
         };
 

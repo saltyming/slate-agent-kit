@@ -419,6 +419,17 @@ pub fn set_session(
     Ok(())
 }
 
+/// Switch a task to a fallback attempt's identity: the nonce its prompt now
+/// embeds, with the previous attempt's association cleared (a rollout found for
+/// the old nonce is no longer this task's live log).
+pub fn set_attempt_nonce(conn: &Connection, id: &str, nonce: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE dispatch_tasks SET nonce = ?1, session_id = NULL, rollout_path = NULL WHERE id = ?2",
+        params![nonce, id],
+    )?;
+    Ok(())
+}
+
 /// Write a terminal status (succeeded / failed / cancelled) plus captured output.
 pub fn finish(
     conn: &Connection,
@@ -865,5 +876,34 @@ CREATE TABLE dispatch_counters (scope TEXT PRIMARY KEY, next_id INTEGER NOT NULL
         assert!(v.get("id").is_some());
         assert!(v.get("status").is_some());
         assert!(v.get("allow_concurrent").is_some());
+    }
+
+    /// A fallback retry swaps the nonce its prompt embeds; the row must follow
+    /// (so main.rs validates / re-locates by the marker actually on disk) and the
+    /// prior attempt's association must be dropped rather than trusted.
+    #[test]
+    fn set_attempt_nonce_replaces_identity_and_clears_association() {
+        let path = std::env::temp_dir().join(format!(
+            "dispatch-attempt-nonce-test-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut conn = open(&path);
+        init(&conn).unwrap();
+        let mut task = sample_task();
+        task.nonce = Some("d-1:N".to_string());
+        let id = match insert_queued(&mut conn, &task, 1, "i1", None).unwrap() {
+            InsertOutcome::Created(id) => id,
+            InsertOutcome::Conflict(other) => panic!("expected Created, got conflict with {other}"),
+        };
+        set_session(&conn, &id, "sid-attempt0", "/rollouts/attempt0.jsonl").unwrap();
+
+        set_attempt_nonce(&conn, &id, "d-1:N-retry1").unwrap();
+
+        let row = get(&conn, &id).unwrap().unwrap();
+        assert_eq!(row.nonce.as_deref(), Some("d-1:N-retry1"));
+        assert_eq!(row.session_id, None);
+        assert_eq!(row.rollout_path, None);
+        let _ = std::fs::remove_file(&path);
     }
 }
