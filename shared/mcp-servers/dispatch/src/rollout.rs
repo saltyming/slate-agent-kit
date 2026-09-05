@@ -14,14 +14,18 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use harness_log::codex::{codex_home, collect, cwd_matches, file_mtime, read_session_meta};
+use harness_log::codex::{
+    MessageRole, codex_home, collect, cwd_matches, file_mtime, message_text, read_session_meta,
+};
 use serde_json::Value;
 
 const RENDER_BYTE_CAP: usize = 40 * 1024;
 const DEFAULT_TAIL_LINES: usize = 150;
 const SCAN_CAP: usize = 60;
 /// How many opening lines of a rollout `locate_by_nonce` scans for the marker — the
-/// dispatch prompt is recorded as a `user_message` among the first events.
+/// dispatch prompt is recorded as a user message among the first events (observed at
+/// lines 4–10 across codex 0.142–0.153; harness-injected context precedes it as a
+/// handful of single-line records).
 const NONCE_SCAN_LINES: usize = 64;
 
 /// The curation categories `dispatch_logs(kinds=…)` can select. OpenCode exposes
@@ -43,7 +47,9 @@ pub fn default_kinds(backend: &str) -> Vec<String> {
     kinds
 }
 
-fn kind_of(t: &str, pt: &str) -> Option<&'static str> {
+/// `item` is the `item.type` of an `event_msg/item_completed` record (codex ≥ 0.147
+/// records messages and file changes only there — see `harness_log::codex`).
+fn kind_of(t: &str, pt: &str, item: Option<&str>) -> Option<&'static str> {
     match (t, pt) {
         ("event_msg", "task_started") | ("event_msg", "task_complete") => Some("lifecycle"),
         ("event_msg", "user_message") | ("event_msg", "agent_message") => Some("messages"),
@@ -51,6 +57,13 @@ fn kind_of(t: &str, pt: &str) -> Option<&'static str> {
         ("response_item", "custom_tool_call_output") => Some("tool_results"),
         ("event_msg", "patch_apply_end") => Some("edits"),
         ("response_item", "reasoning") => Some("reasoning"),
+        ("event_msg", "item_completed") => match item? {
+            "UserMessage" | "AgentMessage" => Some("messages"),
+            "FileChange" => Some("edits"),
+            // CommandExecution / McpToolCall duplicate the response_item tool-call
+            // records rendered above; Reasoning carries no plaintext. Noise.
+            _ => None,
+        },
         // noise: session_meta, turn_context, event_msg/token_count, response_item/message
         _ => None,
     }
@@ -84,7 +97,7 @@ pub fn curate(jsonl: &str, kinds: &[String], elide_prompt: Option<&str>) -> Rend
             // duplicate re-echo) to a one-line placeholder — it re-states the whole
             // spec the caller already has.
             let line = match elide_prompt {
-                Some(p) if message_content(&o).is_some_and(|c| is_prompt_echo(c, p)) => {
+                Some(p) if message_content(&o).is_some_and(|c| is_prompt_echo(&c, p)) => {
                     if elided {
                         continue;
                     }
@@ -141,23 +154,19 @@ fn elided_prompt_line(prompt: &str) -> String {
 }
 
 /// Raw user/agent message text of a codex/OpenCode event, if it is one — the
-/// candidate a prompt-echo check runs against.
-fn message_content(o: &Value) -> Option<&str> {
-    if o.get("type")?.as_str()? != "event_msg" {
-        return None;
-    }
-    let p = o.get("payload")?;
-    match p.get("type").and_then(Value::as_str).unwrap_or("") {
-        "user_message" | "agent_message" => p.get("message").and_then(Value::as_str),
-        _ => None,
-    }
+/// candidate a prompt-echo check runs against. Covers both codex message schemas
+/// (OpenCode's dispatch-owned log uses the legacy event shape).
+fn message_content(o: &Value) -> Option<String> {
+    message_text(o).map(|(_, text)| text)
 }
 
 fn render(o: &Value) -> Option<(&'static str, String)> {
     let t = o.get("type")?.as_str()?;
     let p = o.get("payload")?;
     let pt = p.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    let kind = kind_of(t, pt)?;
+    let item = p.get("item");
+    let item_type = item.and_then(|i| i.get("type")).and_then(Value::as_str);
+    let kind = kind_of(t, pt, item_type)?;
     let line = match (t, pt) {
         ("event_msg", "task_started") => "▶ started".to_string(),
         ("event_msg", "task_complete") => {
@@ -198,6 +207,32 @@ fn render(o: &Value) -> Option<(&'static str, String)> {
                 if ok { "" } else { " FAILED" },
                 patch_files(p)
             )
+        }
+        ("event_msg", "item_completed") => {
+            let item = item?;
+            match item_type? {
+                "UserMessage" | "AgentMessage" => {
+                    let (role, text) = message_text(o)?;
+                    let flat = flatten(&text);
+                    if flat.is_empty() {
+                        return None;
+                    }
+                    match role {
+                        MessageRole::User => format!("[user] {flat}"),
+                        MessageRole::Agent => format!("[codex] {flat}"),
+                    }
+                }
+                "FileChange" => {
+                    // Same `changes` map as `patch_apply_end`; `status` replaces `success`.
+                    let ok = item.get("status").and_then(Value::as_str) != Some("failed");
+                    format!(
+                        "[edit{}] {}",
+                        if ok { "" } else { " FAILED" },
+                        patch_files(item)
+                    )
+                }
+                _ => return None,
+            }
         }
         ("response_item", "reasoning") => {
             let text = field_str(p, "text");
@@ -589,11 +624,19 @@ fn locate_by_nonce_in(root: &Path, working_dir: &Path, nonce: &str) -> Option<(P
     None
 }
 
-/// Scan the opening lines of a rollout for the dispatch `nonce` inside a
-/// `user_message` event. Reads at most `NONCE_SCAN_LINES` lines — the rendered prompt
-/// (which carries the marker) is recorded among the first events.
+/// Scan the opening lines of a rollout for the dispatch nonce's full marker
+/// (`[dispatch-task: <nonce>]`) inside a user message — either codex schema (legacy
+/// `user_message` event or `item_completed` `UserMessage` item). Reads at most
+/// `NONCE_SCAN_LINES` lines — the rendered prompt is recorded among the first events.
+/// The full marker, not the bare nonce, is what must match: a fallback-retry or
+/// watchdog-restart successor's nonce is `<base>-retryN` / `<base>-restart`, so a
+/// substring test on `<base>` would claim the successor's rollout for the original.
 pub fn rollout_has_nonce(path: &Path, nonce: &str) -> bool {
     use std::io::{BufRead, BufReader};
+    if nonce.is_empty() {
+        return false;
+    }
+    let marker = crate::render::nonce_marker(nonce);
     let f = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return false,
@@ -607,17 +650,8 @@ pub fn rollout_has_nonce(path: &Path, nonce: &str) -> bool {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if o.get("type").and_then(|v| v.as_str()) != Some("event_msg") {
-            continue;
-        }
-        let Some(p) = o.get("payload") else { continue };
-        if p.get("type").and_then(|v| v.as_str()) != Some("user_message") {
-            continue;
-        }
-        if p.get("message")
-            .and_then(|v| v.as_str())
-            .map(|m| m.contains(nonce))
-            .unwrap_or(false)
+        if let Some((MessageRole::User, text)) = message_text(&o)
+            && text.contains(&marker)
         {
             return true;
         }
@@ -692,6 +726,56 @@ mod tests {
         assert!(r.lines.iter().any(|l| l.starts_with("✓ complete")));
         // reasoning excluded by default; noise never rendered
         assert!(!r.lines.iter().any(|l| l.starts_with("[thinking]")));
+    }
+
+    /// codex ≥ 0.153 records no `user_message` / `agent_message` / `patch_apply_end`
+    /// events at all — prose and file changes live only in `item_completed` items,
+    /// while the `custom_tool_call` records (and the injected `response_item/message`
+    /// context) are unchanged. Shape taken from a real 0.153.4 rollout.
+    const SAMPLE_V2: &str = r#"
+{"type":"session_meta","payload":{"session_id":"x","cwd":"/w","originator":"codex_exec","source":"exec","cli_version":"0.153.4"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1","started_at":1}}
+{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"memory notes"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<recommended_plugins>injected</recommended_plugins>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"do the thing"}]}}
+{"type":"event_msg","payload":{"type":"item_completed","thread_id":"x","turn_id":"t1","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"do the thing"}]}}}
+{"type":"event_msg","payload":{"type":"item_completed","thread_id":"x","turn_id":"t1","item":{"type":"AgentMessage","id":"a1","content":[{"type":"Text","text":"on it"}],"phase":"commentary"}}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"on it"}]}}
+{"type":"response_item","payload":{"type":"reasoning","encrypted_content":"zzz","summary":[]}}
+{"type":"event_msg","payload":{"type":"item_completed","thread_id":"x","turn_id":"t1","item":{"type":"Reasoning","id":"r1","summary_text":[],"raw_content":[]}}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"text(await tools.exec_command({cmd:\"apply_patch\"}))"}}
+{"type":"event_msg","payload":{"type":"item_completed","thread_id":"x","turn_id":"t1","item":{"type":"CommandExecution","id":"e1","command":["/bin/zsh","-lc","apply_patch"],"status":"completed","aggregated_output":"raw output","exit_code":0}}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","output":"raw output"}}
+{"type":"event_msg","payload":{"type":"item_completed","thread_id":"x","turn_id":"t1","item":{"type":"FileChange","id":"f1","changes":{"/w/a.txt":{"type":"add","unified_diff":"@@ -0,0 +1 @@\n+hi"}},"status":"completed","stdout":"","stderr":""}}}
+{"type":"event_msg","payload":{"type":"item_completed","thread_id":"x","turn_id":"t1","item":{"type":"AgentMessage","id":"a2","content":[{"type":"Text","text":"done"}],"phase":"final_answer"}}}
+{"type":"event_msg","payload":{"type":"token_count","payload":{}}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"done","started_at":1,"completed_at":3}}
+"#;
+
+    #[test]
+    fn curate_reads_item_completed_schema() {
+        let r = curate(SAMPLE_V2, &default_kinds("codex"), None);
+        assert_eq!(
+            r.lines,
+            vec![
+                "▶ started",
+                "[user] do the thing",
+                "[codex] on it",
+                "[tool] exec: text(await tools.exec_command({cmd:\"apply_patch\"}))",
+                "[edit] add a.txt",
+                "[codex] done",
+                "✓ complete: done",
+            ],
+        );
+        // the injected response_item context and raw command output never render
+        let joined = r.lines.join("\n");
+        assert!(!joined.contains("injected"));
+        assert!(!joined.contains("raw output"));
+
+        // a failed FileChange is flagged like a failed patch_apply_end
+        let failed = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","changes":{"/w/b.rs":{"type":"update"}},"status":"failed"}}}"#;
+        let r2 = curate(failed, &default_kinds("codex"), None);
+        assert_eq!(r2.lines, vec!["[edit FAILED] update b.rs"]);
     }
 
     #[test]
@@ -854,6 +938,24 @@ mod tests {
         path
     }
 
+    /// A codex ≥ 0.153 rollout: the prompt appears only as an injected-context-style
+    /// `response_item` and an `item_completed` `UserMessage` item — no `user_message`.
+    fn write_rollout_v2(dir: &Path, sid: &str, cwd: &str, user_msg: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(format!("rollout-2026-09-05T00-00-00-{sid}.jsonl"));
+        let meta = json!({"type":"session_meta","payload":{"session_id":sid,"cwd":cwd,"cli_version":"0.153.4"}});
+        let started = json!({"type":"event_msg","payload":{"type":"task_started"}});
+        let injected = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<recommended_plugins>x</recommended_plugins>"}]}});
+        let mirror = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":user_msg}]}});
+        let item = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":user_msg}]}}});
+        std::fs::write(
+            &path,
+            format!("{meta}\n{started}\n{injected}\n{mirror}\n{item}\n"),
+        )
+        .unwrap();
+        path
+    }
+
     #[test]
     fn locate_new_excludes_snapshot_and_finds_fresh_only() {
         let root = test_root("locate-new");
@@ -964,6 +1066,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The 0.153 schema (no `user_message` event) associates by the same nonce; a
+    /// same-cwd rollout whose marker is only in the injected `response_item` mirror
+    /// of a *different* prompt is not claimed.
+    #[test]
+    fn locate_by_nonce_reads_item_completed_schema() {
+        let root = test_root("by-nonce-v2");
+        let day = root.join("2026/09/05");
+        write_rollout_v2(&day, "aaa", "/w", "an unrelated codex run");
+        let marked = write_rollout_v2(&day, "bbb", "/w", "do it [dispatch-task: d-9:NONCE9]");
+        let got = locate_by_nonce_in(&root, Path::new("/w"), "d-9:NONCE9");
+        assert_eq!(got, Some((marked.clone(), "bbb".to_string())));
+        assert!(rollout_has_nonce(&marked, "d-9:NONCE9"));
+        assert!(locate_by_nonce_in(&root, Path::new("/w"), "absent").is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The FULL marker must match: a watchdog-restart / fallback-retry successor
+    /// carries `<base>-restart` / `<base>-retryN`, which contains `<base>` as a
+    /// substring — resolving the original task must not claim the successor's log.
+    #[test]
+    fn rollout_has_nonce_requires_the_full_marker() {
+        let root = test_root("nonce-exact");
+        let day = root.join("2026/06/27");
+        let successor = write_rollout(&day, "ccc", "/w", "do it [dispatch-task: d-3:N3-restart]");
+        assert!(rollout_has_nonce(&successor, "d-3:N3-restart"));
+        assert!(!rollout_has_nonce(&successor, "d-3:N3"));
+        assert!(!rollout_has_nonce(&successor, ""));
+        // the bare nonce outside a marker is not identity either
+        let bare = write_rollout_v2(&day, "ddd", "/w", "mentions d-3:N3 in passing");
+        assert!(!rollout_has_nonce(&bare, "d-3:N3"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // ── prompt-echo elision (Part B) ──────────────────────────
 
     /// opencode logs the dispatch prompt twice — as a `user_message` and again as
@@ -1017,6 +1152,28 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("steer: now also do BETA")),
             "a non-prompt user turn (a steer) must not be eaten"
+        );
+    }
+
+    /// codex ≥ 0.153 records the prompt as an `item_completed` `UserMessage` item; the
+    /// elision matches that too, and a later steer turn in the same schema survives.
+    #[test]
+    fn curate_elides_codex_item_completed_prompt() {
+        let prompt = "Codex objective EPSILON.\n[dispatch-task: cx-2]";
+        let jsonl = format!(
+            "{}\n{}\n{}\n",
+            json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text": prompt}]}}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"codex reply"}]}}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"steer: now also do ZETA"}]}}}),
+        );
+        let r = curate(&jsonl, &default_kinds("codex"), Some(prompt));
+        assert!(r.lines.iter().any(|l| l.contains("dispatch prompt elided")));
+        assert!(!r.lines.iter().any(|l| l.contains("EPSILON")));
+        assert!(r.lines.iter().any(|l| l == "[codex] codex reply"));
+        assert!(
+            r.lines
+                .iter()
+                .any(|l| l.contains("steer: now also do ZETA"))
         );
     }
 

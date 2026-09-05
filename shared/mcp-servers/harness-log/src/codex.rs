@@ -9,6 +9,21 @@
 //! (`codex-tui`/`cli`, `Codex Desktop`/`vscode`) from a headless child run
 //! (`codex_exec`/`exec`, which is what `aside` consultations and `dispatch`
 //! delegations spawn).
+//!
+//! Conversational messages have been recorded in two schemas over codex's
+//! history, and a rollout carries exactly one of them (never both):
+//!
+//! * legacy (codex-cli ≤ 0.147): `{"type":"event_msg","payload":{"type":
+//!   "user_message"|"agent_message","message":"…"}}`;
+//! * current (introduced during 0.147, universal from 0.153): `{"type":
+//!   "event_msg","payload":{"type":"item_completed","item":{"type":
+//!   "UserMessage"|"AgentMessage","content":[{"type":"text"|"Text","text":"…"}]}}}`.
+//!
+//! `message_text` reads either, so every consumer (dispatch's log curation and
+//! nonce association, aside's transcript reader) stays correct across the
+//! boundary. The `response_item/message` records present in both schemas are
+//! not messages in this sense: their `role:"user"` entries mix harness-injected
+//! context (plugin lists, environment notes) with the real prompt.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -104,6 +119,58 @@ pub fn read_session_meta(path: &Path) -> Option<SessionMeta> {
 /// fail-open is harmless for transcript discovery.
 pub fn is_exec_child(m: &SessionMeta) -> bool {
     m.source.as_deref() == Some("exec") || m.originator.as_deref() == Some("codex_exec")
+}
+
+/// Who authored a conversational rollout message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageRole {
+    User,
+    Agent,
+}
+
+/// The conversational text a rollout event records, if it is a user or agent
+/// message in either schema (see the module doc). Returns the text unmodified —
+/// possibly empty — so callers decide how to treat blank messages.
+pub fn message_text(o: &Value) -> Option<(MessageRole, String)> {
+    if o.get("type")?.as_str()? != "event_msg" {
+        return None;
+    }
+    let p = o.get("payload")?;
+    match p.get("type")?.as_str()? {
+        "user_message" => Some((MessageRole::User, p.get("message")?.as_str()?.to_string())),
+        "agent_message" => Some((MessageRole::Agent, p.get("message")?.as_str()?.to_string())),
+        "item_completed" => {
+            let item = p.get("item")?;
+            let role = match item.get("type")?.as_str()? {
+                "UserMessage" => MessageRole::User,
+                "AgentMessage" => MessageRole::Agent,
+                _ => return None,
+            };
+            Some((role, item_text(item)))
+        }
+        _ => None,
+    }
+}
+
+/// Concatenate the text blocks of an `item_completed` message item. The block
+/// type is `text` on `UserMessage` items and `Text` on `AgentMessage` items, so
+/// it is matched case-insensitively.
+fn item_text(item: &Value) -> String {
+    item.get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|b| {
+                    b.get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| t.eq_ignore_ascii_case("text"))
+                })
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
 }
 
 /// Whether `cwd` (from a rollout's session_meta) refers to the same directory
@@ -263,5 +330,55 @@ mod tests {
         // different cwd → nothing
         assert_eq!(newest_interactive_rollout(&root, Path::new("/x")), None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn message_text_reads_both_schemas_and_ignores_response_items() {
+        let legacy_user: Value = serde_json::from_str(
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"fix it"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            message_text(&legacy_user),
+            Some((MessageRole::User, "fix it".to_string()))
+        );
+        let legacy_agent: Value = serde_json::from_str(
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"done"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            message_text(&legacy_agent),
+            Some((MessageRole::Agent, "done".to_string()))
+        );
+
+        // 0.153 item schema: `text` blocks on UserMessage, `Text` on AgentMessage.
+        let item_user: Value = serde_json::from_str(
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u","content":[{"type":"text","text":"fix it"},{"type":"image","url":"x"}]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            message_text(&item_user),
+            Some((MessageRole::User, "fix it".to_string()))
+        );
+        let item_agent: Value = serde_json::from_str(
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"a","content":[{"type":"Text","text":"part 1"},{"type":"Text","text":"part 2"}],"phase":"final_answer"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            message_text(&item_agent),
+            Some((MessageRole::Agent, "part 1\npart 2".to_string()))
+        );
+
+        // Not messages: other completed items, and the response_item mirror
+        // (whose role=user entries include injected context).
+        for raw in [
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","command":["ls"]}}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix it"}]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+            r#"{"type":"session_meta","payload":{"cwd":"/w"}}"#,
+        ] {
+            let o: Value = serde_json::from_str(raw).unwrap();
+            assert_eq!(message_text(&o), None, "{raw}");
+        }
     }
 }
