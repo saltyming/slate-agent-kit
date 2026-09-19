@@ -48,6 +48,8 @@ When you are unsure, do the work in-session. A slower in-session edit is better 
 
 A delegate that is forced off its approved spec or plan stops and reports to you, and you ask the user (GATE-DEVIATION in `{{TASK_EXECUTION_RULE_FILE}}`). When you delegate a palette story, give the delegate the approved scope, not the raw Tier-A artifact (`{{PALETTE_RULE_FILE}}`).
 
+A delegate may call the harness's native advisor. It does not call aside or dispatch unless the user explicitly approved that for this delegation: both spend the user's third-party quota, and dispatch starts a write-capable run of its own. When the user has approved it, say so in the delegate's prompt.
+
 ## Writing a delegate's prompt
 
 - Make it self-contained. A delegate does not inherit your conversation history.
