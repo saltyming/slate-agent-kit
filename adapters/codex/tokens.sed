@@ -11,10 +11,10 @@ s#{{ASIDE_RULE_FILE}}#codex-agent-kit--aside.md#g
 s#{{DISPATCH_RULE_FILE}}#codex-agent-kit--dispatch.md#g
 s#{{ASIDE_PREFS_FILE}}#codex-agent-kit--aside-prefs.md#g
 s#{{DISPATCH_PREFS_FILE}}#codex-agent-kit--dispatch-prefs.md#g
+s#{{GIT_PREFS_FILE}}#codex-agent-kit--git-prefs.md#g
 s#{{HARNESS_RULES_DIR}}#$CODEX_HOME/rules#g
-s#{{TASK_TRACKER}}#update_plan plus goal tracking#g
 s#{{EDIT_SURFACE}}#apply_patch for manual file edits#g
 s#{{DELEGATION_SURFACE}}#Codex read-only delegates, write-capable delegates, or dispatch#g
 s#{{FANOUT_DELEGATION_SURFACE}}#Codex fan-out or multi-agent surfaces#g
 s#{{KIT_PREFIX}}#codex-agent-kit#g
-s#{{KIT_VERSION}}#0.6.1#g
+s#{{KIT_VERSION}}#0.7.0#g

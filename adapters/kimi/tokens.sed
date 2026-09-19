@@ -11,10 +11,10 @@ s#{{ASIDE_RULE_FILE}}#kimi-agent-kit--aside.md#g
 s#{{DISPATCH_RULE_FILE}}#kimi-agent-kit--dispatch.md#g
 s#{{ASIDE_PREFS_FILE}}#kimi-agent-kit--aside-prefs.md#g
 s#{{DISPATCH_PREFS_FILE}}#kimi-agent-kit--dispatch-prefs.md#g
+s#{{GIT_PREFS_FILE}}#kimi-agent-kit--git-prefs.md#g
 s#{{HARNESS_RULES_DIR}}#$KIMI_CODE_HOME/rules#g
-s#{{TASK_TRACKER}}#TodoList#g
 s#{{EDIT_SURFACE}}#Kimi's native edit/write tools#g
 s#{{DELEGATION_SURFACE}}#Agent / dispatch when installed#g
 s#{{FANOUT_DELEGATION_SURFACE}}#AgentSwarm#g
 s#{{KIT_PREFIX}}#kimi-agent-kit#g
-s#{{KIT_VERSION}}#0.6.1#g
+s#{{KIT_VERSION}}#0.7.0#g
