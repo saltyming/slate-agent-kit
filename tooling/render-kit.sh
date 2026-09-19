@@ -127,6 +127,7 @@ mkdir -p "$target/scripts"
 render "$ROOT/shared/prefs/aside-prefs.md.tmpl" "$target/scripts/${prefix}--aside-prefs.md.tmpl"
 render "$ROOT/shared/prefs/dispatch-prefs.md.tmpl" "$target/scripts/${prefix}--dispatch-prefs.md.tmpl"
 render "$ROOT/shared/prefs/git-prefs.md.tmpl" "$target/scripts/${prefix}--git-prefs.md.tmpl"
+render "$ROOT/shared/prefs/comment-prefs.md.tmpl" "$target/scripts/${prefix}--comment-prefs.md.tmpl"
 cp "$ROOT/tooling/kit-scripts/configure-prefs.sh" "$target/scripts/configure-prefs.sh"
 chmod +x "$target/scripts/configure-prefs.sh"
 # Windows twin used by install.ps1 (POSIX configure-prefs.sh can't run there).

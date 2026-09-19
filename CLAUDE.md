@@ -30,7 +30,7 @@ sh tooling/validate.sh            # must print "validate: OK" before committing
 
 - `{{TOKEN}}` — substituted from `adapters/<h>/tokens.sed`. Kit version bumps happen here (`KIT_VERSION`), nowhere else.
 - `{{@INSERT name}}` — replaced with `adapters/<h>/inserts/<name>.md`. Every harness must have the file for every marker: empty file = no contribution, missing file = hard render error. Insert content passes through `tokens.sed` afterwards.
-- `@@NAME@@` — configure-time placeholders in the aside/dispatch prefs templates (the git prefs template has none: it installs with every value `unset`, and the agent asks the user and records the answer); render leaves them intact (`validate.sh`'s `{{` leak check stays strict because of this split).
+- `@@NAME@@` — configure-time placeholders in the aside/dispatch prefs templates (the git and comment prefs templates have none: they install with literal defaults, and `configure-prefs.sh` edits their value lines in place so recorded answers, overrides, and notes survive a reconfigure); render leaves them intact (`validate.sh`'s `{{` leak check stays strict because of this split).
 - Invariant/gate IDs: each `INV-*` / `GATE-*` is defined exactly once, as a bold `**ID — Title.**` anchor; everything else references the ID. `validate.sh` enforces uniqueness and cross-file reference integrity, plus harness-leak greps (no `advisor()`/`ultracode`/`ScheduleWakeup` in codex/kimi renders; no `TodoList`/`AgentSwarm`/`apply_patch` in claude renders; no `workslate` in any render, since it was removed in claude 12.0.0) and hard byte budgets on each rendered corpus.
 
 ## Rust workspace

@@ -62,7 +62,7 @@ Common options (see each kit's README for the full list):
 - `shared/rules/mcp` — `aside` (read-only consultation) and `dispatch`
   (write-capable execution) policy.
 - `shared/workflows/palette` — the palette product-intent loop + skills.
-- `shared/prefs` — aside/dispatch preference templates.
+- `shared/prefs` — aside, dispatch, git, and comment preference templates.
 - `shared/mcp-servers/{aside,dispatch,harness-log}` — the portable Rust MCP
   workspace shared by every harness.
 - `adapters/{claude,codex,kimi}` — per-harness render mappings (tokens, insert

@@ -12,7 +12,8 @@
 | Dispatch backends | codex / opencode / claude | codex / opencode / claude | codex / opencode / claude |
 | Harness surface rule | (inserts into shared files) | codex-surface | kimi-surface |
 | Prefs files (aside/dispatch) | generated (configure-prefs.sh) | generated (configure-prefs.sh) | generated (configure-prefs.sh) |
-| Prefs file (git) | installed `unset`; the agent asks and records | installed `unset`; the agent asks and records | installed `unset`; the agent asks and records |
+| Prefs file (git) | configured (configure-prefs.sh, edited in place); the agent asks for a value still `unset` and records it | same | same |
+| Prefs file (comment) | configured (configure-prefs.sh, edited in place); defaults to `repository` | same | same |
 | Rule delivery | CLAUDE.md + rules dir (auto-loaded) | single concatenated AGENTS.md | single concatenated AGENTS.md |
 | Hooks | Claude hooks | Codex command hooks | no default support |
 | Task tracker rule | none (removed in 12.0.0 / 0.7.0) | none | none |

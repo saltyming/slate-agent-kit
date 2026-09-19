@@ -2,11 +2,7 @@
 
 ## Codex delegation surfaces
 
-Codex has no native write-capable subagent surface. Do not simulate one with
-background shells or nested `codex exec` calls. The write-capable mechanism in
-Codex is the shared `dispatch` MCP server (`codex-agent-kit--dispatch.md`), and
-read-only second opinions go through `aside` (`codex-agent-kit--aside.md`).
-
-For work that would need a coordinated team or a large parallel fan-out, split
-it into sequential in-session work plus independent steps that can be
-dispatched, or tell the user about the gap.
+- Codex's native subagents (`spawn_agent` and the tools that steer a spawned agent) are write-capable: a child has the parent's tools, whatever its `agent_type`. GATE-DELEGATE applies to every spawn. Codex has no native read-only delegate; a read-only second opinion goes through `aside` (`codex-agent-kit--aside.md`).
+- A child can spawn subagents of its own. Say in its prompt whether it may. Nested spawns stay inside the scale and the files you told the user when you asked.
+- `dispatch` (`codex-agent-kit--dispatch.md`) hands a self-contained execution step to an external backend, under its own policy and guards.
+- Do not simulate delegation with background shells or nested `codex exec` calls.

@@ -12,9 +12,10 @@ s#{{DISPATCH_RULE_FILE}}#claude-agent-kit--dispatch.md#g
 s#{{ASIDE_PREFS_FILE}}#claude-agent-kit--aside-prefs.md#g
 s#{{DISPATCH_PREFS_FILE}}#claude-agent-kit--dispatch-prefs.md#g
 s#{{GIT_PREFS_FILE}}#claude-agent-kit--git-prefs.md#g
+s#{{COMMENT_PREFS_FILE}}#claude-agent-kit--comment-prefs.md#g
 s#{{HARNESS_RULES_DIR}}#$HOME/.claude/rules#g
 s#{{EDIT_SURFACE}}#Edit / Write directly#g
 s#{{DELEGATION_SURFACE}}#Agent / Workflow / dispatch#g
 s#{{FANOUT_DELEGATION_SURFACE}}#Workflow#g
 s#{{KIT_PREFIX}}#claude-agent-kit#g
-s#{{KIT_VERSION}}#12.0.0#g
+s#{{KIT_VERSION}}#12.0.1#g

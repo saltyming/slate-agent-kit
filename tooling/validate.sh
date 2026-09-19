@@ -32,12 +32,14 @@ shared/workflows/palette/skills/palette-init/SKILL.md
 shared/prefs/aside-prefs.md.tmpl
 shared/prefs/dispatch-prefs.md.tmpl
 shared/prefs/git-prefs.md.tmpl
+shared/prefs/comment-prefs.md.tmpl
 shared/mcp-servers/aside/Cargo.toml
 shared/mcp-servers/dispatch/Cargo.toml
 shared/mcp-servers/harness-log/Cargo.toml
 tooling/render-kit.sh
 tooling/install-mcp.sh
 tooling/kit-scripts/configure-prefs.sh
+tooling/kit-scripts/configure-prefs.ps1
 "
 
 for path in $required; do
@@ -116,7 +118,13 @@ claude-rules/claude-agent-kit--palette.md
 claude-rules/claude-agent-kit--git-workflow.md
 claude-rules/claude-agent-kit--framework-conventions.md
 claude-rules/claude-agent-kit--aside.md
-claude-rules/claude-agent-kit--dispatch.md"
+claude-rules/claude-agent-kit--dispatch.md
+scripts/claude-agent-kit--aside-prefs.md.tmpl
+scripts/claude-agent-kit--dispatch-prefs.md.tmpl
+scripts/claude-agent-kit--git-prefs.md.tmpl
+scripts/claude-agent-kit--comment-prefs.md.tmpl
+scripts/configure-prefs.sh
+scripts/configure-prefs.ps1"
 
 codex_files="AGENTS.md
 codex-rules/codex-agent-kit--codex-surface.md
@@ -130,7 +138,9 @@ codex-rules/codex-agent-kit--dispatch.md
 scripts/codex-agent-kit--aside-prefs.md.tmpl
 scripts/codex-agent-kit--dispatch-prefs.md.tmpl
 scripts/codex-agent-kit--git-prefs.md.tmpl
-scripts/configure-prefs.sh"
+scripts/codex-agent-kit--comment-prefs.md.tmpl
+scripts/configure-prefs.sh
+scripts/configure-prefs.ps1"
 
 kimi_files="AGENTS.md
 kimi-rules/kimi-agent-kit--kimi-surface.md
@@ -144,11 +154,25 @@ kimi-rules/kimi-agent-kit--dispatch.md
 scripts/kimi-agent-kit--aside-prefs.md.tmpl
 scripts/kimi-agent-kit--dispatch-prefs.md.tmpl
 scripts/kimi-agent-kit--git-prefs.md.tmpl
-scripts/configure-prefs.sh"
+scripts/kimi-agent-kit--comment-prefs.md.tmpl
+scripts/configure-prefs.sh
+scripts/configure-prefs.ps1"
 
 for f in $claude_files; do check_rendered_file "$ROOT/kits/claude-agent-kit/$f"; done
 for f in $codex_files; do check_rendered_file "$ROOT/kits/codex-agent-kit/$f"; done
 for f in $kimi_files; do check_rendered_file "$ROOT/kits/kimi-agent-kit/$f"; done
+
+# The configure scripts are copied, not rendered, so a kit copy must match its
+# source byte for byte; a stale copy ships the previous prefs behavior.
+for kit in claude codex kimi; do
+  for script in configure-prefs.sh configure-prefs.ps1; do
+    if [ -f "$ROOT/kits/${kit}-agent-kit/scripts/$script" ] \
+      && ! cmp -s "$ROOT/tooling/kit-scripts/$script" "$ROOT/kits/${kit}-agent-kit/scripts/$script"; then
+      echo "stale copy: kits/${kit}-agent-kit/scripts/$script differs from tooling/kit-scripts/$script (re-render)" >&2
+      fail=1
+    fi
+  done
+done
 
 for kit in claude codex kimi; do
   for skill in palette-init palette-rules palette-spec palette-ui palette-ux; do
