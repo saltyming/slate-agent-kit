@@ -18,7 +18,7 @@ harness repositories.
 | MCP build + per-harness registration (claude/codex/kimi) | `slate-agent-kit/tooling/install-mcp.sh` |
 | 9.4.0 → redesigned-corpus fidelity record | `slate-agent-kit/docs/coverage-matrix.md` (+ `docs/legacy/`) |
 | Adapter render mappings | `slate-agent-kit/adapters/<harness>` |
-| Claude workslate (server + hooks), Claude installer; CLAUDE.md/claude-rules are RENDER OUTPUTS since v10.0.0 | `kits/claude-agent-kit` |
+| Claude installer (incl. the legacy-workslate cleanup scripts); CLAUDE.md/claude-rules are RENDER OUTPUTS since v10.0.0 | `kits/claude-agent-kit` |
 | Codex AGENTS/config/hooks/agents installer | `kits/codex-agent-kit` |
 | Kimi AGENTS/skills installer | `kits/kimi-agent-kit` |
 
@@ -60,5 +60,7 @@ auto-loads `~/.claude/rules/*.md` as separate files, while Codex and Kimi load
 only one user-scope `AGENTS.md` — their installers concatenate the manual +
 rules into it.
 
-`workslate` does not move into shared because it depends on Claude Code hook
-payloads, Claude session identity, and Claude team mechanics.
+`workslate`, the Claude-only mid-turn messaging server, was removed in
+claude-agent-kit 12.0.0. The Claude installers keep a cleanup script
+(`scripts/remove-legacy-workslate.{sh,ps1}`) that strips its hooks, binary, MCP
+registration, and per-project db from an upgraded home.

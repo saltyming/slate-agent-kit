@@ -1,1 +1,0 @@
-In Claude Code, the built-in task list (`TaskCreate` / `TaskUpdate` / `TaskList`) is that tracker — for solo multi-step work and for team task graphs alike. Keep it current as you work (in_progress on start, completed on finish); it is the single system of record for tactical progress.

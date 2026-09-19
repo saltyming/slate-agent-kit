@@ -1,5 +1,4 @@
-**In Claude Code, the native advisor surface is the built-in `advisor()` tool** (an Anthropic Opus reviewer that auto-forwards the full transcript, no parameters). Claude-specific bindings, replacing the generic wording elsewhere in this file where they conflict:
+In Claude Code the native advisor is the built-in `advisor()` tool, which forwards the full transcript and takes no parameters. Some Claude Code surfaces do not ship it; there, the aside triggers stand alone.
 
-- Every "native advisor" mention below means `advisor()`. Where the running harness exposes it, keep calling it at its lifecycle checkpoints as the system prompt describes; where it is absent (not every Claude Code surface ships it), the aside triggers stand alone.
-- **The no-concurrency hazard is concrete here:** the Claude Code harness currently breaks `advisor()` when an aside tool call is running at the same time (aside's stdio transport interferes with `advisor()`'s transcript forwarding). Sequential-in-one-turn is fine; same-block or overlapping is not.
-- **`advisor()` receives the full, unredacted transcript** including tool inputs and outputs — aside receives the redacted form. When the same session goes to both, they see fundamentally different things; the aside-first pairing remains meaningful because `advisor()` later sees the aside exchange too.
+- The concurrency hazard below is concrete here: `advisor()` breaks when an aside call is running at the same time, because aside's stdio transport interferes with the transcript forwarding.
+- `advisor()` receives the unredacted transcript, including tool inputs and outputs, while aside receives the redacted form. Calling aside first still makes sense, because `advisor()` then sees the aside exchange too.

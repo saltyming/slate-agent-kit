@@ -1,66 +1,14 @@
 <!-- slate-agent-kit:common -->
 # Git Workflow
 
-## Commit Rules
+Commit signing, model attribution, commit message format, PR body format, and branch naming are the user's preferences, recorded in `{{HARNESS_RULES_DIR}}/{{GIT_PREFS_FILE}}`. This kit sets no default for any of them, because they differ by person and by project.
 
-**Always disable GPG signing.** This is an explicit standing request for this project — pass `--no-gpg-sign` on `git commit`, `git commit --amend`, `git revert`, and `git cherry-pick`. Do not treat it as a violation.
-
-**No model attribution in commits.** Do not include `Co-Authored-By:` trailers with the model's name, "Generated with …" footers, or any line identifying the agent that produced the commit. The commit is yours.
+- Read the prefs file before the first commit or PR of a session.
+- When a value the current action needs is `unset`, ask the user, then write the answer into the prefs file so the question is not repeated. Ask only about the values you need now. If the file is missing, ask for this action and tell the user the prefs file is not installed.
+- When the repository's own convention (recent `git log`, `CONTRIBUTING`, a PR template) differs from the prefs value, do not choose between them yourself. Ask the user which to follow in this repository, and record the answer under "Repository overrides".
+- A current-turn instruction from the user outranks the prefs file.
+- Before opening a PR, check `git branch -vv` for the correct base. It may be `vNext`, `main`, `master`, or a feature branch.
 
 {{@INSERT git-overrides}}
 
-`_palette/` is never auto-committed by the agent (`{{PALETTE_RULE_FILE}}` § Gate bindings).
-
-## Commit Message Format
-
-**Conventional Commits:**
-```
-<type>(<area>): <subject>
-
-<body>
-```
-
-The `(<area>)` scope is optional but recommended when the change targets a specific module, package, or subsystem.
-
-**Types:**
-- `feat` New feature
-- `fix` Bug fix
-- `docs` Documentation changes
-- `chore` Maintenance tasks
-- `refactor` Code restructuring (no behavior change)
-- `test` Test additions/updates
-- `perf` Performance improvements
-
-**Examples:**
-```
-feat(export): add email export functionality
-
-- Implement ZIP export with attachments
-- Add progress tracking for large exports
-- Fix timezone handling in date fields
-
-fix(smtp): resolve authentication failure
-
-- Update credentials handling
-- Add retry logic for transient failures
-
-refactor(vfs): split main.rs into 13 modules
-```
-
-## Pull Request Rules
-
-- **Branch naming:** never push the worktree branch name directly. Use a descriptive name on origin (e.g., `feat/freebsd-utils-bash-features`, `fix/ipc-deadlock`).
-- **Base branch:** check `git branch -vv` to determine the correct base — it may be `vNext`, `main`, `master`, or a feature branch, not always `master`.
-
-**PR Body Format:**
-```markdown
-## Summary
-- [Bullet points of changes]
-
-## Test plan
-- [ ] [Concrete verification steps]
-```
-
-## Destructive Git Operations
-
-Destructive git routes through GATE-GIT (`{{TASK_EXECUTION_RULE_FILE}}` → *Undo / Revert Handling* subsection C): explicitly named command only, blast-radius pre-flight, per-command authorization. Never a substitute for editing files back when the user asks for a session-edit "undo" (INV-STATE-2).
+Destructive git goes through GATE-GIT (`{{TASK_EXECUTION_RULE_FILE}}`). It is not a way to undo session edits (INV-STATE-2).

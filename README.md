@@ -70,8 +70,8 @@ Common options (see each kit's README for the full list):
 - `tooling/` — `render-kit.sh`, `validate.sh`, `install-mcp.sh`, and the shared
   `kit-scripts/` (single prefs generator + the Kimi plugin writer).
 
-Harness-specific machinery stays in the submodules — notably `workslate`
-(Claude-only task tracking) is not shared.
+Harness-specific installers stay in the submodules. The kits ship no binaries
+of their own; `aside` and `dispatch` are built and released from this repo.
 
 ## For maintainers
 

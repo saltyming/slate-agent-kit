@@ -31,6 +31,7 @@ shared/workflows/palette/rules.md
 shared/workflows/palette/skills/palette-init/SKILL.md
 shared/prefs/aside-prefs.md.tmpl
 shared/prefs/dispatch-prefs.md.tmpl
+shared/prefs/git-prefs.md.tmpl
 shared/mcp-servers/aside/Cargo.toml
 shared/mcp-servers/dispatch/Cargo.toml
 shared/mcp-servers/harness-log/Cargo.toml
@@ -128,6 +129,7 @@ codex-rules/codex-agent-kit--aside.md
 codex-rules/codex-agent-kit--dispatch.md
 scripts/codex-agent-kit--aside-prefs.md.tmpl
 scripts/codex-agent-kit--dispatch-prefs.md.tmpl
+scripts/codex-agent-kit--git-prefs.md.tmpl
 scripts/configure-prefs.sh"
 
 kimi_files="AGENTS.md
@@ -141,6 +143,7 @@ kimi-rules/kimi-agent-kit--aside.md
 kimi-rules/kimi-agent-kit--dispatch.md
 scripts/kimi-agent-kit--aside-prefs.md.tmpl
 scripts/kimi-agent-kit--dispatch-prefs.md.tmpl
+scripts/kimi-agent-kit--git-prefs.md.tmpl
 scripts/configure-prefs.sh"
 
 for f in $claude_files; do check_rendered_file "$ROOT/kits/claude-agent-kit/$f"; done
@@ -155,12 +158,11 @@ done
 
 # ── 4. harness-leak greps ─────────────────────────────────
 # Claude-only machinery must not leak into codex/kimi renders, and vice versa.
-# Allowlist: the surfaces intentionally say "workslate is Claude-only".
+# workslate was removed in claude-agent-kit 12.0.0; it must not reappear in any render.
 
 for kit in codex kimi; do
-  leaks=$(grep -rEn 'workslate_task_|advisor\(\)|Agent Team|ScheduleWakeup|ultracode|CLAUDE\.md' \
-      "$ROOT/kits/${kit}-agent-kit/${kit}-rules" "$ROOT/kits/${kit}-agent-kit/AGENTS.md" 2>/dev/null \
-    | grep -Ev 'workslate.*Claude-only|Claude-only.*workslate' || true)
+  leaks=$(grep -rEn 'workslate|advisor\(\)|Agent Team|ScheduleWakeup|ultracode|CLAUDE\.md' \
+      "$ROOT/kits/${kit}-agent-kit/${kit}-rules" "$ROOT/kits/${kit}-agent-kit/AGENTS.md" 2>/dev/null || true)
   if [ -n "$leaks" ]; then
     echo "claude-only machinery leaked into $kit render:" >&2
     echo "$leaks" | head -5 >&2
@@ -168,7 +170,7 @@ for kit in codex kimi; do
   fi
 done
 
-claude_leaks=$(grep -rEn 'AgentSwarm|TodoList|apply_patch|KIMI_CODE_HOME|CODEX_HOME|update_plan' \
+claude_leaks=$(grep -rEn 'workslate|AgentSwarm|TodoList|apply_patch|KIMI_CODE_HOME|CODEX_HOME|update_plan' \
     "$ROOT/kits/claude-agent-kit/CLAUDE.md" "$ROOT/kits/claude-agent-kit/claude-rules" 2>/dev/null || true)
 if [ -n "$claude_leaks" ]; then
   echo "non-claude surface bindings leaked into claude render:" >&2
@@ -286,9 +288,9 @@ budget_check() {
     fail=1
   fi
 }
-budget_check claude "$claude_bytes" 80000
-budget_check codex "$codex_bytes" 68000
-budget_check kimi "$kimi_bytes" 67000
+budget_check claude "$claude_bytes" 58000
+budget_check codex "$codex_bytes" 57000
+budget_check kimi "$kimi_bytes" 56000
 
 # ── 9. rendered titles ────────────────────────────────────
 

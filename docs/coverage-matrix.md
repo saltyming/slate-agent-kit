@@ -116,3 +116,27 @@ on top, following the same pattern as the v11.0.0 relocations table above.
 | Was (standing rules) | Now | Status |
 |---|---|---|
 | task-execution.md's Stop verify hook paragraph (`inserts/execution-harness.md`, verbatim per the row above) | removed — the hook itself was retired from claude-agent-kit's installer (`hooks.rs`'s `install_hooks()` no longer installs it; a pre-11.1.0 live entry self-cleans on next `install_hooks()` via the new `strip_stop_if_present` helper, or on `uninstall_hooks()` via its existing per-event `WS_HOOK_EVENTS` loop); cost/latency vs. value judged not worth it in daily use. `inserts/execution-harness.md` is now empty — no successor location. | superseded |
+
+## v12.0.0 / v0.7.0 — subtraction release (blacklist restyle, workslate and task tracker removed)
+
+Layered on top of the tables above, which stay as point-in-time records. Gate
+semantics are unchanged in this release: what needs the user's approval is the
+same set of actions. The form changed from enumerating allowed cases to stating
+the default action, the named prohibited behaviors, their scope, and the reason.
+
+| Was (standing rules) | Now | Status |
+|---|---|---|
+| INV-SCOPE-3 "Exactly three situations justify deviating"; GATE-DEVIATION "The ONLY three triggers" | same three situations, stated as "do not change scope, order, or design on your own judgment" plus the rationalizations that do not qualify; procedure steps preserved in loop-execution.md | moved |
+| GATE-GIT, GATE-DELEGATE, GATE-SCOPE-CONFIRM, GATE-DISPATCH bodies | same conditions and sequences, restated without `HARD RULE` / `MUST` / all-caps emphasis | moved |
+| Restatements of an invariant outside its anchor (INV-STATE-1 in loop-execution §A, INV-GATE-3 in loop-delegation and dispatch, the dispatch carve-out in four places, the INV-AUTH-1 precedence chain in palette) | one body at the ID anchor; other files reference the ID | merged-into-INV |
+| kernel "Quality Standards", "Delegation (summary)", full decision tree; loop-execution "After completion" checklist | removed as restatements of INV-SCOPE-1 / INV-QUALITY-1 / INV-VERIFY-*; a six-line quick reference remains in the kernel | merged-into-INV |
+| Task-tracking trigger (`{{TASK_TRACKER}}` token, `execution-tracking` insert, codex/kimi surface tracker bullets) | removed in all three harnesses. Claude Code leaves the task tools out on the Claude 5 family unless opted in; the rule was dropped everywhere to keep one corpus. palette Tier B is now the user's approval alone | superseded |
+| `decision-tree-delegation` insert (per-harness tool call syntax) | removed; tool call shapes are the tool descriptions' job | superseded |
+| claude `delegation-surfaces` insert: Agent Teams composition, coordination, leader workflow, teammate behavior, completion report, workslate messaging, Workflow quality flow, `model="sonnet"` default | removed. Kept: which surfaces are read-only vs write-capable, the Workflow opt-in rule, no aside/advisor from subagents, hold an interrupted delegate | superseded |
+| aside "Making the call" (paths vs excerpts, assessment framing) and "Cost" | removed; both are stated in the aside server's own instructions. The prefs-to-parameter order stays | superseded |
+| dispatch "Supervising a run" (quiet log, steer granularity) | removed; stated in the dispatch server's own instructions. The done-only-after-`succeeded` rule and the end-of-turn rule stay | superseded |
+| claude `kernel-overrides`: "Capability means investigation", "Verification is universal" | deleted per the insert's own rule (no conflict with the live system prompt remains); the content lives in Humility first and INV-VERIFY-1 | superseded |
+| git-workflow.md: standing `--no-gpg-sign`, no-attribution rule, Conventional Commits format, PR body format, branch naming | moved out of the rules into the user-owned `git-prefs` file. The kit sets no default; the agent asks when a value is `unset` or when the repository's convention differs, and records the answer | superseded |
+| (new) | INV-COMM-2 Plain wording; loop-execution "File headers" | new |
+| codex/kimi surface: tool-usage bullets (`rg`, `multi_tool_use.parallel`, `tool_search`, MCP tool name lists, kimi Delegation Binding) | removed; kept the loading model, goals, editing, clarification, and MCP containment notes | superseded |
+
