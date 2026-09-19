@@ -53,17 +53,17 @@ fn kind_of(t: &str, pt: &str, item: Option<&str>) -> Option<&'static str> {
     match (t, pt) {
         ("event_msg", "task_started") | ("event_msg", "task_complete") => Some("lifecycle"),
         ("event_msg", "user_message") | ("event_msg", "agent_message") => Some("messages"),
-        ("response_item", "custom_tool_call") => Some("tools"),
-        ("response_item", "custom_tool_call_output") => Some("tool_results"),
+        ("response_item", "custom_tool_call") | ("response_item", "function_call") => Some("tools"),
+        ("response_item", "custom_tool_call_output")
+        | ("response_item", "function_call_output") => Some("tool_results"),
         ("event_msg", "patch_apply_end") => Some("edits"),
         ("response_item", "reasoning") => Some("reasoning"),
         ("event_msg", "item_completed") => match item? {
             "UserMessage" | "AgentMessage" => Some("messages"),
             "FileChange" => Some("edits"),
             // CommandExecution duplicates the `custom_tool_call` record rendered
-            // above; McpToolCall likewise mirrors a `function_call` record (which
-            // the `tools` kind does not render — a pre-existing gap, unchanged
-            // here); Reasoning carries no plaintext. Noise.
+            // above, and McpToolCall duplicates the `function_call` record;
+            // Reasoning carries no plaintext. Noise.
             _ => None,
         },
         // noise: session_meta, turn_context, event_msg/token_count, response_item/message
@@ -202,6 +202,23 @@ fn render(o: &Value) -> Option<(&'static str, String)> {
         ("response_item", "custom_tool_call_output") => {
             format!("[result] {}", oneline(field_str(p, "output"), 200))
         }
+        // MCP and built-in function tools. codex splits an MCP tool's full name
+        // into `namespace` ("mcp__aside") and `name` ("aside_codex").
+        ("response_item", "function_call") => {
+            let name = field_str(p, "name");
+            let tool = match field_str(p, "namespace") {
+                "" => name.to_string(),
+                ns => format!("{ns}__{name}"),
+            };
+            format!(
+                "[tool] {}: {}",
+                tool,
+                oneline(field_str(p, "arguments"), 160)
+            )
+        }
+        ("response_item", "function_call_output") => {
+            format!("[result] {}", oneline(&function_output_text(p), 200))
+        }
         ("event_msg", "patch_apply_end") => {
             let ok = p.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
             format!(
@@ -254,6 +271,20 @@ fn render(o: &Value) -> Option<(&'static str, String)> {
         _ => return None,
     };
     Some((kind, line))
+}
+
+/// `function_call_output.output` is a plain string for built-in tools and an
+/// array of `{type: "input_text", text}` blocks for MCP tools.
+fn function_output_text(p: &Value) -> String {
+    match p.get("output") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => String::new(),
+    }
 }
 
 fn field_str<'a>(p: &'a Value, key: &str) -> &'a str {
@@ -788,6 +819,37 @@ mod tests {
         let declined = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","changes":{"/w/c.rs":{"type":"delete"}},"status":"declined"}}}"#;
         let r3 = curate(declined, &default_kinds("codex"), None);
         assert_eq!(r3.lines, vec!["[edit DECLINED] delete c.rs"]);
+    }
+
+    /// MCP tool calls are `function_call` records with a split name; their output
+    /// is a block array, while built-in function tools return a plain string.
+    /// Shapes taken from a real 0.154.0 rollout.
+    #[test]
+    fn curate_renders_function_calls() {
+        let sample = r#"
+{"type":"response_item","payload":{"type":"function_call","name":"aside_claude","namespace":"mcp__aside","arguments":"{\"question\":\"is this right?\"}","call_id":"c1"}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"m1","server":"aside","tool":"aside_claude","arguments":{},"status":"completed"}}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"Wall time: 5 seconds\nOutput:"},{"type":"input_text","text":"looks right"}]}}
+{"type":"response_item","payload":{"type":"function_call","name":"wait","arguments":"{\"ms\":10}","call_id":"c2"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"c2","output":"done waiting"}}
+"#;
+        let r = curate(sample, &default_kinds("codex"), None);
+        assert_eq!(
+            r.lines,
+            vec![
+                "[tool] mcp__aside__aside_claude: {\"question\":\"is this right?\"}",
+                "[tool] wait: {\"ms\":10}",
+            ],
+        );
+        let kinds: Vec<String> = vec!["tool_results".to_string()];
+        let results = curate(sample, &kinds, None);
+        assert_eq!(
+            results.lines,
+            vec![
+                "[result] Wall time: 5 seconds Output: looks right",
+                "[result] done waiting",
+            ],
+        );
     }
 
     #[test]
