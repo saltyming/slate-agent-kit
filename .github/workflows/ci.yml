@@ -26,6 +26,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'shared/mcp-servers/**'
+              - 'shared/crates/**'
               - 'shared/setup/**'
               - 'shared/workflows/palette/templates/**'
               - '.github/workflows/ci.yml'

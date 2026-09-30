@@ -324,6 +324,11 @@ async fn run_inner(
         // spawned. kill_on_drop only reaps the direct child.
         cmd.process_group(0);
     }
+    // Start suspended: the Job Object must hold the process before it can
+    // start anything, or a child it starts at once would be outside the job
+    // and outlive it. Resumed right after the job is attached.
+    #[cfg(windows)]
+    cmd.creation_flags(guard::CREATE_SUSPENDED);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -344,10 +349,18 @@ async fn run_inner(
     #[cfg(not(windows))]
     let (tree, guarded) = (ProcessTree::unprotected(&child), guard_path.is_some());
     #[cfg(windows)]
-    let (tree, guarded) = match spec.guard {
-        GuardMode::Off => (ProcessTree::unprotected(&child), false),
-        mode => match guard::protect(&mut child) {
-            Ok(t) => (t, true),
+    let (tree, guarded) = {
+        let mode = spec.guard;
+        let attached = if mode == GuardMode::Off {
+            // A plain job, only so that a cancel ends the whole tree; not a
+            // guard. Without it the run proceeds and a cancel ends the
+            // backend alone.
+            guard::contain(&mut child).map(|t| (t, false))
+        } else {
+            guard::protect(&mut child).map(|t| (t, true))
+        };
+        let (tree, guarded) = match attached {
+            Ok(pair) => pair,
             Err(e) if mode == GuardMode::Required => {
                 // Continuing would leave the work running with no orphan
                 // protection at all.
@@ -356,10 +369,18 @@ async fn run_inner(
                 return Outcome::Spawn(format!("Job Object setup for {binary} failed: {e}"));
             }
             Err(e) => {
-                tracing::warn!("agent-exec: Job Object setup for {binary} failed: {e}; unguarded");
+                tracing::warn!(
+                    "agent-exec: Job Object setup for {binary} failed: {e}; running without it"
+                );
                 (ProcessTree::unprotected(&child), false)
             }
-        },
+        };
+        if let Err(e) = guard::resume(&child) {
+            tree.kill(&mut child);
+            let _ = child.wait().await;
+            return Outcome::Spawn(format!("resume {binary} after its spawn failed: {e}"));
+        }
+        (tree, guarded)
     };
     let _ = events.send(RunEvent::Started {
         pid,

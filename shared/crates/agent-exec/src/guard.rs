@@ -100,8 +100,9 @@ pub fn wrap(command: &Command, guard_path: &Path) -> Command {
 ///
 /// On Unix the tree is the child's process group (`run` spawns every child,
 /// guarded or not, with `process_group(0)`). On Windows it is the child's Job
-/// Object when [`protect`] attached one; dropping the tree closes the job,
-/// which kills whatever is still in it.
+/// Object when one was attached (kill-on-close by [`protect`] for a guarded
+/// run, plain for `GuardMode::Off`); dropping the tree closes the job, which
+/// kills whatever is still in a kill-on-close job.
 pub struct ProcessTree {
     #[cfg(unix)]
     pid: Option<u32>,
@@ -152,23 +153,53 @@ impl ProcessTree {
 }
 
 /// Protect a just-spawned child. On Windows this attaches a kill-on-close Job
-/// Object; if that fails the child is left running and the error returned, so
-/// the caller decides (`run` kills it for `GuardMode::Required` and runs on
-/// unguarded for `GuardMode::Preferred`). On Unix the guard executable
-/// already protects the tree, and this only records the process group.
+/// Object; if that fails the error is returned and the caller decides (`run`
+/// kills the child for `GuardMode::Required` and runs on unguarded for
+/// `GuardMode::Preferred`). `run` creates the child suspended and resumes it
+/// only after this returns, so nothing the child starts can escape the job. On
+/// Unix the guard executable already protects the tree, and this only records
+/// the process group.
 pub fn protect(child: &mut Child) -> io::Result<ProcessTree> {
     #[cfg(windows)]
     {
         let handle = child
             .raw_handle()
             .ok_or_else(|| io::Error::other("missing process handle"))?;
-        let job = winjob::WinJob::protect(handle as windows_sys::Win32::Foundation::HANDLE)?;
+        let job = winjob::WinJob::protect(handle as windows_sys::Win32::Foundation::HANDLE, true)?;
         Ok(ProcessTree { job: Some(job) })
     }
     #[cfg(not(windows))]
     {
         Ok(ProcessTree::unprotected(child))
     }
+}
+
+/// Place a just-spawned (suspended) child in a Job Object that is NOT
+/// kill-on-close (Windows): `ProcessTree::kill` then ends the whole tree on
+/// cancel, but the tree does not die with the server. `run` uses it for
+/// `GuardMode::Off`, so cancellation kills the tree in every mode.
+#[cfg(windows)]
+pub(crate) fn contain(child: &mut Child) -> io::Result<ProcessTree> {
+    let handle = child
+        .raw_handle()
+        .ok_or_else(|| io::Error::other("missing process handle"))?;
+    let job = winjob::WinJob::protect(handle as windows_sys::Win32::Foundation::HANDLE, false)?;
+    Ok(ProcessTree { job: Some(job) })
+}
+
+/// The process creation flag `run` spawns every Windows backend with: the
+/// process starts suspended, so it can start nothing before its Job Object
+/// holds it.
+#[cfg(windows)]
+pub(crate) const CREATE_SUSPENDED: u32 = windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+
+/// Resume a child created with [`CREATE_SUSPENDED`] (Windows).
+#[cfg(windows)]
+pub(crate) fn resume(child: &Child) -> io::Result<()> {
+    let pid = child
+        .id()
+        .ok_or_else(|| io::Error::other("the process has no id"))?;
+    winjob::resume_process(pid)
 }
 
 #[cfg(test)]

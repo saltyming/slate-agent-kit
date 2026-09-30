@@ -142,7 +142,10 @@ pub enum GuardMode {
     /// Guard the run when possible, else run it unguarded; `RunEvent::Started`
     /// says which.
     Preferred,
-    /// Never guard; `agent-guard` is not looked up.
+    /// Never guard; `agent-guard` is not looked up. Cancellation still ends
+    /// the whole tree: through the process group on Unix, and on Windows
+    /// through a Job Object that is not kill-on-close (so the tree does not
+    /// die with the server).
     Off,
 }
 

@@ -177,7 +177,10 @@ fn main() {
             }
         }
     }
-    drop(rt);
+    // Bounded: a reader blocked on a pipe that a leftover process still holds
+    // open (tokio reads child pipes on blocking threads on Windows) must not
+    // hold the whole run until the watchdog fires.
+    rt.shutdown_timeout(Duration::from_secs(5));
     let _ = std::fs::remove_dir_all(&root);
     if failed.is_empty() {
         println!("\ntest result: ok. {} passed; 0 failed\n", tests.len());
@@ -405,6 +408,52 @@ impl Drop for Spawned {
     fn drop(&mut self) {
         self.kill();
         let _ = self.child.try_wait();
+    }
+}
+
+/// Processes a test learned the ids of (from pid files), killed when the test
+/// fails, so a failed test leaves nothing behind for the next one. A passing
+/// test has already seen them gone, so nothing is killed then.
+#[derive(Default)]
+struct Reap(Vec<u32>);
+
+impl Reap {
+    fn add(&mut self, pid: u32) -> u32 {
+        self.0.push(pid);
+        pid
+    }
+}
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        for &pid in &self.0 {
+            if process_alive(pid) {
+                kill_pid(pid);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn kill_pid(pid: u32) {
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+fn kill_pid(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if !handle.is_null() {
+            TerminateProcess(handle, 1);
+            CloseHandle(handle);
+        }
     }
 }
 
@@ -736,18 +785,17 @@ async fn missing_binary_is_not_found_with_hint(c: Ctx) {
 
 async fn cancellation_kills_the_child_and_its_children(c: Ctx) {
     for mode in [GuardMode::Required, GuardMode::Off] {
+        let mut reap = Reap::default();
         let marker = tag(&format!("cancel-{mode:?}"));
         let pid_file = c.file(&format!("cancel-pid-{mode:?}"));
         let child_file = c.file(&format!("cancel-child-{mode:?}"));
-        let mut sp = spec(
-            Backend::Codex,
-            &[
-                ("STUB_PID_FILE", s(pid_file.display())),
-                ("STUB_CHILD_TAG", marker.clone()),
-                ("STUB_CHILD_PID_FILE", s(child_file.display())),
-                ("STUB_SLEEP_MS", s(120_000)),
-            ],
-        );
+        let env = vec![
+            ("STUB_PID_FILE", s(pid_file.display())),
+            ("STUB_SLEEP_MS", s(120_000)),
+            ("STUB_CHILD_TAG", marker.clone()),
+            ("STUB_CHILD_PID_FILE", s(child_file.display())),
+        ];
+        let mut sp = spec(Backend::Codex, &env);
         sp.guard = mode;
         sp.model = Some(marker.clone());
         let (tx, mut rx) = unbounded_channel();
@@ -756,8 +804,8 @@ async fn cancellation_kills_the_child_and_its_children(c: Ctx) {
             let ct = ct.clone();
             tokio::spawn(async move { run(&sp, &tx, &ct).await })
         };
-        let pid = read_pid(&pid_file).await;
-        let child = read_pid(&child_file).await;
+        let pid = reap.add(read_pid(&pid_file).await);
+        let child = reap.add(read_pid(&child_file).await);
         assert!(process_alive(pid));
         ct.cancel();
         let o = tokio::time::timeout(WAIT, task)
@@ -1007,7 +1055,8 @@ async fn fallback_stops_on_cancel(c: Ctx) {
             run_with_fallback(with_pid, &models, &tx, &ct).await
         })
     };
-    let pid = read_pid(&pid_file).await;
+    let mut reap = Reap::default();
+    let pid = reap.add(read_pid(&pid_file).await);
     ct.cancel();
     let out = tokio::time::timeout(WAIT, task)
         .await
@@ -1206,9 +1255,10 @@ async fn guard_kills_program_and_its_child_when_parent_dies(c: Ctx) {
             .expect("spawn stub-parent"),
         false,
     );
-    let guard_pid = read_pid(&guard_file).await;
-    let backend_pid = read_pid(&pid_file).await;
-    let child_pid = read_pid(&child_file).await;
+    let mut reap = Reap::default();
+    let guard_pid = reap.add(read_pid(&guard_file).await);
+    let backend_pid = reap.add(read_pid(&pid_file).await);
+    let child_pid = reap.add(read_pid(&child_file).await);
     assert!(process_alive(backend_pid) && process_alive(child_pid));
     #[cfg(unix)]
     assert_eq!(
@@ -1282,8 +1332,9 @@ async fn killed_server_takes_its_backend_along(c: Ctx) {
             .expect("spawn stub-parent"),
         false,
     );
-    let backend_pid = read_pid(&pid_file).await;
-    let child_pid = read_pid(&child_file).await;
+    let mut reap = Reap::default();
+    let backend_pid = reap.add(read_pid(&pid_file).await);
+    let child_pid = reap.add(read_pid(&child_file).await);
     assert!(process_alive(backend_pid) && process_alive(child_pid));
     parent.kill();
     let _ = parent.wait().await;

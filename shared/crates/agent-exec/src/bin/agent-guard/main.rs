@@ -95,7 +95,7 @@ enum Outcome {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod platform {
     use std::ffi::OsString;
-    use std::os::unix::process::ExitStatusExt;
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
     use std::process::{Command, ExitStatus, Stdio};
 
     #[cfg(target_os = "linux")]
@@ -131,12 +131,30 @@ mod platform {
         //    redirection: fd 0/1/2 pass straight through from the guard, which
         //    are already the exact pipe ends the server created for the
         //    backend. The guard marker is removed: the program is not a guard.
-        let mut child = Command::new(&argv[0])
+        //    The signal mask is cleared in the child before exec: the Linux
+        //    watch blocks SIGTERM and SIGCHLD in the guard, and a blocked mask
+        //    survives exec, so the program would otherwise run unable to be
+        //    terminated by SIGTERM and with SIGCHLD held back.
+        let mut command = Command::new(&argv[0]);
+        command
             .args(&argv[1..])
             .env_remove(agent_exec::guard::GUARD_ENV)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        // SAFETY: the closure runs in the forked child before exec and calls
+        // only async-signal-safe functions (sigemptyset, sigprocmask).
+        unsafe {
+            command.pre_exec(|| {
+                let mut empty: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut empty);
+                if libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command
             .spawn()
             .map_err(|e| format!("spawn {:?} failed: {e}", argv[0]))?;
         let child_pid = child.id();
@@ -211,8 +229,15 @@ mod platform {
             std::process::exit(code);
         }
         if let Some(sig) = status.signal() {
+            // Default disposition, and unblocked: the Linux watch blocks
+            // SIGTERM and SIGCHLD in the guard, and a blocked signal raised
+            // here would stay pending instead of ending the guard.
             unsafe {
                 libc::signal(sig, libc::SIG_DFL);
+                let mut only: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut only);
+                libc::sigaddset(&mut only, sig);
+                libc::sigprocmask(libc::SIG_UNBLOCK, &only, std::ptr::null_mut());
                 libc::raise(sig);
             }
             // raise() only returns if the signal didn't terminate us — fall
