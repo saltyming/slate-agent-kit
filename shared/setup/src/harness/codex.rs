@@ -11,8 +11,8 @@
 //! [`add_args`] and [`remove_args`].
 
 use super::{
-    Ctx, EditOutcome, Outcome, SubagentPrefs, run_cli, server_binary, server_env, shell_quote,
-    stderr_text,
+    Ctx, EditOutcome, Outcome, SubagentPrefs, arg_quote, env_prefix, run_cli, server_binary,
+    server_env, stderr_text,
 };
 use crate::config::{ConfigDoc, Desired, TomlDoc, apply_desired, list_add, set_value};
 use crate::env::{Env, Harness};
@@ -52,14 +52,15 @@ pub fn add_args(server: &str, binary: &Path, env: &[(String, String)]) -> Vec<St
 }
 
 fn manual_commands(program: &str, ctx: &Ctx, env: &Env) -> Vec<String> {
-    let home = shell_quote(&ctx.home.to_string_lossy());
+    let platform = env.platform();
+    let prefix = env_prefix(&platform, "CODEX_HOME", &ctx.home.to_string_lossy());
     ctx.servers
         .iter()
         .map(|s| {
             let bin = server_binary(env, &ctx.bin_dir, s);
             let args = add_args(s, &bin, &server_env(ctx, s));
-            let quoted: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
-            format!("CODEX_HOME={home} {program} {}", quoted.join(" "))
+            let quoted: Vec<String> = args.iter().map(|a| arg_quote(&platform, a)).collect();
+            format!("{prefix}{program} {}", quoted.join(" "))
         })
         .collect()
 }
@@ -138,8 +139,8 @@ pub fn unregister(env: &Env, ui: &mut Ui, home: &Path, servers: &[String]) -> Re
             .iter()
             .map(|s| {
                 format!(
-                    "CODEX_HOME={} {program} mcp remove {s}",
-                    shell_quote(&home.to_string_lossy())
+                    "{}{program} mcp remove {s}",
+                    env_prefix(&env.platform(), "CODEX_HOME", &home.to_string_lossy())
                 )
             })
             .collect();

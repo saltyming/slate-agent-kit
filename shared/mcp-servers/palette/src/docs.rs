@@ -70,6 +70,24 @@ impl Role {
         })
     }
 
+    /// The role a document of `fam` has when its phase number is unknown.
+    pub fn of_family(fam: Family) -> Role {
+        match fam {
+            Family::Backlog => Role::Backlog,
+            Family::Phase => Role::Phase(None),
+            Family::Deliverable => Role::Deliverable(None),
+            Family::State => Role::State,
+            Family::Rfc => Role::Rfc,
+            Family::Adr => Role::Adr,
+            Family::Changeset => Role::Changeset,
+            Family::Staging => Role::Staging(Family::Spec),
+            Family::Design => Role::Design,
+            Family::Spec => Role::Spec,
+            Family::Principles => Role::Principles,
+            Family::Glossary => Role::Glossary,
+        }
+    }
+
     /// Whether the document is a work document (backlog, phase, deliverable, state).
     pub fn is_work(self) -> bool {
         matches!(
@@ -148,6 +166,21 @@ impl Snapshot {
             snap.add(src, layout_path, Role::Layout)?;
         }
         snap.discover(src)?;
+        // A document found at a second location for its family is loaded too, so the
+        // conflict is reported (P012) and the document is checked.
+        let extra: Vec<(PathBuf, Role)> = snap
+            .layout
+            .problems
+            .iter()
+            .filter_map(|p| {
+                let rel = p.rel.as_ref()?;
+                let path = rel.split('/').fold(root.to_path_buf(), |a, c| a.join(c));
+                Some((path, Role::of_family(p.family?)))
+            })
+            .collect();
+        for (path, role) in extra {
+            snap.add(src, path, role)?;
+        }
         Ok(snap)
     }
 
@@ -455,5 +488,36 @@ mod tests {
             snap.layout.problems[0].rel.as_deref(),
             Some("b/rfc-0002-b.rst")
         );
+        // The second document is in the snapshot, so the lint can report it.
+        assert!(
+            snap.files
+                .iter()
+                .any(|f| f.rel == "b/rfc-0002-b.rst" && f.role == Role::Rfc)
+        );
+        let an = crate::lint::Analysis::build(&snap);
+        let findings = crate::lint::run(&DiskSource, &snap, &an);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule == "P012" && f.file.ends_with("rfc-0002-b.rst")),
+            "{}",
+            crate::lint::to_text(&findings)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_folder_is_not_walked() {
+        let t = tempfile::tempdir().expect("tmp");
+        let r = t.path().canonicalize().expect("canon");
+        fs::create_dir_all(r.join("tests/fixtures/x")).expect("mk");
+        fs::write(
+            r.join("tests/fixtures/x/rfc-0001-a.rst"),
+            "RFC-0001: A\n===========\n",
+        )
+        .expect("w");
+        std::os::unix::fs::symlink(r.join("tests/fixtures"), r.join("testdata")).expect("ln");
+        let snap = Snapshot::load(&DiskSource, &r).expect("load");
+        assert!(snap.files.is_empty());
     }
 }

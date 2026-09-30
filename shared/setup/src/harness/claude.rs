@@ -9,8 +9,8 @@
 //! [`cli_scope`] and [`CliScope`].
 
 use super::{
-    Ctx, EditOutcome, Outcome, SubagentPrefs, env_prefix, run_cli, server_binary, server_env,
-    shell_quote, stderr_text,
+    Ctx, EditOutcome, Outcome, SubagentPrefs, arg_quote, env_prefix, run_cli, server_binary,
+    server_env, stderr_text,
 };
 use crate::config::{ConfigDoc, Desired, JsonDoc, apply_desired, list_add};
 use crate::env::{Env, Harness};
@@ -90,7 +90,8 @@ fn manual_commands(program: &str, ctx: &Ctx, env: &Env, with_config_dir: bool) -
         .map(|s| {
             let bin = server_binary(env, &ctx.bin_dir, s);
             let args = add_args(s, &bin, &server_env(ctx, s));
-            let quoted: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
+            let platform = env.platform();
+            let quoted: Vec<String> = args.iter().map(|a| arg_quote(&platform, a)).collect();
             format!("{prefix}{program} {}", quoted.join(" "))
         })
         .collect()

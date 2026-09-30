@@ -82,8 +82,10 @@ Requirements and invariants
 - Without a layout, the inference walks every folder except ``_palette``,
   ``.git``, ``target``, ``node_modules``, ``fixtures`` and hidden folders, and
   skips a document whose title carries a template placeholder (``<...>``).
-- A family found in two places keeps the first and reports the second as a
-  P012 finding on that document.
+- A family found in two places keeps the first; the documents of the second
+  place are loaded and checked too, and each is reported as a P012 finding.
+- A linked folder is not entered: a link can lead outside the project or into
+  an excluded tree.
 - A family with no documents is internal, which is empty in such a checkout.
 - The lock lives in ``_palette/``; regeneration without that folder runs
   without a lock and creates no folder.
@@ -105,6 +107,10 @@ Impact and compatibility
 - A project whose staging folder is not named ``staging`` and has no layout is
   checked as if the mirrors were a second spec or design family, and gets P012
   findings; naming the folder ``staging`` or adding a layout resolves it.
+- A document that carries a record title (``RFC-NNNN:``, ``ADR-NNNN:``) but is
+  not a palette record is classified as one and fails the template check; the
+  inference has no other signal. Such a project adds a layout, which places
+  the palette families and leaves the rest alone.
 
 Implementation and transition
 -----------------------------

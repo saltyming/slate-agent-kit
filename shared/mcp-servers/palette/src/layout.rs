@@ -136,6 +136,8 @@ pub struct LayoutProblem {
     /// The project-relative document an inferred problem is reported on; `None` for
     /// a problem in `layout.rst`.
     pub rel: Option<String>,
+    /// The family the document looked like, for an inferred problem.
+    pub family: Option<Family>,
 }
 
 /// The parsed layout.
@@ -224,6 +226,7 @@ impl Layout {
                         Family::ALL.map(Family::key).join(", ")
                     ),
                     rel: None,
+                    family: None,
                 });
                 continue;
             };
@@ -232,6 +235,7 @@ impl Layout {
                     line: f.start,
                     message: format!("family `{name}` is placed more than once"),
                     rel: None,
+                    family: None,
                 });
                 continue;
             }
@@ -255,6 +259,7 @@ impl Layout {
                                     other.key()
                                 ),
                                 rel: None,
+                        family: None,
                             });
                             continue;
                         }
@@ -266,6 +271,7 @@ impl Layout {
                             line: f.start,
                             message: format!("family `{name}`: {msg}"),
                             rel: None,
+                            family: None,
                         });
                         continue;
                     }
@@ -293,6 +299,7 @@ impl Layout {
                         fam.key()
                     ),
                     rel: None,
+                    family: None,
                 });
             }
         }
@@ -344,6 +351,7 @@ impl Layout {
                             fam.key()
                         ),
                         rel: Some(rel.clone()),
+                        family: Some(fam),
                     });
                 }
                 Some(_) => {}
@@ -515,7 +523,9 @@ fn walk(src: &dyn FileSource, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Re
     for e in src.list(dir)? {
         let p = dir.join(&e.name);
         if e.is_dir {
-            if SKIPPED_DIRS.contains(&e.name.as_str()) || e.name.starts_with('.') {
+            // A linked folder may lead outside the project or into an excluded tree.
+            let linked = std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
+            if SKIPPED_DIRS.contains(&e.name.as_str()) || e.name.starts_with('.') || linked {
                 continue;
             }
             walk(src, &p, out)?;

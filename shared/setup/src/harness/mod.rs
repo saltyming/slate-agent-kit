@@ -112,6 +112,28 @@ pub fn env_prefix(platform: &str, var: &str, value: &str) -> String {
     }
 }
 
+/// Quotes `s` for display in the shell the platform's users run: PowerShell on
+/// Windows, a POSIX shell elsewhere.
+pub fn arg_quote(platform: &str, s: &str) -> String {
+    if platform.contains("windows") {
+        let plain = !s.is_empty()
+            && s.chars().all(|c| {
+                c.is_ascii_alphanumeric()
+                    || matches!(
+                        c,
+                        '/' | '.' | '_' | '-' | '=' | ':' | ',' | '+' | '@' | '\\'
+                    )
+            });
+        if plain {
+            s.to_string()
+        } else {
+            format!("'{}'", s.replace('\'', "''"))
+        }
+    } else {
+        shell_quote(s)
+    }
+}
+
 /// Quotes `s` for display in a POSIX shell command line.
 pub fn shell_quote(s: &str) -> String {
     let plain = !s.is_empty()
@@ -219,6 +241,26 @@ pub(crate) fn test_ctx(harness: Harness, home: &str, default_home: &str) -> Ctx 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn arg_quote_follows_the_platform_shell() {
+        assert_eq!(
+            super::arg_quote("x86_64-unknown-linux-gnu", "it's"),
+            "'it'\\''s'"
+        );
+        assert_eq!(
+            super::arg_quote("x86_64-pc-windows-msvc", "C:\\a b"),
+            "'C:\\a b'"
+        );
+        assert_eq!(
+            super::arg_quote("x86_64-pc-windows-msvc", "C:\\O'Brien"),
+            "'C:\\O''Brien'"
+        );
+        assert_eq!(
+            super::arg_quote("x86_64-pc-windows-msvc", "C:\\plain"),
+            "C:\\plain"
+        );
+    }
+
     #[test]
     fn env_prefix_follows_the_platform_shell() {
         assert_eq!(
