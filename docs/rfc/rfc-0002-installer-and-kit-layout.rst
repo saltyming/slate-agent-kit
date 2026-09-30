@@ -6,7 +6,7 @@ RFC-0002: Installer and kit layout
   prefs levels and their migration, native subagent configuration
 :Verification: build — 2026-09-30; cargo test on macOS and
   scratch-HOME installs, reinstalls and uninstalls of the three kits, Linux and
-  Windows through slate CI on next, not yet green
+  Windows through slate CI on next (run 36659672290, green)
 :Areas: installer; kit layout; prefs; MCP registration
 :Authors: Claude Opus 5.5
 :Reviewers: none yet
