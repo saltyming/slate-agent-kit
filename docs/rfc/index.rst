@@ -69,8 +69,8 @@ Records
 `RFC-0011 <rfc-0011-measurement.rst>`_ Measurement — bench server and benchmark suite
   Status: Accepted. Implementation: not-started.
   Depends: RFC-0008, RFC-0002.
-  Linked from: none.
-  Superseded by: none.
+  Linked from: RFC-0015 (Depends), RFC-0015 (Supersedes), RFC-0015 (link).
+  Superseded by: RFC-0015 (in part: the suite and its fixtures stay outside any public path).
 
 `RFC-0012 <rfc-0012-tables-and-code-blocks.rst>`_ Tables and code blocks in maintained documents and records
   Status: Accepted. Implementation: complete.
@@ -87,5 +87,11 @@ Records
 `RFC-0014 <rfc-0014-guard-executable.rst>`_ The parent-death guard is its own executable
   Status: Accepted. Implementation: complete.
   Depends: RFC-0008.
+  Linked from: none.
+  Superseded by: none.
+
+`RFC-0015 <rfc-0015-benchmark-suite-committed.rst>`_ The benchmark suite is committed
+  Status: Accepted. Implementation: not-started.
+  Depends: RFC-0011.
   Linked from: none.
   Superseded by: none.

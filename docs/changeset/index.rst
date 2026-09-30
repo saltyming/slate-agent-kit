@@ -9,3 +9,7 @@ Changesets
 `RFC-0011 <rfc-0011.rst>`_
   Record status: Accepted.
   Edits: 5. Documents: spec/bench.rst, design/benchmark-suite.rst, design/architecture.rst, spec/support-matrix.rst.
+
+`RFC-0015 <rfc-0015.rst>`_
+  Record status: Accepted.
+  Edits: 1. Documents: design/benchmark-suite.rst.

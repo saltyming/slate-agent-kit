@@ -67,12 +67,21 @@ the ``documents`` variant, so document use is measured beside code.
 Ownership and state
 -------------------
 
-The suite lives outside the server and outside any public path: fixture
-manifests, extracted copies, prompts, scorers and hidden tests. Hidden tests
-live outside a run's working tree and are copied in by the scorer after the
-run ends. Results are the bench server's JSONL; the first wave's analysis is
-written into the backlog item it feeds as evidence, and the fixture and
-result locations into the project's state.
+The suite is committed in this repository under ``benchmarks/``:
+``fixtures/<name>/`` (an excerpt and its manifest), ``tasks/<benchmark>/<task>/``
+(``task.toml``, the prompt and optional ``documents/``), ``scorers/`` and
+``hidden/``. Every file copied from saltyos carries the SPDX identifier of its
+component; ``benchmarks/LICENSES/`` holds the license texts and
+``benchmarks/README`` says the directory follows those identifiers, not the
+repository's own license. Hidden tests are committed like the rest; they stay
+outside a run's working tree and are copied in by the scorer after the run
+ends. Nothing in the Rust workspace, the kit renders or the release depends on
+the directory.
+
+Run results are not part of the suite: they are the bench server's JSONL and
+run directories, written where each run directs. The first wave's analysis is
+written into the backlog item it feeds as evidence, and the result locations
+into the project's state.
 
 Execution and concurrency
 -------------------------
