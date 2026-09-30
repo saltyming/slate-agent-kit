@@ -141,9 +141,11 @@ Terminal experience
 - The summary lists every file to write or back up, every registration, and
   every configuration key with its old and new value.
 - Prompts read from the terminal even when standard input is a pipe
-  (``/dev/tty`` on Unix, ``CONIN$`` on Windows). Without a terminal, or with
-  ``--yes``, every question takes its current or default value and the run never
-  waits for input.
+  (``/dev/tty`` on Unix, ``CONIN$`` on Windows). A run has a terminal only when
+  standard output or standard error is one; a console that is merely attached
+  (a CI step, a process started with piped output) does not count. Without a
+  terminal, or with ``--yes``, every question takes its current or default value
+  and the run never waits for input.
 - Color and symbols are used only on a terminal and when ``NO_COLOR`` is unset.
 - A failure names what failed, what state it left, and the command that fixes
   or retries it. The final report lists installed paths and says which harness

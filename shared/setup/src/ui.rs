@@ -77,12 +77,17 @@ impl Ui {
     /// The interface for the running process.
     ///
     /// Questions go to the controlling terminal (`/dev/tty`, or `CONIN$` and
-    /// `CONOUT$` on Windows) even when standard input is a pipe. With `assume_yes`
-    /// no terminal is opened and every question takes its default.
+    /// `CONOUT$` on Windows) even when standard input is a pipe, as under
+    /// `curl | sh`. A run is interactive only when standard output or standard
+    /// error is a terminal: a console that is merely attached (a CI step, a
+    /// process started with piped output) has nobody to answer, and opening its
+    /// input would wait forever. With `assume_yes` no terminal is opened and every
+    /// question takes its default.
     pub fn for_process(assume_yes: bool, no_color: bool) -> Ui {
         let stdout_tty = io::stdout().is_terminal();
         let color = stdout_tty && !no_color && enable_ansi();
-        let (input, prompt_out) = if assume_yes {
+        let headless = !stdout_tty && !io::stderr().is_terminal();
+        let (input, prompt_out) = if assume_yes || headless {
             (None, None)
         } else {
             match open_terminal() {
