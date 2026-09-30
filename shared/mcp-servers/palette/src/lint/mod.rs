@@ -1,8 +1,9 @@
 //! The lint engine: rules P001 to P017 over a project snapshot.
 //!
 //! Owns the [`Finding`] type, the derived analysis shared by the rules (records,
-//! changesets, staging plan) and the ordering of results. Each rule group lives in its
-//! own submodule; the heuristic patterns are in `patterns`. Does not write files.
+//! changesets, staging plan, record document states) and the ordering of results.
+//! Each rule group lives in its own submodule; the heuristic patterns are in
+//! `patterns`. Does not write files.
 //! Entry points: [`run`], [`Analysis::build`], [`filter_paths`].
 
 mod changes;
@@ -18,7 +19,7 @@ mod work;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::changeset::{self, Changeset, StagingPlan};
+use crate::changeset::{self, Changeset, RecordState, StagingPlan};
 use crate::docs::{DocFile, Snapshot};
 use crate::records::{RecId, Records};
 use crate::vfs::FileSource;
@@ -110,18 +111,23 @@ pub struct Analysis {
     pub sets: BTreeMap<RecId, Changeset>,
     /// The staging plan.
     pub plan: StagingPlan,
+    /// The document state each record's edits see, by record.
+    pub states: BTreeMap<RecId, RecordState>,
 }
 
 impl Analysis {
-    /// Derives records, changesets and the staging plan from `snap`.
+    /// Derives records, changesets, the staging plan and each record's document state
+    /// from `snap`.
     pub fn build(snap: &Snapshot) -> Analysis {
         let records = Records::build(snap);
         let sets = changeset::collect(snap);
         let plan = changeset::plan(snap, &records, &sets);
+        let states = changeset::record_states(snap, &records, &sets);
         Analysis {
             records,
             sets,
             plan,
+            states,
         }
     }
 }

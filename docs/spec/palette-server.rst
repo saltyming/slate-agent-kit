@@ -144,6 +144,14 @@ document with the edits of every accepted record's changeset applied in
 dependency order. Changesets of draft and proposed records are checked, not
 applied. Staging is only ever generated.
 
+The text of an edit reads as the maintained document will read, so a link in
+an edit body is relative to the edit's target document (for ``Create:``, the
+new document's path), not to the changeset file, and it holds unchanged in
+staging and after promotion. Such a link may point at a document or a section
+that the same record's edits, or the changesets of the record's ``Depends``
+closure, create. Text outside an edit body is read from the changeset file's
+own location.
+
 Contract
 --------
 
@@ -172,7 +180,10 @@ line and a message.
 
 ``P004`` Links (error)
   A link whose target file or anchor does not exist; a link from a project path
-  into ``_palette/``. Links in table cells are checked like any other.
+  into ``_palette/``. Links in table cells are checked like any other; a link
+  whose text and target wrap over lines within one block is one link; a link
+  in a changeset's edit body is read from the edit's target document, against
+  the documents as the record's edits and its ``Depends`` closure leave them.
 
 ``P005`` Relations
   A link to a record created later (error); a relation cycle (error); a
@@ -185,8 +196,20 @@ line and a message.
   document's cutoff, or when that document admits none (error).
 
 ``P006`` Changes (error)
-  A ``Changes`` target document or section that neither exists nor is created
-  by the record's own changeset.
+  A ``Changes`` entry names a document the record changes, in one of three
+  forms. ``design/<topic>.rst`` or ``spec/<topic>.rst`` with its sections, or
+  ``created``: an error when the document or a section neither exists, nor is
+  created by the record's own changeset, nor exists once the changesets of the
+  record's ``Depends`` closure are applied; ``created`` needs the record's own
+  changeset to create it. ``principles.rst``, ``glossary.rst`` or
+  ``contributing.rst`` with its sections: an error when the family's document
+  or a section is not on disk, or the entry says ``created`` (changesets and
+  staging hold only design and spec documents). Any other project document, as
+  a project-relative path to a ``.md`` or ``.rst`` file with what changes in
+  the parenthetical: an error when the file does not exist, the path is
+  absolute, has ``..`` or a backslash, lies inside ``_palette/``, names a
+  source file, names a record or another palette document, or names a family
+  document by its real path instead of its logical name.
 
 ``P007`` Changesets (error)
   An edit that does not resolve against its target with only its record's

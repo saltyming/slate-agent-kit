@@ -46,7 +46,7 @@ fn changesets(cx: &Cx, out: &mut Vec<Finding>) {
             Some(_) => {}
         }
     }
-    for fail in changeset::check_resolution(cx.snap, recs, &cx.an.sets) {
+    for fail in changeset::check_resolution(recs, &cx.an.states) {
         out.push(Finding::error(
             "P007",
             &cx.snap.files[fail.file],

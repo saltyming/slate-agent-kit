@@ -83,6 +83,25 @@ pub fn relative_link(from_dir: &Path, to: &Path) -> String {
     parts.join("/")
 }
 
+/// Whether `path` lies inside `base` (or is `base`), comparing path components with
+/// ASCII case ignored, so the answer is the same on every platform.
+pub fn starts_with_nocase(path: &Path, base: &Path) -> bool {
+    let mut p = path.components();
+    base.components().all(|b| {
+        p.next().is_some_and(|c| {
+            c.as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
+        })
+    })
+}
+
+/// Whether `a` and `b` name the same path, comparing components with ASCII case
+/// ignored.
+pub fn same_path_nocase(a: &Path, b: &Path) -> bool {
+    a.components().count() == b.components().count() && starts_with_nocase(a, b)
+}
+
 /// Lexically resolves `rel` (with `/` separators, possibly `..`) against `base`,
 /// without touching the file system. `None` when the result would climb above the
 /// root of `base`.

@@ -21,13 +21,13 @@ Records
 `RFC-0003 <rfc-0003-palette-document-system.rst>`_ palette document system
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: RFC-0004 (Depends), RFC-0007 (Related), RFC-0009 (Depends), RFC-0009 (link), RFC-0012 (Related), RFC-0012 (link).
-  Superseded by: none.
+  Linked from: RFC-0004 (Depends), RFC-0007 (Related), RFC-0009 (Depends), RFC-0009 (link), RFC-0012 (Related), RFC-0012 (link), RFC-0013 (Depends), RFC-0013 (Supersedes), RFC-0013 (link).
+  Superseded by: RFC-0013 (in part: Changes names only design and spec documents).
 
 `RFC-0004 <rfc-0004-palette-server.rst>`_ palette MCP server
   Status: Accepted. Implementation: complete.
   Depends: RFC-0003.
-  Linked from: RFC-0007 (Depends), RFC-0007 (link), RFC-0009 (Depends), RFC-0009 (link), RFC-0012 (Depends), RFC-0012 (link).
+  Linked from: RFC-0007 (Depends), RFC-0007 (link), RFC-0009 (Depends), RFC-0009 (link), RFC-0012 (Depends), RFC-0012 (link), RFC-0013 (Depends), RFC-0013 (link).
   Superseded by: none.
 
 `RFC-0005 <rfc-0005-memory-discipline.rst>`_ Memory discipline
@@ -45,7 +45,7 @@ Records
 `RFC-0007 <rfc-0007-checking-without-the-layout.rst>`_ Checking shared documents without the layout
   Status: Accepted. Implementation: complete.
   Depends: RFC-0004.
-  Linked from: RFC-0010 (Depends), RFC-0010 (link).
+  Linked from: RFC-0010 (Depends), RFC-0010 (link), RFC-0013 (Related), RFC-0013 (link).
   Superseded by: none.
 
 `RFC-0008 <rfc-0008-shared-backend-execution.rst>`_ Shared backend execution layer
@@ -75,5 +75,11 @@ Records
 `RFC-0012 <rfc-0012-tables-and-code-blocks.rst>`_ Tables and code blocks in maintained documents and records
   Status: Accepted. Implementation: complete.
   Depends: RFC-0004.
+  Linked from: none.
+  Superseded by: none.
+
+`RFC-0013 <rfc-0013-changes-names-any-project-document.rst>`_ Changes names any project document
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0003, RFC-0004.
   Linked from: none.
   Superseded by: none.

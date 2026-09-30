@@ -478,3 +478,423 @@ fn records_module_reports_relations_for_status() {
     let _ = Records::id_of;
     let _ = changeset::is_checked_status;
 }
+
+// ── links inside edit bodies and Changes against the dependency closure ──────────
+
+/// Regenerates the indexes and staging documents after a hand edit.
+fn regenerate(p: &Proj) {
+    palette_server::ops::generate(&p.ctx, &p.arg()).expect("generate");
+}
+
+/// The 1-based line of the first line of `rel` that contains `needle`.
+fn line_of(p: &Proj, rel: &str, needle: &str) -> usize {
+    p.read(rel)
+        .lines()
+        .position(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("{rel} has no line with {needle:?}"))
+        + 1
+}
+
+fn p004(p: &Proj) -> Vec<palette_server::lint::Finding> {
+    p.lint().into_iter().filter(|f| f.rule == "P004").collect()
+}
+
+/// The body of a spec document created by a `Create:` edit, with `contract` as the
+/// Contract section's text.
+fn spec_body(contract: &str) -> String {
+    [
+        "Scope and authority",
+        "Definitions and model",
+        "Contract",
+        "Errors and edge cases",
+        "Ownership and ordering",
+        "Compatibility",
+        "Conformance",
+        "References",
+    ]
+    .iter()
+    .map(|t| {
+        let text = if *t == "Contract" { contract } else { "Text." };
+        format!("{t}\n{}\n\n{text}\n\n", "^".repeat(t.len()))
+    })
+    .fold(":Status: Contract\n\n".to_string(), |a, s| a + &s)
+}
+
+/// A changeset section that creates `logical` with `contract` as its Contract text.
+fn create_section(logical: &str, title: &str, contract: &str) -> String {
+    format!(
+        "\n{logical}\n{}\n\nCreate: {title}\n{}\n\n{}",
+        "-".repeat(logical.len()),
+        "~".repeat(title.len() + 8),
+        spec_body(contract).trim_end()
+    ) + "\n"
+}
+
+/// Appends `text` (with `\n` line breaks) to RFC-0002's changeset, in the body of its
+/// last edit (`Insert into: Contract` of `spec/thing.rst`), in the file's line endings.
+fn append_to_rfc2_changeset(p: &Proj, text: &str) {
+    p.mutate("docs/changeset/rfc-0002.rst", |s| {
+        let eol = if s.contains("\r\n") { "\r\n" } else { "\n" };
+        format!("{s}{eol}{}{eol}", text.replace('\n', eol))
+    });
+}
+
+fn edit_body_links_read_from_the_target(p: &Proj) {
+    let cs = "docs/changeset/rfc-0002.rst";
+    let before = p.read(cs);
+    // Right for the target (`docs/spec/`), wrong for the changeset folder.
+    append_to_rfc2_changeset(
+        p,
+        "See `the thing itself <thing.rst>`_, `its errors <#errors-and-edge-cases>`_ and `the overview <../design/overview.rst>`_.",
+    );
+    assert!(p004(p).is_empty(), "{}", show(&p004(p)));
+
+    p.write(cs, &before);
+    append_to_rfc2_changeset(p, "See `a missing file <missing.rst>`_.");
+    let line = line_of(p, cs, "<missing.rst>");
+    let f = p004(p);
+    assert!(
+        f.iter().any(|x| x.file == cs
+            && x.line == line
+            && x.message
+                .contains("link target `missing.rst` does not exist")),
+        "{}",
+        show(&f)
+    );
+
+    // Right only relative to the changeset folder: judged from the target, so missing.
+    p.write(cs, &before);
+    append_to_rfc2_changeset(p, "See `this changeset <rfc-0002.rst>`_.");
+    let f = p004(p);
+    assert!(
+        has(&f, "P004", cs, "link target `rfc-0002.rst` does not exist"),
+        "{}",
+        show(&f)
+    );
+
+    p.write(cs, &before);
+    append_to_rfc2_changeset(p, "See `nothing <#nowhere>`_.");
+    let f = p004(p);
+    assert!(
+        has(
+            &f,
+            "P004",
+            cs,
+            "anchor `#nowhere` does not exist in `the document this edit changes`"
+        ),
+        "{}",
+        show(&f)
+    );
+
+    // Text outside every edit body is still read from the changeset's folder.
+    p.write(cs, &before);
+    p.mutate(cs, |s| {
+        let eol = if s.contains("\r\n") { "\r\n" } else { "\n" };
+        s.replacen(
+            &format!("==================={eol}{eol}"),
+            &format!(
+                "==================={eol}{eol}Edits of `this changeset <rfc-0002.rst>`_.{eol}{eol}"
+            ),
+            1,
+        )
+    });
+    assert!(p004(p).is_empty(), "{}", show(&p004(p)));
+}
+
+#[test]
+fn edit_body_links_are_read_from_the_target_document() {
+    edit_body_links_read_from_the_target(&Proj::valid());
+}
+
+#[test]
+fn edit_body_links_are_read_from_the_target_document_with_crlf() {
+    edit_body_links_read_from_the_target(&Proj::valid_crlf());
+}
+
+#[test]
+fn edit_body_links_see_what_the_record_creates() {
+    let p = Proj::valid();
+    p.replace(
+        "docs/rfc/rfc-0002-beta.rst",
+        ":Changes: spec/thing.rst (Contract; Rules)",
+        ":Changes: spec/thing.rst (Contract; Rules); spec/extra.rst (created); spec/more.rst (created)",
+    );
+    let cs = "docs/changeset/rfc-0002.rst";
+    let before = p.read(cs);
+    // `more.rst` is created by the same changeset; `Rules` is a section its
+    // `Insert into` adds to the existing `thing.rst`.
+    p.mutate(cs, |s| {
+        format!(
+            "{s}{}{}",
+            create_section(
+                "spec/extra.rst",
+                "Extra",
+                "See `more <more.rst#contract>`_ and `the rules <thing.rst#rules>`_."
+            ),
+            create_section("spec/more.rst", "More", "Text.")
+        )
+    });
+    assert!(p004(&p).is_empty(), "{}", show(&p004(&p)));
+
+    p.write(cs, &before);
+    p.mutate(cs, |s| {
+        format!(
+            "{s}{}",
+            create_section(
+                "spec/extra.rst",
+                "Extra",
+                "See `absent <absent.rst>`_ and `nothing <thing.rst#nowhere>`_."
+            )
+        )
+    });
+    let f = p004(&p);
+    assert!(
+        has(&f, "P004", cs, "link target `absent.rst` does not exist"),
+        "{}",
+        show(&f)
+    );
+    assert!(
+        has(
+            &f,
+            "P004",
+            cs,
+            "anchor `#nowhere` does not exist in `thing.rst`"
+        ),
+        "{}",
+        show(&f)
+    );
+}
+
+#[test]
+fn edit_body_links_see_what_the_dependency_closure_creates() {
+    for depends in [true, false] {
+        let p = Proj::valid();
+        p.mutate("docs/changeset/rfc-0002.rst", |s| {
+            format!("{s}{}", create_section("spec/extra.rst", "Extra", "Text."))
+        });
+        p.replace(
+            "docs/rfc/rfc-0002-beta.rst",
+            ":Changes: spec/thing.rst (Contract; Rules)",
+            ":Changes: spec/thing.rst (Contract; Rules); spec/extra.rst (created)",
+        );
+        accept_rfc4_depending_on_rfc2(&p, depends);
+        p.replace(
+            "docs/changeset/rfc-0004.rst",
+            "The delta rules.",
+            "The delta rules, beside `the extra <extra.rst#contract>`_.",
+        );
+        let f = p004(&p);
+        let reported = has(
+            &f,
+            "P004",
+            "docs/changeset/rfc-0004.rst",
+            "link target `extra.rst` does not exist",
+        );
+        assert_eq!(reported, !depends, "depends: {depends}\n{}", show(&f));
+    }
+}
+
+#[test]
+fn edit_body_links_hold_in_staging_and_after_promotion() {
+    let p = Proj::valid();
+    p.replace(
+        "docs/rfc/rfc-0002-beta.rst",
+        ":Changes: spec/thing.rst (Contract; Rules)",
+        ":Changes: spec/thing.rst (Contract; Rules); spec/extra.rst (created)",
+    );
+    records::changeset_edit(&p.ctx, params(&p, json!({
+        "record": "RFC-0002", "action": "add", "kind": "create", "document": "spec/extra.rst",
+        "target": "Extra", "body": spec_body("See `the rules <thing.rst#rules>`_.")
+    }))).expect("create");
+    let link =
+        "See `the extra <extra.rst#contract>`_ and `the overview <../design/overview.rst>`_.";
+    records::changeset_edit(&p.ctx, params(&p, json!({
+        "record": "RFC-0002", "action": "replace", "kind": "insert_into", "document": "spec/thing.rst",
+        "target": "Contract", "body": format!("Rules\n^^^^^\n\nThe beta rules apply to every operation.\n\n{link}\n")
+    }))).expect("replace");
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+    assert!(p.read("docs/staging/spec/thing.rst").contains(link));
+    assert!(
+        p.read("docs/staging/spec/extra.rst")
+            .contains("`the rules <thing.rst#rules>`_")
+    );
+
+    records::changeset_promote(
+        &p.ctx,
+        params(
+            &p,
+            json!({
+                "record": "RFC-0002", "implementation": "complete", "implementers": "S",
+                "verification": "static", "verification_note": "n"
+            }),
+        ),
+    )
+    .expect("promote");
+    assert!(p.read("docs/spec/thing.rst").contains(link));
+    assert!(
+        p.read("docs/spec/extra.rst")
+            .contains("`the rules <thing.rst#rules>`_")
+    );
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+}
+
+fn move_family(p: &Proj, family: &str, placement: &str) {
+    palette_server::ops::init::layout_set(
+        &p.ctx,
+        params(
+            p,
+            json!({"family": family, "placement": placement, "confirmed_by_user": true}),
+        ),
+    )
+    .unwrap_or_else(|e| panic!("move {family} to {placement}: {}", e.message));
+}
+
+#[test]
+fn moving_families_keeps_edit_body_links_relative_to_the_target() {
+    let p = Proj::valid();
+    p.replace(
+        "docs/rfc/rfc-0002-beta.rst",
+        ":Changes: spec/thing.rst (Contract; Rules)",
+        ":Changes: spec/thing.rst (Contract; Rules); spec/extra.rst (created)",
+    );
+    records::changeset_edit(&p.ctx, params(&p, json!({
+        "record": "RFC-0002", "action": "add", "kind": "create", "document": "spec/extra.rst",
+        "target": "Extra", "body": spec_body("See `the thing <thing.rst>`_.")
+    }))).expect("create");
+    records::changeset_edit(&p.ctx, params(&p, json!({
+        "record": "RFC-0002", "action": "replace", "kind": "insert_into", "document": "spec/thing.rst",
+        "target": "Contract",
+        "body": "Rules\n^^^^^\n\nSee `the extra <extra.rst>`_ and `the overview <../design/overview.rst>`_.\n"
+    }))).expect("replace");
+    let cs = |p: &Proj, dir: &str| p.read(&format!("{dir}/rfc-0002.rst"));
+    // Outside every edit body, a link is read from the changeset's own folder.
+    p.mutate("docs/changeset/rfc-0002.rst", |s| {
+        s.replacen(
+            "===================\n\n",
+            "===================\n\nEdits of `RFC-0002 <../rfc/rfc-0002-beta.rst>`_.\n\n",
+            1,
+        )
+    });
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+
+    // The changeset moves; the target documents do not, so edit bodies keep their links.
+    move_family(&p, "changeset", "docs/records/changes");
+    let text = cs(&p, "docs/records/changes");
+    assert!(
+        text.contains("`RFC-0002 <../../rfc/rfc-0002-beta.rst>`_"),
+        "{text}"
+    );
+    assert!(
+        text.contains("See `the extra <extra.rst>`_ and `the overview <../design/overview.rst>`_."),
+        "{text}"
+    );
+    assert!(text.contains("See `the thing <thing.rst>`_."), "{text}");
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+
+    // The spec family moves one level deeper: links from its edit bodies to the design
+    // family gain a level; links between spec documents, created or not, stay.
+    move_family(&p, "spec", "docs/deep/spec");
+    let text = cs(&p, "docs/records/changes");
+    assert!(
+        text.contains(
+            "See `the extra <extra.rst>`_ and `the overview <../../design/overview.rst>`_."
+        ),
+        "{text}"
+    );
+    assert!(text.contains("See `the thing <thing.rst>`_."), "{text}");
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+
+    // The design family moves: the link to it follows, read from the spec folder.
+    move_family(&p, "design", "docs/design2");
+    let text = cs(&p, "docs/records/changes");
+    assert!(
+        text.contains("`the overview <../../design2/overview.rst>`_."),
+        "{text}"
+    );
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+}
+
+#[test]
+fn palette_links_from_edit_bodies_follow_the_target_placement() {
+    let p = Proj::valid();
+    // The documents that link to the spec move first, so no project document links
+    // into `_palette/`.
+    move_family(&p, "glossary", "internal");
+    move_family(&p, "design", "internal");
+    move_family(&p, "spec", "internal");
+    let cs = "docs/changeset/rfc-0002.rst";
+    let before = p.read(cs);
+    // The edit's target lives in `_palette/spec/`, so its text may link into `_palette/`.
+    append_to_rfc2_changeset(&p, "See `the state <../state.rst>`_.");
+    assert!(p004(&p).is_empty(), "{}", show(&p004(&p)));
+    // The same target from text outside every edit body is a project document's link.
+    p.write(cs, &before);
+    p.replace(
+        cs,
+        "===================\n\n",
+        "===================\n\nSee `the state <../../_palette/state.rst>`_.\n\n",
+    );
+    let f = p004(&p);
+    assert!(
+        has(&f, "P004", cs, "must not link into `_palette/`"),
+        "{}",
+        show(&f)
+    );
+}
+
+#[test]
+fn changes_accept_documents_the_dependency_closure_creates() {
+    let setup = |depends: bool, changes: &str| {
+        let p = Proj::valid();
+        p.mutate("docs/changeset/rfc-0002.rst", |s| {
+            format!("{s}{}", create_section("spec/extra.rst", "Extra", "Text."))
+        });
+        p.replace(
+            "docs/rfc/rfc-0002-beta.rst",
+            ":Changes: spec/thing.rst (Contract; Rules)",
+            ":Changes: spec/thing.rst (Contract; Rules); spec/extra.rst (created)",
+        );
+        accept_rfc4_depending_on_rfc2(&p, depends);
+        p.replace(
+            "docs/rfc/rfc-0004-delta.rst",
+            ":Changes: none",
+            &format!(":Changes: {changes}"),
+        );
+        p.write(
+            "docs/changeset/rfc-0004.rst",
+            "Changeset: RFC-0004\n===================\n\nspec/extra.rst\n--------------\n\nReplace: Contract\n~~~~~~~~~~~~~~~~~\n\nContract\n^^^^^^^^\n\nThe delta contract.\n",
+        );
+        regenerate(&p);
+        p
+    };
+    let rfc4 = "docs/rfc/rfc-0004-delta.rst";
+
+    let p = setup(true, "spec/extra.rst (Contract)");
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+
+    let p = setup(false, "spec/extra.rst (Contract)");
+    assert!(
+        has(
+            &p.lint(),
+            "P006",
+            rfc4,
+            "`spec/extra.rst` does not exist and this record's changeset does not create it"
+        ),
+        "{}",
+        show(&p.lint())
+    );
+
+    let p = setup(true, "spec/extra.rst (Contract; Nowhere)");
+    let f = p.lint();
+    assert!(has(&f, "P006", rfc4, "section `Nowhere`"), "{}", show(&f));
+    assert!(!has(&f, "P006", rfc4, "section `Contract`"), "{}", show(&f));
+
+    // `(created)` still means this record's own changeset creates the document.
+    let p = setup(true, "spec/extra.rst (created)");
+    let f = p.lint();
+    assert!(
+        has(&f, "P006", rfc4, "a dependency's changeset creates it"),
+        "{}",
+        show(&f)
+    );
+}

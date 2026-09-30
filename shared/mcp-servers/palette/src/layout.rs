@@ -2,9 +2,10 @@
 //!
 //! Owns parsing the layout document, inferring a layout from the documents
 //! themselves when the project has none, validating placements and resolving every
-//! family (and the documents inside it) to an absolute path. Does not report
-//! findings; `lint` turns [`LayoutProblem`]s into P012.
-//! Entry points: [`Layout::parse`], [`Layout::infer`], [`Locations`].
+//! family (and the documents inside it) to an absolute path, and reading which kind of
+//! document a record's `Changes` entry names. Does not report findings; `lint` turns
+//! [`LayoutProblem`]s into P012.
+//! Entry points: [`Layout::parse`], [`Layout::infer`], [`Locations`], [`changes_doc`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -533,6 +534,70 @@ pub fn split_logical(logical: &str) -> Option<(Family, &str)> {
         return None;
     }
     Some((fam, name))
+}
+
+/// What a changeset may edit, for messages.
+pub const CHANGESET_TARGETS: &str = "a changeset edits only design and spec documents (`design/<topic>.rst` or `spec/<topic>.rst`, lowercase kebab-case); principles, glossary, contributing and other project documents are named in the record's Changes and edited directly when the change lands";
+
+/// The forms the document of a `Changes` entry takes, for messages.
+pub const CHANGES_FORMS: &str = "`design/<topic>.rst` or `spec/<topic>.rst` (sections in parentheses, or `created`), `principles.rst`, `glossary.rst` or `contributing.rst` (sections in parentheses), or the project-relative path of another project document ending in `.md` or `.rst` (what changes in parentheses)";
+
+/// The document a `Changes` entry names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangesDoc {
+    /// A design or spec document by its logical path; changesets edit these.
+    Maintained(Family),
+    /// The principles, glossary or contributing document by its logical name; no
+    /// changeset edits it.
+    Single(Family),
+    /// Another project document: the components of its project-relative path.
+    Project(Vec<String>),
+}
+
+/// Reads the document part of a `Changes` entry by its form alone, without the file
+/// system; the error says why the form is not accepted.
+pub fn changes_doc(doc: &str) -> Result<ChangesDoc, String> {
+    if let Some((fam, _)) = split_logical(doc) {
+        return Ok(ChangesDoc::Maintained(fam));
+    }
+    for fam in [Family::Principles, Family::Glossary, Family::Contributing] {
+        if doc.strip_suffix(".rst") == Some(fam.key()) {
+            return Ok(ChangesDoc::Single(fam));
+        }
+    }
+    if doc.contains('\\') {
+        return Err(format!(
+            "`{doc}` uses a backslash; write a project-relative path with `/`"
+        ));
+    }
+    let drive = doc.as_bytes().get(1) == Some(&b':');
+    if doc.starts_with('/') || drive {
+        return Err(format!(
+            "`{doc}` is an absolute path; write the path relative to the project folder"
+        ));
+    }
+    let parts: Vec<&str> = doc.split('/').collect();
+    if parts
+        .iter()
+        .any(|c| c.is_empty() || *c == "." || *c == "..")
+    {
+        return Err(format!(
+            "`{doc}` must stay inside the project: a project-relative path without `.`, `..` or empty components"
+        ));
+    }
+    let name = parts
+        .last()
+        .copied()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !(name.ends_with(".md") || name.ends_with(".rst")) {
+        return Err(format!(
+            "`{doc}` is not a document: Changes lists documents, not source files. Accepted forms: {CHANGES_FORMS}"
+        ));
+    }
+    Ok(ChangesDoc::Project(
+        parts.into_iter().map(str::to_string).collect(),
+    ))
 }
 
 fn walk(src: &dyn FileSource, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {

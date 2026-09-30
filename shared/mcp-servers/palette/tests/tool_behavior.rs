@@ -403,6 +403,79 @@ fn record_create_writes_the_template_with_initial_values() {
 }
 
 #[test]
+fn record_changes_accept_single_file_families_and_project_documents() {
+    let p = Proj::valid();
+    p.write("AGENTS.md", "# Agents\n\nBuild with make.\n");
+    let create = |changes: Value| {
+        records::record_create(
+            &p.ctx,
+            params(
+                &p,
+                json!({
+                    "kind": "rfc", "title": "Delta rules", "authors": "A", "areas": "thing", "description": "D.",
+                    "changes": changes
+                }),
+            ),
+        )
+    };
+    for (changes, needle) in [
+        (
+            json!([{"document": "AGENTS.md", "sections": ["a", "b"]}]),
+            "exactly one element",
+        ),
+        (
+            json!([{"document": "AGENTS.md", "sections": []}]),
+            "exactly one element",
+        ),
+        (
+            json!([{"document": "AGENTS.md", "sections": ["created"]}]),
+            "`created` is only for a new design or spec document",
+        ),
+        (
+            json!([{"document": "principles.rst", "sections": ["created"]}]),
+            "`created` is only for a new design or spec document",
+        ),
+        (
+            json!([{"document": "src/main.rs", "sections": ["main"]}]),
+            "Changes lists documents, not source files",
+        ),
+    ] {
+        let err = create(changes.clone()).expect_err("invalid");
+        assert_eq!(err.code, ErrCode::InvalidParams, "{changes}");
+        assert!(err.message.contains(needle), "{changes}: {}", err.message);
+    }
+    let err = create(json!([{"document": "BUILDING.md", "sections": ["the steps"]}]))
+        .expect_err("missing");
+    assert_eq!(err.code, ErrCode::InvariantViolation);
+    assert!(
+        err.message.contains("`BUILDING.md` does not exist"),
+        "{}",
+        err.message
+    );
+
+    create(json!([
+        {"document": "principles.rst", "sections": ["Keep the thing small"]},
+        {"document": "AGENTS.md", "sections": ["build; flags"]}
+    ]))
+    .expect("create");
+    let text = p.read("docs/rfc/rfc-0004-delta-rules.rst");
+    assert!(
+        text.contains(
+            ":Changes: principles.rst (Keep the thing small); AGENTS.md (build; flags)\n"
+        ),
+        "{text}"
+    );
+    records::record_update(&p.ctx, params(&p, json!({
+        "record": "RFC-0004", "changes": [{"document": "glossary.rst", "sections": ["Terms"]}]
+    }))).expect("update");
+    assert!(
+        p.read("docs/rfc/rfc-0004-delta-rules.rst")
+            .contains(":Changes: glossary.rst (Terms)\n")
+    );
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+}
+
+#[test]
 fn record_update_clarifications_accumulate_revised_entries() {
     let p = Proj::valid();
     let c = &p.ctx;

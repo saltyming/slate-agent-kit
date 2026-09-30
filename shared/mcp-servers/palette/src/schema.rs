@@ -636,7 +636,9 @@ mod tests {
 
     #[test]
     fn changes_entry_takes_one_or_more_sections() {
-        let v = ValueSpec::parse("none | <maintained document path> (<section>; <section>)");
+        let v = ValueSpec::parse(
+            "none | <document> (<section or what changes>; <section or what changes>)",
+        );
         assert!(v.check("spec/x.rst (created)", true).is_ok());
         assert!(
             v.check("spec/x.rst (A; B / C); design/y.rst (D)", true)

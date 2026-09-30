@@ -2,12 +2,14 @@
 //!
 //! Owns creating a project's `_palette/` (layout, backlog, state, `.gitignore`) from the
 //! templates, and moving one document family to a new placement with every link to and
-//! from the moved files rewritten. Does not decide where families should live.
+//! from the moved files rewritten; a link inside a changeset's edit body is rewritten
+//! relative to the edit's target document. Does not decide where families should live.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::{Ctx, Session, WriteResult, run_init, run_write};
+use crate::changeset::Changeset;
 use crate::docs::Role;
 use crate::edit;
 use crate::errors::{ErrCode, PalError, Res};
@@ -265,9 +267,22 @@ fn move_family(s: &mut Session<'_, '_>, fam: Family, placement: Placement) -> Re
             )));
         }
     }
+    // Where each maintained document that a changeset edits or creates goes; a created
+    // one has no file yet, so `moved` does not know it.
+    let mut edited: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+    for cs in s.an.sets.values() {
+        for de in &cs.docs {
+            if let (Some(old), Some(new)) = (
+                old_loc.maintained_file(&de.doc),
+                new_loc.maintained_file(&de.doc),
+            ) {
+                edited.insert(old, new);
+            }
+        }
+    }
     // Rewrite links and move files.
     let mut plan: Vec<(PathBuf, Option<PathBuf>, Source)> = Vec::new();
-    for f in &s.snap.files {
+    for (idx, f) in s.snap.files.iter().enumerate() {
         let Some(doc) = &f.doc else { continue };
         if matches!(f.role, Role::Layout | Role::Staging(_) | Role::Index(_)) {
             if let Some(new) = moved.get(&f.path) {
@@ -282,6 +297,11 @@ fn move_family(s: &mut Session<'_, '_>, fam: Family, placement: Placement) -> Re
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_else(|| old_dir.clone());
+        let changeset = if f.role == Role::Changeset {
+            Changeset::parse(&s.snap, idx)
+        } else {
+            None
+        };
         let mut src = doc.src.clone();
         let mut edits: Vec<(Pos, Pos, String)> = Vec::new();
         for l in doc.links() {
@@ -292,17 +312,30 @@ fn move_family(s: &mut Session<'_, '_>, fam: Family, placement: Placement) -> Re
             if path_part.is_empty() {
                 continue;
             }
-            let Some(target_old) = join_lexical(&old_dir, path_part) else {
+            // A link inside an edit body is read from the edit's target document, before
+            // and after the move alike.
+            let body = changeset
+                .as_ref()
+                .and_then(|cs| cs.body_target(doc, l.line))
+                .and_then(|logical| {
+                    let old = old_loc.maintained_file(logical)?;
+                    let new = new_loc.maintained_file(logical)?;
+                    Some((old.parent()?.to_path_buf(), new.parent()?.to_path_buf()))
+                });
+            let in_body = body.is_some();
+            let (from_old, from_new) = body.unwrap_or_else(|| (old_dir.clone(), new_dir.clone()));
+            let Some(target_old) = join_lexical(&from_old, path_part) else {
                 continue;
             };
             let target_new = moved
                 .get(&target_old)
+                .or_else(|| edited.get(&target_old).filter(|_| in_body))
                 .cloned()
                 .unwrap_or_else(|| target_old.clone());
-            if target_new == target_old && new_dir == old_dir {
+            if target_new == target_old && from_new == from_old {
                 continue;
             }
-            let mut text = relative_link(&new_dir, &target_new);
+            let mut text = relative_link(&from_new, &target_new);
             if let Some(a) = anchor {
                 text.push('#');
                 text.push_str(a);

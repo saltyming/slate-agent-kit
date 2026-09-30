@@ -2,14 +2,17 @@
 //!
 //! Owns the changeset grammar (`Replace:`, `Insert after:`, `Insert into:`, `Delete:`,
 //! `Create:`), resolving an edit's target section, applying edits line by line, the
-//! dependency-ordered staging plan, and the resolution and conflict checks behind P007.
+//! dependency-ordered staging plan, the document state each record's edits see, and the
+//! resolution and conflict checks behind P007.
 //! Does not write files (the write tools do) and does not report findings.
-//! Entry points: [`Changeset::parse`], [`apply_edit`], [`create_document`], [`plan`].
+//! Entry points: [`Changeset::parse`], [`apply_edit`], [`create_document`], [`plan`],
+//! [`record_states`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use crate::docs::{Role, Snapshot};
-use crate::layout::split_logical;
+use crate::layout::{CHANGESET_TARGETS, split_logical};
 use crate::records::{RecId, Records};
 use crate::rst::{Doc, HOUSE_CHARS, Kind};
 use crate::text::Source;
@@ -107,6 +110,19 @@ pub struct Changeset {
 }
 
 impl Changeset {
+    /// The logical path of the maintained document that the edit body holding 0-based
+    /// line `line` writes into; `None` when the line lies outside every edit body.
+    pub fn body_target(&self, doc: &Doc, line: usize) -> Option<&str> {
+        self.docs
+            .iter()
+            .find(|de| {
+                de.edits
+                    .iter()
+                    .any(|e| (doc.headings[e.heading].body_start..e.end).contains(&line))
+            })
+            .map(|de| de.doc.as_str())
+    }
+
     /// The record this changeset belongs to.
     pub fn record(&self) -> Option<RecId> {
         self.id.or(self.file_id)
@@ -144,7 +160,7 @@ impl Changeset {
                 Some((_, name)) if is_kebab_rst(name) => {}
                 _ => cs.problems.push((
                     dh.line,
-                    format!("`{path}` is not a maintained document path (`design/<topic>.rst` or `spec/<topic>.rst`)"),
+                    format!("`{path}` cannot be edited by a changeset: {CHANGESET_TARGETS}"),
                 )),
             }
             let mut edits = Vec::new();
@@ -499,34 +515,95 @@ pub fn plan(snap: &Snapshot, records: &Records, sets: &BTreeMap<RecId, Changeset
     out
 }
 
-/// Checks every edit of every checked record against its maintained document with only
-/// the record's dependency closure applied.
-pub fn check_resolution(
+/// The maintained documents as one record's changeset sees them: the edits of the
+/// record's dependency closure applied in dependency order, then its own edits. Only
+/// documents some edit touches are held; every other one is read from disk.
+pub struct RecordState {
+    /// Touched documents after the closure's edits, by logical path (`None`: no such
+    /// document).
+    pub base: BTreeMap<String, Option<Source>>,
+    /// `base` with the record's own edits applied too.
+    pub own: BTreeMap<String, Option<Source>>,
+    /// The record's own edits that did not resolve.
+    pub failures: Vec<Failure>,
+}
+
+impl RecordState {
+    /// Logical document `logical` before the record's own edits (`own` false) or after
+    /// them (`own` true); `None` when it neither exists on disk nor is created.
+    pub fn source(&self, snap: &Snapshot, logical: &str, own: bool) -> Option<Source> {
+        let map = if own { &self.own } else { &self.base };
+        match map.get(logical) {
+            Some(held) => held.clone(),
+            None => maintained_source(snap, logical),
+        }
+    }
+
+    /// The logical path of the document at `path` when an edit of this state holds it
+    /// and it exists there after the record's own edits.
+    pub fn held_at(&self, snap: &Snapshot, path: &Path) -> Option<&str> {
+        self.own
+            .iter()
+            .find(|(l, src)| {
+                src.is_some() && snap.loc.maintained_file(l).is_some_and(|p| p == path)
+            })
+            .map(|(l, _)| l.as_str())
+    }
+}
+
+/// The document state of every record with an identifier: its dependency closure's
+/// changesets applied, then its own. The basis for resolving edits (P007), `Changes`
+/// targets (P006) and links inside edit bodies (P004).
+pub fn record_states(
     snap: &Snapshot,
     records: &Records,
     sets: &BTreeMap<RecId, Changeset>,
-) -> Vec<Failure> {
-    let mut out = Vec::new();
-    for (id, cs) in sets {
-        let Some(rec) = records.get(*id) else {
-            continue;
-        };
-        if !rec.status.as_deref().is_some_and(is_checked_status) {
-            continue;
-        }
+) -> BTreeMap<RecId, RecordState> {
+    let mut ids: BTreeSet<RecId> = records.list.iter().filter_map(Records::id_of).collect();
+    ids.extend(sets.keys().copied());
+    let mut out = BTreeMap::new();
+    for id in ids {
         let closure: Vec<RecId> = records
-            .dependency_order(&records.closure(*id).into_iter().collect::<Vec<_>>())
+            .dependency_order(&records.closure(id).into_iter().collect::<Vec<_>>())
             .into_iter()
             .filter(|c| sets.contains_key(c))
             .collect();
-        let mut working: BTreeMap<String, Option<Source>> = BTreeMap::new();
+        let mut base: BTreeMap<String, Option<Source>> = BTreeMap::new();
         let mut ignored = Vec::new();
         for dep in closure {
             if let Some(dep_cs) = sets.get(&dep) {
-                apply_changeset(snap, dep, dep_cs, &mut working, &mut ignored);
+                apply_changeset(snap, dep, dep_cs, &mut base, &mut ignored);
             }
         }
-        apply_changeset(snap, *id, cs, &mut working, &mut out);
+        let mut own = base.clone();
+        let mut failures = Vec::new();
+        if let Some(cs) = sets.get(&id) {
+            apply_changeset(snap, id, cs, &mut own, &mut failures);
+        }
+        out.insert(
+            id,
+            RecordState {
+                base,
+                own,
+                failures,
+            },
+        );
+    }
+    out
+}
+
+/// The edits of every checked record that do not resolve against its maintained
+/// documents with only the record's dependency closure applied.
+pub fn check_resolution(records: &Records, states: &BTreeMap<RecId, RecordState>) -> Vec<Failure> {
+    let mut out = Vec::new();
+    for (id, st) in states {
+        let checked = records
+            .get(*id)
+            .and_then(|r| r.status.as_deref())
+            .is_some_and(is_checked_status);
+        if checked {
+            out.extend(st.failures.iter().cloned());
+        }
     }
     out
 }

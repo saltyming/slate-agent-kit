@@ -13,7 +13,7 @@ use super::{Ctx, Session, WriteResult, run_write};
 use crate::changeset::{self, Changeset, Edit, EditKind};
 use crate::edit;
 use crate::errors::{PalError, Res};
-use crate::layout::split_logical;
+use crate::layout::{CHANGESET_TARGETS, ChangesDoc, changes_doc, split_logical};
 use crate::params::*;
 use crate::records::{PARTIAL_MARKER, RecId, RecordKind};
 use crate::rst::Doc;
@@ -77,21 +77,56 @@ fn changes_value(list: &[ChangeIn]) -> Res<String> {
     }
     let mut parts = Vec::new();
     for c in list {
-        let secs: Vec<String> = c
-            .sections
-            .clone()
-            .unwrap_or_default()
-            .iter()
-            .map(|x| edit::one_line(x).replace(';', ","))
-            .filter(|x| !x.is_empty())
-            .collect();
-        if secs.is_empty() {
-            return Err(PalError::invalid(format!(
-                "{}: name at least one section, or `created` for a new document",
-                c.document
-            )));
-        }
-        parts.push(format!("{} ({})", c.document.trim(), secs.join("; ")));
+        let doc = c.document.trim();
+        let kind = changes_doc(doc).map_err(PalError::invalid)?;
+        let given = c.sections.clone().unwrap_or_default();
+        let paren = match kind {
+            ChangesDoc::Project(_) => {
+                let texts: Vec<String> = given
+                    .iter()
+                    .map(|x| edit::one_line(x))
+                    .filter(|x| !x.is_empty())
+                    .collect();
+                match texts.as_slice() {
+                    [one] if !one.eq_ignore_ascii_case("created") => one.clone(),
+                    [_] => {
+                        return Err(PalError::invalid(format!(
+                            "{doc}: `created` is only for a new design or spec document; say what changes in this document"
+                        )));
+                    }
+                    _ => {
+                        return Err(PalError::invalid(format!(
+                            "{doc}: for a project document other than design, spec, principles, glossary and contributing, `sections` holds exactly one element: the text saying what changes (given {})",
+                            texts.len()
+                        )));
+                    }
+                }
+            }
+            ChangesDoc::Maintained(_) | ChangesDoc::Single(_) => {
+                let secs: Vec<String> = given
+                    .iter()
+                    .map(|x| edit::one_line(x).replace(';', ","))
+                    .filter(|x| !x.is_empty())
+                    .collect();
+                if secs.is_empty() {
+                    return Err(PalError::invalid(match kind {
+                        ChangesDoc::Maintained(_) => format!(
+                            "{doc}: name at least one section, or `created` for a new document"
+                        ),
+                        _ => format!("{doc}: name at least one section"),
+                    }));
+                }
+                if matches!(kind, ChangesDoc::Single(_))
+                    && secs.iter().any(|x| x.eq_ignore_ascii_case("created"))
+                {
+                    return Err(PalError::invalid(format!(
+                        "{doc}: `created` is only for a new design or spec document; {CHANGESET_TARGETS}"
+                    )));
+                }
+                secs.join("; ")
+            }
+        };
+        parts.push(format!("{doc} ({paren})"));
     }
     Ok(parts.join("; "))
 }
@@ -507,9 +542,9 @@ pub fn changeset_edit(ctx: &Ctx, p: ChangesetEditParams) -> Res<WriteResult> {
         match split_logical(&doc_path) {
             Some((_, name)) if crate::util::is_kebab_rst(name) => {}
             _ => {
-                return Err(PalError::invalid(
-                    "document must be `design/<topic>.rst` or `spec/<topic>.rst` (lowercase kebab-case)",
-                ));
+                return Err(PalError::invalid(format!(
+                    "`{doc_path}` cannot be edited by a changeset: {CHANGESET_TARGETS}"
+                )));
             }
         }
         let target = require("target", &p.target)?;

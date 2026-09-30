@@ -362,9 +362,12 @@ pub struct RelationIn {
 /// A maintained document touched by a record.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ChangeIn {
-    /// `design/<topic>.rst` or `spec/<topic>.rst`.
+    /// `design/<topic>.rst` or `spec/<topic>.rst`; `principles.rst`, `glossary.rst` or
+    /// `contributing.rst`; or the project-relative path (with `/`) of another existing
+    /// project document ending in `.md` or `.rst`, such as `AGENTS.md`.
     pub document: String,
-    /// Section titles, or `created` for a new document.
+    /// Section titles, or `created` for a new design or spec document; for another
+    /// project document, exactly one element: the text saying what changes.
     #[serde(default, deserialize_with = "lenient")]
     pub sections: Option<Vec<String>>,
 }

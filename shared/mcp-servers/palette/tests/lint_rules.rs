@@ -886,13 +886,18 @@ fn p006_changes_targets() {
             ":Changes: spec/thing.rst (Nonexistent)",
         );
     });
-    failing("P006", "rfc-0002", "not a maintained document path", |p| {
-        p.replace(
-            "docs/rfc/rfc-0002-beta.rst",
-            ":Changes: spec/thing.rst (Contract; Rules)",
-            ":Changes: src/main.rs (main)",
-        );
-    });
+    failing(
+        "P006",
+        "rfc-0002",
+        "Changes lists documents, not source files",
+        |p| {
+            p.replace(
+                "docs/rfc/rfc-0002-beta.rst",
+                ":Changes: spec/thing.rst (Contract; Rules)",
+                ":Changes: src/main.rs (main)",
+            );
+        },
+    );
     passing("P006", |p| {
         p.mutate("docs/changeset/rfc-0002.rst", |s| {
             format!("{s}\nspec/other.rst\n--------------\n\nCreate: Other\n~~~~~~~~~~~~~\n\n:Status: Contract\n\nScope and authority\n^^^^^^^^^^^^^^^^^^^\n\ntext\n")
@@ -903,6 +908,202 @@ fn p006_changes_targets() {
             ":Changes: spec/thing.rst (Contract; Rules); spec/other.rst (created)",
         );
     });
+}
+
+fn set_changes(p: &Proj, value: &str) {
+    p.replace(
+        "docs/rfc/rfc-0002-beta.rst",
+        ":Changes: spec/thing.rst (Contract; Rules)",
+        &format!(":Changes: spec/thing.rst (Contract; Rules); {value}"),
+    );
+}
+
+#[test]
+fn p006_changes_single_file_families() {
+    passing("P006", |p| {
+        set_changes(
+            p,
+            "principles.rst (Keep the thing small); glossary.rst (Terms); contributing.rst (Commits; Records)",
+        )
+    });
+    failing(
+        "P006",
+        "rfc-0002",
+        "section `Nope` of `principles.rst` does not exist",
+        |p| set_changes(p, "principles.rst (Keep the thing small; Nope)"),
+    );
+    failing(
+        "P006",
+        "rfc-0002",
+        "section `Missing` of `glossary.rst` does not exist",
+        |p| set_changes(p, "glossary.rst (Missing)"),
+    );
+    failing(
+        "P006",
+        "rfc-0002",
+        "section `Tags` of `contributing.rst` does not exist",
+        |p| set_changes(p, "contributing.rst (Tags)"),
+    );
+    failing(
+        "P006",
+        "rfc-0002",
+        "`principles.rst` cannot be marked (created)",
+        |p| set_changes(p, "principles.rst (created)"),
+    );
+    // A changeset still cannot edit one of them.
+    failing(
+        "P007",
+        "changeset/rfc-0002.rst",
+        "`principles.rst` cannot be edited by a changeset",
+        |p| {
+            p.mutate("docs/changeset/rfc-0002.rst", |s| {
+                format!("{s}\nprinciples.rst\n--------------\n\nDelete: Keep the thing small\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
+            })
+        },
+    );
+}
+
+#[test]
+fn p006_changes_names_an_internal_family_by_its_logical_name() {
+    let p = Proj::valid();
+    palette_server::ops::init::layout_set(
+        &p.ctx,
+        params(
+            &p,
+            serde_json::json!({"family": "principles", "placement": "internal", "confirmed_by_user": true}),
+        ),
+    )
+    .expect("move principles");
+    set_changes(&p, "principles.rst (Keep the thing small)");
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+    set_changes(&p, "principles.rst (Nope)");
+    assert!(
+        has(&p.lint(), "P006", "rfc-0002", "section `Nope`"),
+        "{}",
+        show(&p.lint())
+    );
+}
+
+fn with_project_documents(p: &Proj) {
+    p.write("AGENTS.md", "# Agents\n\nBuild with make.\n");
+    p.write(
+        "guide/toolchain.rst",
+        "Toolchain\n=========\n\nPinned versions.\n",
+    );
+    p.write("src/main.rs", "fn main() {}\n");
+}
+
+#[test]
+fn p006_changes_other_project_documents() {
+    let changes = "AGENTS.md (the build section names the new target); guide/toolchain.rst (the pinned versions)";
+    let p = Proj::valid();
+    with_project_documents(&p);
+    set_changes(&p, changes);
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+
+    let cases: [(&str, &str); 13] = [
+        (
+            "BUILDING.md (the steps)",
+            "`BUILDING.md` does not exist in the project",
+        ),
+        (
+            "src/main.rs (main)",
+            "Changes lists documents, not source files",
+        ),
+        ("../outside.md (x)", "must stay inside the project"),
+        ("guide/../AGENTS.md (x)", "must stay inside the project"),
+        ("/etc/notes.md (x)", "is an absolute path"),
+        ("guide\\toolchain.rst (x)", "uses a backslash"),
+        ("_palette/state.rst (x)", "is inside `_palette/`"),
+        (
+            "AGENTS.md (created)",
+            "`AGENTS.md` cannot be marked (created)",
+        ),
+        (
+            "docs/spec/thing.rst (Contract)",
+            "write its logical name `spec/thing.rst`",
+        ),
+        (
+            "Docs/Spec/thing.rst (Contract)",
+            "write its logical name `spec/thing.rst`",
+        ),
+        (
+            "docs/principles.rst (x)",
+            "write its logical name `principles.rst`",
+        ),
+        (
+            "docs/rfc/rfc-0001-alpha.rst (x)",
+            "is a record; relations between records go in Depends",
+        ),
+        (
+            "docs/staging/spec/thing.rst (x)",
+            "palette work, generated or index document",
+        ),
+    ];
+    for (entry, needle) in cases {
+        let p = Proj::valid();
+        with_project_documents(&p);
+        set_changes(&p, entry);
+        let f = p.lint();
+        assert!(has(&f, "P006", "rfc-0002", needle), "{entry}: {}", show(&f));
+    }
+    // Without a parenthetical the format check (P002) fails, once; P006 does not repeat it.
+    let p = Proj::valid();
+    with_project_documents(&p);
+    for entry in ["AGENTS.md", "AGENTS.md ()"] {
+        set_changes(&p, entry);
+        let f = p.lint();
+        assert!(
+            has(&f, "P002", "rfc-0002", "AGENTS.md"),
+            "{entry}: {}",
+            show(&f)
+        );
+        assert!(!f.iter().any(|x| x.rule == "P006"), "{entry}: {}", show(&f));
+        p.replace("docs/rfc/rfc-0002-beta.rst", &format!("; {entry}"), "");
+    }
+}
+
+#[test]
+fn p006_changes_other_project_documents_with_crlf() {
+    let p = Proj::valid_crlf();
+    with_project_documents(&p);
+    set_changes(&p, "AGENTS.md (the build section)");
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+    p.replace("docs/rfc/rfc-0002-beta.rst", "AGENTS.md (", "BUILDING.md (");
+    assert!(
+        has(
+            &p.lint(),
+            "P006",
+            "rfc-0002",
+            "`BUILDING.md` does not exist"
+        ),
+        "{}",
+        show(&p.lint())
+    );
+}
+
+#[test]
+fn p006_changes_resolve_without_a_layout() {
+    let p = Proj::valid();
+    with_project_documents(&p);
+    set_changes(
+        &p,
+        "principles.rst (Keep the thing small); AGENTS.md (the build section)",
+    );
+    std::fs::remove_dir_all(p.path("_palette")).expect("drop the layout");
+    let f = p.lint();
+    assert!(f.iter().all(|x| x.rule != "P006"), "{}", show(&f));
+    p.replace(
+        "docs/rfc/rfc-0002-beta.rst",
+        "(Keep the thing small)",
+        "(Nope)",
+    );
+    let f = p.lint();
+    assert!(
+        has(&f, "P006", "rfc-0002", "section `Nope` of `principles.rst`"),
+        "{}",
+        show(&f)
+    );
 }
 
 // ── P007 ────────────────────────────────────────────────────────────────

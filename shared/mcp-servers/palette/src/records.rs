@@ -103,13 +103,15 @@ pub struct RelEntry {
     pub line: usize,
 }
 
-/// A maintained-document reference `spec/x.rst (Section; Other)`.
+/// A document reference `spec/x.rst (Section; Other)` or `AGENTS.md (what changes)`.
 #[derive(Clone, Debug)]
 pub struct DocRef {
-    /// Logical document path.
+    /// The document as written: a logical path or name, or a project-relative path.
     pub doc: String,
     /// Sections named in the parenthetical.
     pub sections: Vec<String>,
+    /// The parenthetical as written, trimmed; empty when there is none.
+    pub note: String,
     /// 0-based line of the field.
     pub line: usize,
 }
@@ -284,19 +286,25 @@ fn parse_docrefs(field: &Field) -> Vec<DocRef> {
         if e == "none" || RecId::parse(e.split([' ', '(']).next().unwrap_or("")).is_some() {
             continue;
         }
-        let (doc, sections) = match dref.captures(&e) {
+        let (doc, sections, note) = match dref.captures(&e) {
             Some(c) => (
                 c[1].trim().trim_matches('`').to_string(),
                 split_entries(&c[2])
                     .into_iter()
                     .map(|s| s.trim().to_string())
                     .collect(),
+                c[2].trim().to_string(),
             ),
-            None => (e.trim().trim_matches('`').to_string(), Vec::new()),
+            None => (
+                e.trim().trim_matches('`').to_string(),
+                Vec::new(),
+                String::new(),
+            ),
         };
         out.push(DocRef {
             doc,
             sections,
+            note,
             line: field.start,
         });
     }
