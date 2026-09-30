@@ -9,8 +9,8 @@
 //! [`cli_scope`] and [`CliScope`].
 
 use super::{
-    Ctx, EditOutcome, Outcome, SubagentPrefs, run_cli, server_binary, server_env, shell_quote,
-    stderr_text,
+    Ctx, EditOutcome, Outcome, SubagentPrefs, env_prefix, run_cli, server_binary, server_env,
+    shell_quote, stderr_text,
 };
 use crate::config::{ConfigDoc, Desired, JsonDoc, apply_desired, list_add};
 use crate::env::{Env, Harness};
@@ -77,9 +77,10 @@ pub fn add_args(server: &str, binary: &Path, env: &[(String, String)]) -> Vec<St
 
 fn manual_commands(program: &str, ctx: &Ctx, env: &Env, with_config_dir: bool) -> Vec<String> {
     let prefix = if with_config_dir {
-        format!(
-            "CLAUDE_CONFIG_DIR={} ",
-            shell_quote(&ctx.home.to_string_lossy())
+        env_prefix(
+            &env.platform(),
+            "CLAUDE_CONFIG_DIR",
+            &ctx.home.to_string_lossy(),
         )
     } else {
         String::new()
@@ -165,9 +166,10 @@ pub fn unregister(env: &Env, ui: &mut Ui, home: &Path, servers: &[String]) -> Re
     let scope = cli_scope(env, home);
     let manual = |with_dir: bool| -> Vec<String> {
         let prefix = if with_dir {
-            format!(
-                "CLAUDE_CONFIG_DIR={} ",
-                shell_quote(&home.to_string_lossy())
+            env_prefix(
+                &env.platform(),
+                "CLAUDE_CONFIG_DIR",
+                &home.to_string_lossy(),
             )
         } else {
             String::new()
@@ -350,7 +352,13 @@ mod tests {
         let out = register(&env, &mut ui, &ctx).unwrap();
         assert!(out.registered.is_empty());
         assert_eq!(out.manual.len(), 3);
-        assert!(out.manual[0].starts_with("CLAUDE_CONFIG_DIR=/elsewhere "));
+        // The prefix takes the form of the platform's shell.
+        env.set_var("SLATE_PLATFORM", "x86_64-unknown-linux-gnu");
+        let posix = register(&env, &mut ui, &ctx).unwrap();
+        assert!(posix.manual[0].starts_with("CLAUDE_CONFIG_DIR=/elsewhere "));
+        env.set_var("SLATE_PLATFORM", "x86_64-pc-windows-msvc");
+        let ps = register(&env, &mut ui, &ctx).unwrap();
+        assert!(ps.manual[0].starts_with("$env:CLAUDE_CONFIG_DIR='/elsewhere'; "));
         assert!(
             out.manual[0]
                 .contains("mcp add aside -s user --transport stdio -e ASIDE_HARNESS=claude -- ")

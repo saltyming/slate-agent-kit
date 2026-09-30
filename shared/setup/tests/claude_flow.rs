@@ -316,12 +316,12 @@ fn a_custom_home_gets_printed_commands_instead_of_registration() {
         "{}",
         out.out
     );
-    assert!(
-        out.out
-            .contains(&format!("CLAUDE_CONFIG_DIR={}", custom.display())),
-        "{}",
-        out.out
-    );
+    let expected = if cfg!(windows) {
+        format!("$env:CLAUDE_CONFIG_DIR='{}'; ", custom.display())
+    } else {
+        format!("CLAUDE_CONFIG_DIR={} ", custom.display())
+    };
+    assert!(out.out.contains(&expected), "{}", out.out);
     assert!(
         out.out
             .contains("mcp add palette -s user --transport stdio"),

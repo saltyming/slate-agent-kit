@@ -102,6 +102,16 @@ pub fn server_env(ctx: &Ctx, server: &str) -> Vec<(String, String)> {
     out
 }
 
+/// The prefix that sets `var` to `value` for one command, in the shell the platform's
+/// users run: `VAR='value' ` in a POSIX shell, `$env:VAR='value'; ` in PowerShell.
+pub fn env_prefix(platform: &str, var: &str, value: &str) -> String {
+    if platform.contains("windows") {
+        format!("$env:{var}='{}'; ", value.replace('\'', "''"))
+    } else {
+        format!("{var}={} ", shell_quote(value))
+    }
+}
+
 /// Quotes `s` for display in a POSIX shell command line.
 pub fn shell_quote(s: &str) -> String {
     let plain = !s.is_empty()
@@ -209,6 +219,18 @@ pub(crate) fn test_ctx(harness: Harness, home: &str, default_home: &str) -> Ctx 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn env_prefix_follows_the_platform_shell() {
+        assert_eq!(
+            super::env_prefix("aarch64-apple-darwin", "V", "/a b"),
+            "V='/a b' "
+        );
+        assert_eq!(
+            super::env_prefix("x86_64-pc-windows-msvc", "V", "C:\\a's"),
+            "$env:V='C:\\a''s'; "
+        );
+    }
+
     use super::*;
 
     fn get<'a>(env: &'a [(String, String)], k: &str) -> Option<&'a str> {
