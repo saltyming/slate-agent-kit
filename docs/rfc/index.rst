@@ -49,7 +49,7 @@ Records
   Superseded by: none.
 
 `RFC-0008 <rfc-0008-shared-backend-execution.rst>`_ Shared backend execution layer
-  Status: Draft. Implementation: not-started.
+  Status: Accepted. Implementation: not-started.
   Depends: RFC-0002.
   Linked from: none.
   Superseded by: none.

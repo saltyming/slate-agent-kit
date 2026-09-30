@@ -1,16 +1,16 @@
 RFC-0008: Shared backend execution layer
 ========================================
 
-:Status: Draft
+:Status: Accepted
 :Implementation: not-started — the agent-exec crate, harness-log moved beside it
   with usage parsers, aside and dispatch rebuilt on both, copilot removed from
   servers, installer, prefs and rules
 :Verification: none — 2026-09-30; not verified yet
 :Areas: MCP servers; aside; dispatch; installer; rules; prefs
 :Authors: Claude Fable 5.1
-:Reviewers: none yet
+:Reviewers: Hamin Sung
 :Implementers: none yet
-:Accepted: none
+:Accepted: Hamin Sung (2026-09-30T05:50Z)
 :Date: 2026-09-30
 :Revised: none
 :Depends: RFC-0002 (the prefs schema and the server registration that the

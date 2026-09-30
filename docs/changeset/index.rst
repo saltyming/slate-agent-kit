@@ -7,5 +7,5 @@ Changesets
 ----------
 
 `RFC-0008 <rfc-0008.rst>`_
-  Record status: Draft.
+  Record status: Accepted.
   Edits: 4. Documents: spec/agent-exec.rst, design/architecture.rst, spec/prefs.rst.
