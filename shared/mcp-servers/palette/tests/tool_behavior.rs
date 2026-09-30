@@ -119,7 +119,7 @@ fn a_whole_phase_lifecycle_on_a_fresh_project() {
     backlog::phase_close(c, params(&p, json!({"phase": 1, "items": [{"item": "B-1", "result": "done", "outcome": "the changelog"}]}))).expect("close");
     let backlog_text = p.read("_palette/backlog.rst");
     assert!(
-        backlog_text.contains("— closed")
+        backlog_text.contains(":phase-1: `phase-1/phase.rst <phase-1/phase.rst>`_ — closed")
             && backlog_text.contains(":Status: done")
             && backlog_text.contains(":Outcome: the changelog")
     );

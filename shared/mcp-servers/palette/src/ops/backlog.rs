@@ -541,17 +541,17 @@ pub fn phase_close(ctx: &Ctx, p: PhaseCloseParams) -> Res<WriteResult> {
             )?;
             set_item_field(&mut bsrc, &rel, *id, "Outcome", outcome)?;
         }
-        let phase_title = s
-            .snap
-            .file(&s.snap.loc.phase_file(n))
-            .and_then(|f| f.doc.as_ref())
-            .and_then(|d| d.title().map(|t| t.title.clone()))
-            .unwrap_or_else(|| format!("Phase {n}"));
         let (_, b2) = reparse(&bsrc, &rel)?;
         let ph = b2
             .phase(n)
             .ok_or_else(|| PalError::not_found(format!("phase {n} does not exist")))?;
-        edit::replace_field(&mut bsrc, &ph.field, &format!("{phase_title} — closed"));
+        // The link to the phase file stays; only the state changes.
+        let value = ph.field.value.trim();
+        let closed = match value.rsplit_once(" — ") {
+            Some((head, _)) => format!("{head} — closed"),
+            None => format!("{value} — closed"),
+        };
+        edit::replace_field(&mut bsrc, &ph.field, &closed);
         let mut allocated = Vec::new();
         for (next, ni) in (next_item_id(&b)..).zip(new_items.iter()) {
             let signal = ni
