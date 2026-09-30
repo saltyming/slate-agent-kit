@@ -15,13 +15,14 @@
 //! parent-death guard (`agent-guard` on Linux and macOS, a Job Object on
 //! Windows) and carries dispatch's re-entry marker.
 
+use std::future::Future;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime};
 
-use agent_exec::guard::{self, ProcessTree};
-use agent_exec::{Outcome, Reentry, RunEvent, RunRecord};
+use agent_exec::guard::{self, Contained, ProcessTree};
+use agent_exec::{GuardMode, Outcome, Reentry, RunEvent, RunRecord};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -37,6 +38,9 @@ pub const BINARY: &str = "opencode";
 const STARTUP_TIMEOUT_MS: u64 = 10_000;
 const STARTUP_POLL_MS: u64 = 150;
 const SERVER_STDERR_CAP: usize = 16 * 1024;
+/// How long a cancelled run waits for the server to acknowledge the session
+/// abort before it kills the server anyway.
+const ABORT_WAIT: Duration = Duration::from_secs(3);
 
 pub struct RunSpec<'a> {
     pub id: &'a str,
@@ -103,15 +107,19 @@ async fn run_inner(
     };
     let base_url = format!("http://127.0.0.1:{port}");
     let argv = server_argv(port);
-    let (mut child, tree) = match spawn_server(spec.working_dir, &argv) {
-        Ok(pair) => pair,
+    let Contained {
+        mut child,
+        tree,
+        guarded,
+    } = match spawn_server(spec.working_dir, &argv).await {
+        Ok(c) => c,
         Err(e) => return Outcome::Spawn(e),
     };
     let _ = events.send(RunEvent::Started {
         pid: child.id(),
         argv: argv.clone(),
         backend_version: spec.backend_version.map(str::to_string),
-        guarded: true,
+        guarded,
     });
     let stderr = child.stderr.take();
     let stderr_task = tokio::spawn(read_capped_opt(stderr, SERVER_STDERR_CAP));
@@ -126,31 +134,45 @@ async fn run_inner(
         }
     };
 
-    if let Err(e) = wait_health(&client, &base_url, ct).await {
-        stop_server(&tree, &mut child).await;
-        let stderr = stderr_task.await.unwrap_or_default();
-        return Outcome::WaitFailed(format!("{e}\n{}", stderr.trim()));
-    }
-
-    let session_id = match spec.resume_session {
-        Some(s) => s.to_string(),
-        None => match create_session(&client, &base_url, spec).await {
-            Ok(s) => s,
-            Err(e) => {
-                stop_server(&tree, &mut child).await;
-                let stderr = stderr_task.await.unwrap_or_default();
-                return Outcome::WaitFailed(format!("{e}\n{}", stderr.trim()));
-            }
-        },
+    // Startup: every step observes the token; a cancel ends the run as
+    // cancelled and a failure as a wait failure carrying the server's stderr.
+    let started = async {
+        startup_step(ct, wait_health(&client, &base_url)).await?;
+        match spec.resume_session {
+            Some(s) => Ok(s.to_string()),
+            None => startup_step(ct, create_session(&client, &base_url, spec)).await,
+        }
+    };
+    let session_id = match started.await {
+        Ok(sid) => sid,
+        Err(end) => {
+            stop_server(&tree, &mut child).await;
+            let stderr = stderr_task.await.unwrap_or_default();
+            return end.outcome(&stderr);
+        }
     };
 
     let log = Log {
         path: log_path(spec.rollout_path, spec.state_dir, &session_id),
         events: events.clone(),
     };
-    if let Err(e) = init_log(&log, &session_id, spec.working_dir, spec.prompt).await {
-        stop_server(&tree, &mut child).await;
-        return Outcome::WaitFailed(format!("initialize opencode log failed: {e}"));
+    let init = startup_step(ct, async {
+        init_log(&log, &session_id, spec.working_dir, spec.prompt)
+            .await
+            .map_err(|e| format!("initialize opencode log failed: {e}"))
+    })
+    .await;
+    match init {
+        Ok(()) => {}
+        Err(StartupEnd::Failed(e)) => {
+            stop_server(&tree, &mut child).await;
+            return Outcome::WaitFailed(e);
+        }
+        Err(StartupEnd::Cancelled) => {
+            abort_bounded(&client, &base_url, &session_id).await;
+            stop_server(&tree, &mut child).await;
+            return Outcome::Cancelled;
+        }
     }
     let _ = events.send(RunEvent::Session {
         session_id: session_id.clone(),
@@ -178,7 +200,7 @@ async fn run_inner(
     let response = tokio::select! {
         biased;
         _ = ct.cancelled() => {
-            let _ = abort_session(&client, &base_url, &session_id).await;
+            abort_bounded(&client, &base_url, &session_id).await;
             event_task.abort();
             stop_server(&tree, &mut child).await;
             return Outcome::Cancelled;
@@ -244,71 +266,59 @@ fn server_argv(port: u16) -> Vec<String> {
     ]
 }
 
-/// Start `opencode serve` under the parent-death guard, which is required:
-/// on Linux and macOS through `agent-guard` (the guard leads the process group
-/// and `opencode serve` runs as its child, so the whole subtree dies with
-/// dispatch even under a hard `SIGKILL`); on Windows in a kill-on-close Job
-/// Object, whose setup failure kills the process and fails the run rather than
-/// leave it running unprotected. The returned tree kills the whole subtree.
-fn spawn_server(working_dir: &Path, argv: &[String]) -> Result<(Child, ProcessTree), String> {
+/// Start `opencode serve` under the parent-death guard, which is required
+/// (`agent_exec::guard::spawn_contained`): on Linux and macOS through
+/// `agent-guard`, which leads the process group with `opencode serve` as its
+/// child; on Windows created suspended in a kill-on-close Job Object. The
+/// server carries dispatch's re-entry marker.
+async fn spawn_server(working_dir: &Path, argv: &[String]) -> Result<Contained, String> {
     let mut built = Command::new(&argv[0]);
     built.args(&argv[1..]).current_dir(working_dir);
     // Mark the opencode server (and its whole subtree) as dispatch-spawned so a
     // nested dispatch submit/steer from within the opencode session is refused.
     agent_exec::reentry::stamp(&mut built, REENTRY_ENV);
-
-    #[cfg(not(windows))]
-    let mut cmd = match guard::locate() {
-        Some(path) => guard::wrap(&built, &path),
-        None => {
-            return Err(format!(
-                "cannot start opencode serve under the parent-death guard: {}",
-                guard::install_hint()
-            ));
-        }
-    };
-    #[cfg(windows)]
-    let mut cmd = built;
-
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(unix)]
-    {
-        cmd.process_group(0);
-    }
-    #[cfg_attr(not(windows), allow(unused_mut))]
-    let mut child = cmd.spawn().map_err(|e| {
-        #[cfg(not(windows))]
-        {
-            format!(
-                "spawn {} for opencode serve failed: {e}",
-                guard::GUARD_BINARY
-            )
-        }
-        #[cfg(windows)]
-        {
-            format!("spawn opencode serve failed: {e}")
-        }
-    })?;
-    #[cfg(windows)]
-    let tree = match guard::protect(&mut child) {
-        Ok(t) => t,
-        Err(e) => {
-            let _ = child.start_kill();
-            return Err(format!("Job Object setup for opencode serve failed: {e}"));
-        }
-    };
-    #[cfg(not(windows))]
-    let tree = ProcessTree::unprotected(&child);
-    Ok((child, tree))
+    guard::spawn_contained(built, GuardMode::Required, "opencode serve", |cmd| {
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+    })
+    .await
 }
 
 /// Kill the server's whole tree while its id is ours, then reap it.
 async fn stop_server(tree: &ProcessTree, child: &mut Child) {
     tree.kill(child);
     let _ = child.wait().await;
+}
+
+/// Why the runner's startup ended early.
+#[derive(Debug, PartialEq, Eq)]
+enum StartupEnd {
+    Failed(String),
+    Cancelled,
+}
+
+impl StartupEnd {
+    /// The outcome of a run that ended here: `Cancelled`, or `WaitFailed`
+    /// with the step's error followed by the server's stderr.
+    fn outcome(self, server_stderr: &str) -> Outcome {
+        match self {
+            StartupEnd::Cancelled => Outcome::Cancelled,
+            StartupEnd::Failed(e) => Outcome::WaitFailed(format!("{e}\n{}", server_stderr.trim())),
+        }
+    }
+}
+
+/// Await one startup step, or stop as soon as `ct` fires.
+async fn startup_step<T>(
+    ct: &CancellationToken,
+    step: impl Future<Output = Result<T, String>>,
+) -> Result<T, StartupEnd> {
+    tokio::select! {
+        biased;
+        _ = ct.cancelled() => Err(StartupEnd::Cancelled),
+        r = step => r.map_err(StartupEnd::Failed),
+    }
 }
 
 /// The dispatch-owned log file, plus the channel each appended line is also
@@ -341,16 +351,9 @@ fn open_port() -> std::io::Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
-async fn wait_health(
-    client: &reqwest::Client,
-    base_url: &str,
-    ct: &CancellationToken,
-) -> Result<(), String> {
+async fn wait_health(client: &reqwest::Client, base_url: &str) -> Result<(), String> {
     let mut waited = 0u64;
     while waited < STARTUP_TIMEOUT_MS {
-        if ct.is_cancelled() {
-            return Err("cancelled while waiting for opencode server startup".to_string());
-        }
         if let Ok(resp) = client.get(format!("{base_url}/global/health")).send().await
             && resp.status().is_success()
         {
@@ -428,6 +431,12 @@ async fn send_message(
         .await
         .map_err(|e| format!("send opencode message failed: {e}"))?;
     response_json(resp).await
+}
+
+/// Ask the server to abort the session, waiting at most `ABORT_WAIT` for an
+/// answer: an unresponsive server must not hold up the kill that follows.
+async fn abort_bounded(client: &reqwest::Client, base_url: &str, session_id: &str) {
+    let _ = tokio::time::timeout(ABORT_WAIT, abort_session(client, base_url, session_id)).await;
 }
 
 async fn abort_session(
@@ -958,6 +967,118 @@ mod tests {
             arr.iter()
                 .any(|r| r["permission"] == "edit" && r["action"] == "deny")
         );
+    }
+
+    #[test]
+    fn a_startup_end_maps_to_its_outcome() {
+        assert!(matches!(
+            StartupEnd::Cancelled.outcome("server noise"),
+            Outcome::Cancelled
+        ));
+        match StartupEnd::Failed("create opencode session failed: x".into()).outcome(" boom \n") {
+            Outcome::WaitFailed(m) => assert_eq!(m, "create opencode session failed: x\nboom"),
+            other => panic!("expected WaitFailed, got {other:?}"),
+        }
+    }
+
+    /// A local port that accepts connections (into the kernel backlog) and
+    /// never answers: every HTTP request to it hangs.
+    fn unresponsive_server() -> (TcpListener, String) {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        (l, url)
+    }
+
+    fn client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+    }
+
+    /// Cancel `ct` after `ms`.
+    fn cancel_after(ct: &CancellationToken, ms: u64) {
+        let ct = ct.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            ct.cancel();
+        });
+    }
+
+    #[tokio::test]
+    async fn a_cancel_during_session_creation_ends_the_startup_as_cancelled() {
+        let (_listener, url) = unresponsive_server();
+        let dir = std::env::temp_dir();
+        let spec = RunSpec {
+            id: "d-1",
+            working_dir: &dir,
+            sandbox: "workspace-write",
+            model: None,
+            reasoning_effort: None,
+            prompt: "p",
+            state_dir: &dir,
+            backend_version: None,
+            resume_session: None,
+            rollout_path: None,
+        };
+        let ct = CancellationToken::new();
+        cancel_after(&ct, 100);
+        let clock = Instant::now();
+        let r = tokio::time::timeout(
+            Duration::from_secs(10),
+            startup_step(&ct, create_session(&client(), &url, &spec)),
+        )
+        .await
+        .expect("the step observes the token");
+        assert_eq!(r, Err(StartupEnd::Cancelled));
+        assert!(
+            clock.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            clock.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancel_during_health_polling_ends_the_startup_as_cancelled() {
+        // A port nothing listens on: every health probe is refused, so the
+        // poll would run to its 10 s startup timeout without the token.
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}");
+        let ct = CancellationToken::new();
+        cancel_after(&ct, 200);
+        let clock = Instant::now();
+        let r = tokio::time::timeout(
+            Duration::from_secs(10),
+            startup_step(&ct, wait_health(&client(), &url)),
+        )
+        .await
+        .expect("the step observes the token");
+        assert_eq!(r, Err(StartupEnd::Cancelled));
+        assert!(
+            clock.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            clock.elapsed()
+        );
+        assert!(matches!(r.unwrap_err().outcome(""), Outcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn the_abort_request_is_bounded_on_an_unresponsive_server() {
+        let (_listener, url) = unresponsive_server();
+        let clock = Instant::now();
+        tokio::time::timeout(
+            ABORT_WAIT + Duration::from_secs(5),
+            abort_bounded(&client(), &url, "ses_1"),
+        )
+        .await
+        .expect("the abort wait is bounded");
+        let waited = clock.elapsed();
+        assert!(waited >= ABORT_WAIT, "{waited:?}");
+        assert!(waited < ABORT_WAIT + Duration::from_secs(2), "{waited:?}");
     }
 
     fn tool_part_event(session_id: &str, part_id: &str, status: &str, extra: Value) -> Value {

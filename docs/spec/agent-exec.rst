@@ -101,14 +101,18 @@ RunEvent
 ~~~~~~~~
 
 What a run reports while it lasts, to the channel the caller supplies:
-``Started { pid, argv, backend_version }`` right after the spawn;
+``Started { pid, argv, backend_version, guarded }`` right after the spawn
+(``guarded`` is true when the process runs under the parent-death guard and
+false for ``Off`` and for a ``Preferred`` run that found none);
 ``Session { session_id, port }`` when a backend reports a session (dispatch's
 opencode runner sends it after creating or resuming the session);
 ``Progress(line)`` for each normalized JSONL event a runner produces, with
 the wire names dispatch writes today (``session_meta``, ``user_message``,
 ``agent_message``, ``reasoning``, ``custom_tool_call``,
 ``custom_tool_call_output``, ``patch_apply_end``, ``task_started``,
-``task_complete``, each with ``native`` and ``partID``); ``Finished(Outcome)``
+``task_complete``; a line normalized from an opencode event carries that
+event as ``native``, and a line from a message part carries its ``partID``
+when the part has one); ``Finished(Outcome)``
 for every terminal outcome, including ``Cancelled`` and a startup failure.
 
 Outcome and RunRecord
@@ -218,6 +222,11 @@ Functions
   ``reentry::refused(name, ceiling)`` implement Re-entry.
 - ``guard::locate()`` returns the path of ``agent-guard`` or ``None``;
   ``guard::wrap(command, guard_path)`` returns the guarded form of a command.
+- ``guard::spawn_contained(command, mode, label, configure)`` starts a command
+  under a ``GuardMode``: on Linux and macOS wrapped in ``agent-guard`` in a
+  new process group, on Windows created suspended, placed in its Job Object
+  and resumed. ``run`` and dispatch's opencode runner start processes only
+  through it.
 
 Argv
 ~~~~
@@ -289,7 +298,10 @@ Errors and edge cases
 - A missing binary is ``NotFound`` with the install hint.
 - Cancellation kills the process group (or the Job Object) and returns
   ``Cancelled``; no record is produced for that attempt and no further attempt
-  is made.
+  is made. An exit already observed when the token fires yields its record.
+  After the exit the process tree stays owned until stdout and stderr are
+  drained; a cancellation while a descendant still holds one of them open
+  kills the whole tree and yields ``Cancelled``.
 - A ``Spawn`` or ``WaitFailed`` outcome carries its message as the failure
   text; it is retried when the message classifies as retry-worthy.
 - A record whose output mode gives no parseable usage carries ``usage:

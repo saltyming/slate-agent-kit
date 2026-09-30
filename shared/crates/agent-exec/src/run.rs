@@ -2,22 +2,25 @@
 //! ([`run_with_fallback`]), with what they report while running
 //! ([`RunEvent`]) and what they return ([`Outcome`], [`RunRecord`]).
 //!
-//! `run` refuses in a process marked as a guard, looks the binary up, resolves
-//! the guard mode, builds the argv (`argv::command`), spawns it — through
-//! `agent-guard` or into a Job Object when guarded — writes the prompt to
-//! stdin and closes it while capturing stdout and stderr concurrently under
-//! the capture policy, and awaits the exit or the cancellation token,
-//! whichever comes first. It writes
+//! `run` refuses in a process marked as a guard, looks the binary up, builds
+//! the argv (`argv::command`), spawns it under the guard mode
+//! (`guard::spawn_contained`), writes the prompt to stdin and closes it while
+//! capturing stdout and stderr concurrently under the capture policy, and
+//! awaits the exit or the cancellation token, whichever comes first. It writes
 //! no file and no store: everything goes out through the event channel and the
 //! return value.
 //!
 //! There is intentionally no wall-clock timeout — a backend run can take many
 //! minutes. Cancellation is the caller's `CancellationToken`: it kills the
 //! process tree (process group or Job Object) and yields `Outcome::Cancelled`.
+//! An exit already observed when the token fires wins: its record is the
+//! result. After the exit the tree stays owned until stdout and stderr are
+//! drained; a cancellation while a descendant still holds one of them open
+//! kills the whole tree and yields `Outcome::Cancelled`.
 
 use std::io;
 use std::process::Stdio;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,9 +33,15 @@ use crate::capture::{self, Captured};
 use crate::discovery::{install_hint, which};
 use crate::errkind::{self, BackendErrorKind};
 use crate::failure::failure_text;
-use crate::guard::{self, ProcessTree};
-use crate::spec::{Backend, GuardMode, OutputMode, RunSpec};
+use crate::guard::{self, Contained};
+use crate::spec::{Backend, OutputMode, RunSpec};
 use harness_log::Usage;
+
+/// How long a run that was cancelled after its backend exited waits for the
+/// output readers before it kills the tree: enough for readers whose pipes
+/// are already closed to reach their end, far less than any descendant that
+/// holds a pipe open would take.
+const DRAIN_GRACE: Duration = Duration::from_millis(500);
 
 /// How many characters of a discarded attempt's failure text are kept.
 const DISCARDED_DETAIL_CHARS: usize = 2000;
@@ -44,9 +53,9 @@ const DISCARDED_DETAIL_CHARS: usize = 2000;
 #[derive(Debug, Clone)]
 pub enum RunEvent {
     /// Right after the spawn. `pid` is the spawned process (on Linux and macOS
-    /// with the guard, the guard, which lives exactly as long as the backend
-    /// subtree and leads its process group);
-    /// `argv` is the real backend's command line.
+    /// with the guard, the guard, which leads the process group and exits
+    /// when the program it started exits; descendants of the program may
+    /// outlive it); `argv` is the real backend's command line.
     Started {
         /// The spawned process id.
         pid: Option<u32>,
@@ -343,98 +352,22 @@ async fn run_inner(
         };
     }
 
-    // Linux and macOS: the guard is the `agent-guard` executable, looked up
-    // before anything is spawned. Windows attaches a Job Object after the
-    // spawn instead and looks nothing up.
-    #[cfg(not(windows))]
-    let guard_path = match spec.guard {
-        GuardMode::Off => None,
-        GuardMode::Preferred => guard::locate(),
-        GuardMode::Required => match guard::locate() {
-            Some(p) => Some(p),
-            None => {
-                return Outcome::Spawn(guard_missing_message(binary));
-            }
-        },
-    };
-
     let (built, argv) = argv::command(spec);
-    #[cfg(not(windows))]
-    let mut cmd = match &guard_path {
-        Some(p) => guard::wrap(&built, p),
-        None => built,
-    };
-    #[cfg(windows)]
-    let mut cmd = built;
-    cmd.stdin(Stdio::piped());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    cmd.kill_on_drop(true);
-    #[cfg(unix)]
-    {
-        // New process group with pgid == child pid, so a group kill on cancel
-        // reaps the guard, the backend AND any shells or test runners it
-        // spawned. kill_on_drop only reaps the direct child.
-        cmd.process_group(0);
-    }
-    // Start suspended: the Job Object must hold the process before it can
-    // start anything, or a child it starts at once would be outside the job
-    // and outlive it. Resumed right after the job is attached.
-    #[cfg(windows)]
-    cmd.creation_flags(guard::CREATE_SUSPENDED);
-
-    let mut child = match cmd.spawn() {
+    let contained = guard::spawn_contained(built, spec.guard, binary, |cmd| {
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+    })
+    .await;
+    let Contained {
+        mut child,
+        tree,
+        guarded,
+    } = match contained {
         Ok(c) => c,
-        Err(e) => {
-            #[cfg(not(windows))]
-            let what = if guard_path.is_some() {
-                format!("{} for {binary}", guard::GUARD_BINARY)
-            } else {
-                binary.to_string()
-            };
-            #[cfg(windows)]
-            let what = binary.to_string();
-            return Outcome::Spawn(format!("spawn {what} failed: {e}"));
-        }
+        Err(msg) => return Outcome::Spawn(msg),
     };
     let pid = child.id();
-
-    #[cfg(not(windows))]
-    let (tree, guarded) = (ProcessTree::unprotected(&child), guard_path.is_some());
-    #[cfg(windows)]
-    let (tree, guarded) = {
-        let mode = spec.guard;
-        let attached = if mode == GuardMode::Off {
-            // A plain job, only so that a cancel ends the whole tree; not a
-            // guard. Without it the run proceeds and a cancel ends the
-            // backend alone.
-            guard::contain(&mut child).map(|t| (t, false))
-        } else {
-            guard::protect(&mut child).map(|t| (t, true))
-        };
-        let (tree, guarded) = match attached {
-            Ok(pair) => pair,
-            Err(e) if mode == GuardMode::Required => {
-                // Continuing would leave the work running with no orphan
-                // protection at all.
-                ProcessTree::unprotected(&child).kill(&mut child);
-                let _ = child.wait().await;
-                return Outcome::Spawn(format!("Job Object setup for {binary} failed: {e}"));
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "agent-exec: Job Object setup for {binary} failed: {e}; running without it"
-                );
-                (ProcessTree::unprotected(&child), false)
-            }
-        };
-        if let Err(e) = guard::resume(&child) {
-            tree.kill(&mut child);
-            let _ = child.wait().await;
-            return Outcome::Spawn(format!("resume {binary} after its spawn failed: {e}"));
-        }
-        (tree, guarded)
-    };
     let _ = events.send(RunEvent::Started {
         pid,
         argv: argv.clone(),
@@ -486,8 +419,14 @@ async fn run_inner(
         };
         match step {
             Step::Cancelled => {
-                // The child is still live (wait did not complete), so the tree
-                // is killed while its id is unambiguously ours, then reaped.
+                // An exit that has already happened wins over a cancellation
+                // arriving at the same time: its record is the result.
+                if let Ok(Some(st)) = child.try_wait() {
+                    drop(writer.take());
+                    break st;
+                }
+                // The child is still live, so the tree is killed while its id
+                // is unambiguously ours, then reaped.
                 tree.kill(&mut child);
                 drop(writer.take());
                 let _ = child.wait().await;
@@ -521,19 +460,29 @@ async fn run_inner(
             }
         }
     };
-    tree.release();
 
-    // Drain the readers. A descendant that inherited stdout and outlives the
-    // backend keeps the pipe open; cancellation still ends the wait.
+    // Drain the readers. The tree stays owned until they end: a descendant
+    // that inherited stdout or stderr and outlives the backend keeps the pipe
+    // open, and a cancellation then kills the whole tree (the process group
+    // still exists while a member lives; the Job Object holds the rest).
+    let mut readers = Box::pin(async { (out_task.await, err_task.await) });
     let drained = tokio::select! {
         biased;
+        pair = &mut readers => Some(pair),
         _ = ct.cancelled() => None,
-        pair = async { (out_task.await, err_task.await) } => Some(pair),
+    };
+    let drained = match drained {
+        Some(pair) => Some(pair),
+        // Readers of pipes nothing holds any more reach their end at once;
+        // only a held pipe outlasts the grace.
+        None => tokio::time::timeout(DRAIN_GRACE, &mut readers).await.ok(),
     };
     let Some((out, err)) = drained else {
+        tree.kill(&mut child);
         abort_readers();
         return Outcome::Cancelled;
     };
+    tree.release();
     let out: Captured = out.unwrap_or_default();
     let err: Captured = err.unwrap_or_default();
 
@@ -580,16 +529,6 @@ fn tripwire_message(binary: &str) -> String {
         "refusing to start {binary}: this process carries {} and so was started as a guard, \
          which never starts backends",
         guard::GUARD_ENV
-    )
-}
-
-/// The `Spawn` text of a `GuardMode::Required` run that found no guard
-/// (Linux and macOS; Windows looks no executable up).
-#[cfg(any(not(windows), test))]
-fn guard_missing_message(binary: &str) -> String {
-    format!(
-        "cannot start {binary} under the parent-death guard: {}",
-        guard::install_hint()
     )
 }
 
@@ -752,7 +691,7 @@ mod tests {
         for backend in Backend::all() {
             for text in [
                 tripwire_message(backend.binary()),
-                guard_missing_message(backend.binary()),
+                guard::missing_message(backend.binary()),
             ] {
                 assert_eq!(errkind::classify(&text), BackendErrorKind::Other, "{text}");
             }

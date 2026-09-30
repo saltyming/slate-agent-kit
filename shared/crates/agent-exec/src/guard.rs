@@ -7,10 +7,12 @@
 //! exit status. On Windows the backend is placed in a kill-on-close Job Object
 //! inside the server process (see `winjob.rs`), and no executable is used.
 //!
-//! Entry points: [`locate`] finds `agent-guard`; [`wrap`] turns a backend
-//! command into its guarded form; [`protect`] attaches the Job Object on
-//! Windows right after a spawn; [`ProcessTree`] kills the whole tree on
-//! cancel. `run` uses all of them according to `RunSpec::guard`.
+//! Entry points: [`spawn_contained`] starts a command under a [`GuardMode`]
+//! and is the one spawn path for every guarded process (`run` uses it for
+//! backends, dispatch for its `opencode serve`); [`ProcessTree`] kills the
+//! whole tree on cancel. Beneath it, [`locate`] finds `agent-guard`, [`wrap`]
+//! turns a command into its guarded form and [`protect`] attaches the Job
+//! Object on Windows.
 //!
 //! Boundary: this module never re-invokes the running executable and never
 //! runs the guard itself, so no program that links the crate needs guard code
@@ -22,6 +24,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use tokio::process::{Child, Command};
+
+use crate::spec::GuardMode;
 
 #[cfg(windows)]
 mod winjob;
@@ -62,6 +66,142 @@ pub fn install_hint() -> String {
          release that ships `{GUARD_BINARY}` beside the servers, or build it with `cargo build \
          --release -p agent-exec --bin {GUARD_BINARY}` and place it beside the server"
     )
+}
+
+/// The `Spawn` text for a `GuardMode::Required` start of `label` that found no
+/// guard (Linux and macOS; Windows looks no executable up).
+#[cfg(any(not(windows), test))]
+pub(crate) fn missing_message(label: &str) -> String {
+    format!(
+        "cannot start {label} under the parent-death guard: {}",
+        install_hint()
+    )
+}
+
+/// A process started by [`spawn_contained`].
+pub struct Contained {
+    /// The spawned process: on Linux and macOS with the guard, `agent-guard`,
+    /// which leads the process group and exits when the program it started
+    /// exits.
+    pub child: Child,
+    /// Kills the whole tree: the process group on Unix, the Job Object on
+    /// Windows.
+    pub tree: ProcessTree,
+    /// Whether the parent-death guard holds the process (`agent-guard` on
+    /// Linux and macOS, a kill-on-close Job Object on Windows).
+    pub guarded: bool,
+}
+
+/// Start `command` under `mode`, so that it can never run outside the
+/// containment the mode asks for.
+///
+/// On Linux and macOS the command is wrapped in `agent-guard` (looked up with
+/// [`locate`]; `Required` without it fails before anything starts, `Preferred`
+/// runs unguarded, `Off` never looks) and leads a new process group. On
+/// Windows the process is created suspended, placed in a Job Object
+/// (kill-on-close unless `mode` is `Off`, where the job only lets a cancel end
+/// the tree), and only then resumed, so nothing it starts can escape the job;
+/// a `Required` start whose job cannot be attached is killed and fails.
+///
+/// `configure` sets the stdio (and anything else) on the command that is
+/// actually spawned, after wrapping; the child is always `kill_on_drop`.
+/// `label` names the process in the error texts: `cannot start <label> under
+/// the parent-death guard: …`, `spawn agent-guard for <label> failed: …` (or
+/// `spawn <label> failed: …` unguarded), `Job Object setup for <label> failed:
+/// …`, `resume <label> after its spawn failed: …`.
+pub async fn spawn_contained(
+    command: Command,
+    mode: GuardMode,
+    label: &str,
+    configure: impl FnOnce(&mut Command),
+) -> Result<Contained, String> {
+    #[cfg(not(windows))]
+    let guard_path = match mode {
+        GuardMode::Off => None,
+        GuardMode::Preferred => locate(),
+        GuardMode::Required => Some(locate().ok_or_else(|| missing_message(label))?),
+    };
+    #[cfg(not(windows))]
+    let mut cmd = match &guard_path {
+        Some(p) => wrap(&command, p),
+        None => command,
+    };
+    #[cfg(windows)]
+    let mut cmd = command;
+    configure(&mut cmd);
+    cmd.kill_on_drop(true);
+    // Unix: a new process group with pgid == child pid, so a group kill reaps
+    // the guard, the program AND anything it spawned; kill_on_drop only reaps
+    // the direct child.
+    #[cfg(unix)]
+    cmd.process_group(0);
+    // Windows: start suspended, so the Job Object holds the process before it
+    // can start anything; resumed right after the job is attached.
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_SUSPENDED);
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            #[cfg(not(windows))]
+            let what = if guard_path.is_some() {
+                format!("{GUARD_BINARY} for {label}")
+            } else {
+                label.to_string()
+            };
+            #[cfg(windows)]
+            let what = label.to_string();
+            return Err(format!("spawn {what} failed: {e}"));
+        }
+    };
+    #[cfg(not(windows))]
+    let contained = Contained {
+        tree: ProcessTree::unprotected(&child),
+        child,
+        guarded: guard_path.is_some(),
+    };
+    #[cfg(windows)]
+    let contained = attach(child, mode, label).await?;
+    Ok(contained)
+}
+
+/// Windows: place a just-spawned, suspended child in its Job Object and
+/// resume it.
+#[cfg(windows)]
+async fn attach(mut child: Child, mode: GuardMode, label: &str) -> Result<Contained, String> {
+    let attached = if mode == GuardMode::Off {
+        // A plain job, only so that a cancel ends the whole tree; not a guard.
+        // Without it the process runs on and a cancel ends it alone.
+        contain(&mut child).map(|t| (t, false))
+    } else {
+        protect(&mut child).map(|t| (t, true))
+    };
+    let (tree, guarded) = match attached {
+        Ok(pair) => pair,
+        Err(e) if mode == GuardMode::Required => {
+            // Continuing would leave the work running with no orphan
+            // protection at all.
+            ProcessTree::unprotected(&child).kill(&mut child);
+            let _ = child.wait().await;
+            return Err(format!("Job Object setup for {label} failed: {e}"));
+        }
+        Err(e) => {
+            tracing::warn!(
+                "agent-exec: Job Object setup for {label} failed: {e}; running without it"
+            );
+            (ProcessTree::unprotected(&child), false)
+        }
+    };
+    if let Err(e) = resume(&child) {
+        tree.kill(&mut child);
+        let _ = child.wait().await;
+        return Err(format!("resume {label} after its spawn failed: {e}"));
+    }
+    Ok(Contained {
+        child,
+        tree,
+        guarded,
+    })
 }
 
 /// The guarded form of `command`: `<guard_path> <this pid> -- <program>

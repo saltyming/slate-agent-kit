@@ -117,6 +117,15 @@ fn main() {
         ("cancellation_kills_the_child_and_its_children", |c| {
             Box::pin(cancellation_kills_the_child_and_its_children(c))
         }),
+        ("cancel_while_a_descendant_holds_stdout_kills_it", |c| {
+            Box::pin(cancel_while_a_descendant_holds_stdout_kills_it(c))
+        }),
+        ("an_exit_before_the_cancel_keeps_its_record", |c| {
+            Box::pin(an_exit_before_the_cancel_keeps_its_record(c))
+        }),
+        ("a_descendant_holding_stdout_is_drained_to_its_end", |c| {
+            Box::pin(a_descendant_holding_stdout_is_drained_to_its_end(c))
+        }),
         ("cancelled_before_start_spawns_nothing", |c| {
             Box::pin(cancelled_before_start_spawns_nothing(c))
         }),
@@ -824,6 +833,134 @@ async fn cancellation_kills_the_child_and_its_children(c: Ctx) {
             Some(RunEvent::Finished(Outcome::Cancelled))
         ));
     }
+}
+
+/// A backend that exits at once after starting a child that inherits its
+/// stdout and stderr and sleeps `child_ms`: returns the spec, the backend's
+/// pid file and the child's.
+fn exiting_backend_with_held_stdout(
+    c: &Ctx,
+    name: &str,
+    child_ms: u64,
+) -> (RunSpec, PathBuf, PathBuf, String) {
+    let marker = tag(name);
+    let pid_file = c.file(&format!("{name}-pid"));
+    let child_file = c.file(&format!("{name}-child"));
+    let env = vec![
+        ("STUB_PID_FILE", s(pid_file.display())),
+        ("STUB_STDOUT", s("done")),
+        ("STUB_CHILD_TAG", marker.clone()),
+        ("STUB_CHILD_PID_FILE", s(child_file.display())),
+        ("STUB_CHILD_INHERIT_STDIO", s(1)),
+        ("STUB_CHILD_SLEEP_MS", s(child_ms)),
+    ];
+    let mut sp = spec(Backend::Codex, &env);
+    sp.model = Some(marker.clone());
+    (sp, pid_file, child_file, marker)
+}
+
+async fn cancel_while_a_descendant_holds_stdout_kills_it(c: Ctx) {
+    let mut reap = Reap::default();
+    let (sp, pid_file, child_file, marker) =
+        exiting_backend_with_held_stdout(&c, "held-cancel", 120_000);
+    let (tx, mut rx) = unbounded_channel();
+    let ct = CancellationToken::new();
+    let task = {
+        let ct = ct.clone();
+        tokio::spawn(async move { run(&sp, &tx, &ct).await })
+    };
+    let pid = reap.add(read_pid(&pid_file).await);
+    let child = reap.add(read_pid(&child_file).await);
+    // The backend is gone; its child still holds stdout, so run is draining.
+    wait_until_gone(pid).await;
+    assert!(process_alive(child));
+    ct.cancel();
+    let clock = Instant::now();
+    let o = tokio::time::timeout(WAIT, task)
+        .await
+        .expect("run returns promptly after cancel")
+        .unwrap();
+    assert!(matches!(o, Outcome::Cancelled), "{o:?}");
+    assert!(
+        clock.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        clock.elapsed()
+    );
+    wait_until_gone(child).await;
+    #[cfg(unix)]
+    wait_until_unmarked(&marker).await;
+    #[cfg(not(unix))]
+    let _ = marker;
+    assert!(matches!(
+        drain(&mut rx).last(),
+        Some(RunEvent::Finished(Outcome::Cancelled))
+    ));
+}
+
+async fn an_exit_before_the_cancel_keeps_its_record(c: Ctx) {
+    let mut reap = Reap::default();
+    // The child releases stdout well within the drain grace after a cancel.
+    let (sp, pid_file, child_file, marker) =
+        exiting_backend_with_held_stdout(&c, "exit-first", 100);
+    let (tx, mut rx) = unbounded_channel();
+    let ct = CancellationToken::new();
+    let task = {
+        let ct = ct.clone();
+        tokio::spawn(async move { run(&sp, &tx, &ct).await })
+    };
+    let pid = reap.add(read_pid(&pid_file).await);
+    reap.add(read_pid(&child_file).await);
+    let spawned = match within(rx.recv()).await {
+        Some(RunEvent::Started { pid: Some(p), .. }) => p,
+        other => panic!("expected Started, got {other:?}"),
+    };
+    wait_until_gone(pid).await;
+    // The spawned process (the guard on Unix) stays a zombie until run reaps
+    // it, so once it is gone run has observed the exit; the cancellation
+    // comes after it, while the child still holds stdout.
+    wait_until_gone(spawned).await;
+    ct.cancel();
+    let o = tokio::time::timeout(WAIT, task)
+        .await
+        .expect("run finishes in time")
+        .unwrap();
+    let r = record(o);
+    assert!(r.success, "{r:?}");
+    assert_eq!(r.stdout, "done");
+    assert!(matches!(
+        drain(&mut rx).last(),
+        Some(RunEvent::Finished(Outcome::Record(_)))
+    ));
+    #[cfg(unix)]
+    wait_until_unmarked(&marker).await;
+    #[cfg(not(unix))]
+    let _ = marker;
+}
+
+async fn a_descendant_holding_stdout_is_drained_to_its_end(c: Ctx) {
+    let mut reap = Reap::default();
+    let (sp, _pid_file, child_file, marker) =
+        exiting_backend_with_held_stdout(&c, "held-natural", 500);
+    let (tx, mut rx) = unbounded_channel();
+    let task = tokio::spawn(async move { run(&sp, &tx, &CancellationToken::new()).await });
+    let child = reap.add(read_pid(&child_file).await);
+    let o = tokio::time::timeout(WAIT, task)
+        .await
+        .expect("run finishes in time")
+        .unwrap();
+    let r = record(o);
+    assert!(r.success, "{r:?}");
+    assert_eq!(r.stdout, "done");
+    // The drain ended because the child released stdout by exiting.
+    wait_until_gone(child).await;
+    assert!(matches!(
+        drain(&mut rx).last(),
+        Some(RunEvent::Finished(Outcome::Record(_)))
+    ));
+    #[cfg(unix)]
+    wait_until_unmarked(&marker).await;
+    #[cfg(not(unix))]
+    let _ = marker;
 }
 
 async fn cancelled_before_start_spawns_nothing(c: Ctx) {

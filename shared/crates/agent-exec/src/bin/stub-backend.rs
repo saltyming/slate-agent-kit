@@ -22,8 +22,10 @@
 //! (write the received stdin), `STUB_ECHO_STDIN=1` (copy stdin to stdout),
 //! `STUB_STDOUT` / `STUB_STDERR` (literal text), `STUB_STDOUT_REPEAT` /
 //! `STUB_STDERR_REPEAT` (print `STUB_FILL`, default `a`, that many times),
-//! `STUB_CHILD_TAG` (start `__sleep 120000 <tag>` as a child and write its pid
-//! to `STUB_CHILD_PID_FILE`), `STUB_SLEEP_MS`, `STUB_SIGNAL` (Unix: end by
+//! `STUB_CHILD_TAG` (start `__sleep <STUB_CHILD_SLEEP_MS, default 120000>
+//! <tag>` as a child and write its pid to `STUB_CHILD_PID_FILE`; with
+//! `STUB_CHILD_INHERIT_STDIO=1` the child holds this process's stdout and
+//! stderr), `STUB_SLEEP_MS`, `STUB_SIGNAL` (Unix: end by
 //! raising that signal) and `STUB_EXIT` (default 0).
 
 use std::io::{Read, Write};
@@ -132,18 +134,28 @@ fn interleave(input: &mut Vec<u8>, fill: &str) {
     let _ = out.flush();
 }
 
-/// Start `<this binary> __sleep 120000 <tag>` in this process's group and
-/// write its pid to `STUB_CHILD_PID_FILE`. The child gets no stdio of ours and
-/// none of the variables that steer this binary.
+/// Start `<this binary> __sleep <ms> <tag>` in this process's group and
+/// write its pid to `STUB_CHILD_PID_FILE`. The child gets none of the
+/// variables that steer this binary, and no stdio of ours unless
+/// `STUB_CHILD_INHERIT_STDIO=1`.
 fn start_sleeping_child(tag: &str) {
     let Ok(me) = std::env::current_exe() else {
         return;
     };
+    let ms = var("STUB_CHILD_SLEEP_MS").unwrap_or_else(|| "120000".into());
+    let inherit = var("STUB_CHILD_INHERIT_STDIO").as_deref() == Some("1");
+    let out = || {
+        if inherit {
+            std::process::Stdio::inherit()
+        } else {
+            std::process::Stdio::null()
+        }
+    };
     let mut cmd = std::process::Command::new(me);
-    cmd.args(["__sleep", "120000", tag])
+    cmd.args(["__sleep", ms.as_str(), tag])
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(out())
+        .stderr(out());
     for (k, _) in std::env::vars_os() {
         if k.to_string_lossy().starts_with("STUB_") {
             cmd.env_remove(k);

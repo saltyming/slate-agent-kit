@@ -728,8 +728,8 @@ impl Dispatch {
 
     /// Observability fields for status/wait responses. For an ACTIVE row:
     /// `child_process_alive` (the spawned process-group leader — on Linux and
-    /// macOS the `agent-guard` process, which lives exactly as long as the
-    /// backend subtree),
+    /// macOS the `agent-guard` process, which exits when the backend it
+    /// started exits; descendants of the backend may outlive it),
     /// `log_associated`, and `log_last_write_age_seconds` (mtime age of the
     /// associated backend log — a liveness-of-output signal, NOT proof of
     /// semantic progress or of a hang: a live process with an old log may be

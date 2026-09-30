@@ -139,11 +139,11 @@ pub fn request_cancel(registry: &Registry, id: &str) -> bool {
 /// Returns the auto-restart successor job when the unassociated-log watchdog
 /// fired (the caller spawns it); `None` on every normal terminal path.
 async fn run(db: &DbHandle, job: &Job, ct: &CancellationToken) -> Option<Job> {
-    let current = StdMutex::new(Attempt::default());
+    let attempts = StdMutex::new(Vec::new());
     let builder = AttemptBuilder {
         db,
         job,
-        current: &current,
+        attempts: &attempts,
         snapshot: rollout::session_snapshot,
     };
     let models = attempt_models(job);
@@ -165,7 +165,7 @@ async fn run(db: &DbHandle, job: &Job, ct: &CancellationToken) -> Option<Job> {
         job,
         ct,
         attempt_ct: &attempt_ct,
-        current: &current,
+        attempts: &attempts,
         restart_after: restart_window(job),
         locate: locate_rollout,
     };
@@ -199,8 +199,11 @@ fn restart_window(job: &Job) -> Option<Duration> {
 
 // ── attempt preparation ───────────────────────────────────
 
-/// The identity of the attempt being run, written by [`AttemptBuilder`] before
-/// the spawn and read by the consumer when the attempt reports `Started`.
+/// The identity of one attempt, fixed by [`AttemptBuilder`] before its spawn.
+/// The builder appends one per attempt, in chain order; the consumer reads
+/// the entry of the attempt that reports `Started` by its position (the
+/// number of attempts already `Finished`), so an attempt built early can
+/// never lend its identity to an earlier one.
 #[derive(Debug, Default)]
 struct Attempt {
     /// The nonce the attempt's prompt embeds.
@@ -225,7 +228,8 @@ struct Attempt {
 struct AttemptBuilder<'a> {
     db: &'a DbHandle,
     job: &'a Job,
-    current: &'a StdMutex<Attempt>,
+    /// One entry per attempt built, in chain order.
+    attempts: &'a StdMutex<Vec<Attempt>>,
     /// Lists the codex rollouts that exist now.
     snapshot: fn() -> HashSet<PathBuf>,
 }
@@ -290,23 +294,23 @@ impl AttemptBuilder<'_> {
             },
             prompt,
         );
-        *lock(self.current) = Attempt {
+        lock(self.attempts).push(Attempt {
             nonce,
             pin,
             snapshot,
             spawn_time: Some(SystemTime::now()),
-        };
+        });
         spec
     }
 
     /// The prompt of opencode attempt `idx`.
     fn opencode_prompt(&self, idx: usize) -> String {
         let (nonce, prompt) = self.identity(idx);
-        *lock(self.current) = Attempt {
+        lock(self.attempts).push(Attempt {
             nonce,
             spawn_time: Some(SystemTime::now()),
             ..Attempt::default()
-        };
+        });
         prompt
     }
 }
@@ -370,7 +374,8 @@ struct Consumer<'a> {
     /// A child of `ct` that the attempts run under; the watchdog cancels it
     /// alone to restart.
     attempt_ct: &'a CancellationToken,
-    current: &'a StdMutex<Attempt>,
+    /// The attempts' identities, as the builder appended them.
+    attempts: &'a StdMutex<Vec<Attempt>>,
     /// The auto-restart window, `None` when the job is not eligible.
     restart_after: Option<Duration>,
     locate: Locate,
@@ -379,6 +384,9 @@ struct Consumer<'a> {
 /// Which attempts reported `Started`.
 #[derive(Debug, Default)]
 struct Seen {
+    /// How many attempts have finished: the position of the attempt in
+    /// flight in the builder's list.
+    finished: usize,
     /// The attempt in flight has spawned.
     started: bool,
     /// The last finished attempt had spawned.
@@ -466,9 +474,14 @@ impl Consumer<'_> {
         while let Ok(ev) = rx.try_recv() {
             let _ = self.on_event(ev, &mut seen);
         }
-        if let (Some(window), Outcome::Cancelled) = (restart, &fallback.outcome) {
-            // The watchdog already decided; the row's terminal state is the
-            // restart's, and no fallback history is recorded.
+        // A restart applies only to an attempt the watchdog itself ended: an
+        // attempt that exited on its own keeps its record, and a user cancel
+        // (the task token) wins over the watchdog whenever it came.
+        if let (Some(window), Outcome::Cancelled) = (restart, &fallback.outcome)
+            && !self.ct.is_cancelled()
+        {
+            // The row's terminal state is the restart's, and no fallback
+            // history is recorded.
             return self.restart(window);
         }
         finish(
@@ -500,7 +513,12 @@ impl Consumer<'_> {
                     &argv_json,
                     backend_version.as_deref(),
                 );
-                let mut a = lock(self.current);
+                let mut attempts = lock(self.attempts);
+                // The attempt in flight; none for a start the builder never
+                // prepared, which then records no session and starts no watch.
+                let Some(a) = attempts.get_mut(seen.finished) else {
+                    return Next::Nothing;
+                };
                 match job.backend {
                     Backend::Claude => {
                         if let Some(pin) = a.pin.as_deref() {
@@ -533,6 +551,7 @@ impl Consumer<'_> {
             // The runner has already appended the line to its own log.
             RunEvent::Progress(_) => Next::Nothing,
             RunEvent::Finished(_) => {
+                seen.finished += 1;
                 seen.final_started = seen.started;
                 seen.started = false;
                 Next::StopWatch
@@ -934,8 +953,8 @@ fn build_error(stderr: &str, truncated: bool, exit_code: Option<i32>) -> String 
 
 // ── DB helpers: lock briefly, write, drop the guard before any await ──
 
-/// Lock the attempt state; a poisoned lock still holds a usable value.
-fn lock(m: &StdMutex<Attempt>) -> std::sync::MutexGuard<'_, Attempt> {
+/// Lock the attempt list; a poisoned lock still holds a usable value.
+fn lock<T>(m: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -1195,11 +1214,11 @@ mod tests {
         let (db, id) = db_with_row(Backend::Codex, &dir, Some("d-1:N1"));
         let job = job(&id, Backend::Codex, &dir, Some("d-1:N1"));
         store::set_session(&db.lock().unwrap(), &id, "old-sid", "/old/rollout.jsonl").unwrap();
-        let current = StdMutex::new(Attempt::default());
+        let attempts = StdMutex::new(Vec::new());
         let b = AttemptBuilder {
             db: &db,
             job: &job,
-            current: &current,
+            attempts: &attempts,
             snapshot: counting_snapshot,
         };
         let before = SNAPSHOTS.load(Ordering::SeqCst);
@@ -1210,14 +1229,23 @@ mod tests {
             "attempt 0 runs the prompt as submitted"
         );
         assert_eq!(first.model.as_deref(), Some("m1"));
-        assert_eq!(lock(&current).nonce.as_deref(), Some("d-1:N1"));
+        assert_eq!(
+            lock(&attempts).last().unwrap().nonce.as_deref(),
+            Some("d-1:N1")
+        );
         assert!(
-            lock(&current)
+            lock(&attempts)
+                .last()
+                .unwrap()
                 .snapshot
                 .contains(Path::new("pre-existing.jsonl"))
         );
-        assert!(lock(&current).spawn_time.is_some());
-        assert_eq!(lock(&current).pin, None, "codex pins no session");
+        assert!(lock(&attempts).last().unwrap().spawn_time.is_some());
+        assert_eq!(
+            lock(&attempts).last().unwrap().pin,
+            None,
+            "codex pins no session"
+        );
         let r = row(&db, &id);
         assert_eq!(r.nonce.as_deref(), Some("d-1:N1"));
         assert_eq!(
@@ -1234,7 +1262,10 @@ mod tests {
         );
         assert!(!second.prompt.contains(&render::nonce_marker("d-1:N1")));
         assert_eq!(second.model.as_deref(), Some("m2"));
-        assert_eq!(lock(&current).nonce.as_deref(), Some("d-1:N1-retry1"));
+        assert_eq!(
+            lock(&attempts).last().unwrap().nonce.as_deref(),
+            Some("d-1:N1-retry1")
+        );
         let r = row(&db, &id);
         assert_eq!(r.nonce.as_deref(), Some("d-1:N1-retry1"));
         assert_eq!(r.session_id, None, "the prior association is cleared");
@@ -1247,8 +1278,18 @@ mod tests {
                 .contains(&render::nonce_marker("d-1:N1-retry2"))
         );
         assert_eq!(row(&db, &id).nonce.as_deref(), Some("d-1:N1-retry2"));
-        // One snapshot per attempt, taken while building it (before its spawn).
+        // One snapshot per attempt, taken while building it (before its spawn),
+        // and one identity per attempt, in chain order.
         assert_eq!(SNAPSHOTS.load(Ordering::SeqCst) - before, 3);
+        let nonces: Vec<_> = lock(&attempts).iter().map(|a| a.nonce.clone()).collect();
+        assert_eq!(
+            nonces,
+            vec![
+                Some("d-1:N1".to_string()),
+                Some("d-1:N1-retry1".to_string()),
+                Some("d-1:N1-retry2".to_string()),
+            ]
+        );
 
         // The spec carries dispatch's codex policy.
         let argv = agent_exec::command(&first).1;
@@ -1261,24 +1302,27 @@ mod tests {
         let dir = scratch("builder-claude");
         let (db, id) = db_with_row(Backend::Claude, &dir, Some("d-2:N2"));
         let job = job(&id, Backend::Claude, &dir, Some("d-2:N2"));
-        let current = StdMutex::new(Attempt::default());
+        let attempts = StdMutex::new(Vec::new());
         let b = AttemptBuilder {
             db: &db,
             job: &job,
-            current: &current,
+            attempts: &attempts,
             snapshot: || panic!("claude attempts take no rollout snapshot"),
         };
         let first = b.build(0, None);
-        let pin1 = lock(&current).pin.clone().expect("pinned");
+        let pin1 = lock(&attempts).last().unwrap().pin.clone().expect("pinned");
         let second = b.build(1, None);
-        let pin2 = lock(&current).pin.clone().expect("pinned");
+        let pin2 = lock(&attempts).last().unwrap().pin.clone().expect("pinned");
         assert_ne!(pin1, pin2, "each attempt pins its own session id");
         assert_eq!(first.pin_session.as_deref(), Some(pin1.as_str()));
         assert_eq!(second.pin_session.as_deref(), Some(pin2.as_str()));
         let argv = agent_exec::command(&second).1;
         let at = argv.iter().position(|a| a == "--session-id").unwrap();
         assert_eq!(argv[at + 1], pin2);
-        assert_eq!(lock(&current).nonce.as_deref(), Some("d-2:N2-retry1"));
+        assert_eq!(
+            lock(&attempts).last().unwrap().nonce.as_deref(),
+            Some("d-2:N2-retry1")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1380,13 +1424,13 @@ mod tests {
         let job = job(&id, Backend::Codex, &dir, None);
         let ct = CancellationToken::new();
         let attempt_ct = ct.child_token();
-        let current = StdMutex::new(Attempt::default());
+        let attempts = StdMutex::new(Vec::new());
         let cx = Consumer {
             db: &db,
             job: &job,
             ct: &ct,
             attempt_ct: &attempt_ct,
-            current: &current,
+            attempts: &attempts,
             restart_after: None,
             locate: found,
         };
@@ -1437,16 +1481,16 @@ mod tests {
         let job = job(&id, Backend::Claude, &dir, None);
         let ct = CancellationToken::new();
         let attempt_ct = ct.child_token();
-        let current = StdMutex::new(Attempt {
+        let attempts = StdMutex::new(vec![Attempt {
             pin: Some("pin-uuid-1".into()),
             ..Attempt::default()
-        });
+        }]);
         let cx = Consumer {
             db: &db,
             job: &job,
             ct: &ct,
             attempt_ct: &attempt_ct,
-            current: &current,
+            attempts: &attempts,
             restart_after: None,
             locate: never_found,
         };
@@ -1482,13 +1526,13 @@ mod tests {
         let job = job(&id, Backend::Opencode, &dir, None);
         let ct = CancellationToken::new();
         let attempt_ct = ct.child_token();
-        let current = StdMutex::new(Attempt::default());
+        let attempts = StdMutex::new(Vec::new());
         let cx = Consumer {
             db: &db,
             job: &job,
             ct: &ct,
             attempt_ct: &attempt_ct,
-            current: &current,
+            attempts: &attempts,
             restart_after: None,
             locate: never_found,
         };
@@ -1527,13 +1571,13 @@ mod tests {
         let job = job(&id, Backend::Codex, &dir, None);
         let ct = CancellationToken::new();
         let attempt_ct = ct.child_token();
-        let current = StdMutex::new(Attempt::default());
+        let attempts = StdMutex::new(Vec::new());
         let cx = Consumer {
             db: &db,
             job: &job,
             ct: &ct,
             attempt_ct: &attempt_ct,
-            current: &current,
+            attempts: &attempts,
             restart_after: None,
             locate: never_found,
         };
@@ -1569,15 +1613,15 @@ mod tests {
     /// runs until its attempt token is cancelled.
     async fn attempt_until_cancelled(
         tx: &UnboundedSender<RunEvent>,
-        current: &StdMutex<Attempt>,
+        attempts: &StdMutex<Vec<Attempt>>,
         attempt_ct: &CancellationToken,
         nonce: &str,
     ) -> FallbackOutcome {
-        *lock(current) = Attempt {
+        lock(attempts).push(Attempt {
             nonce: Some(nonce.to_string()),
             spawn_time: Some(SystemTime::now()),
             ..Attempt::default()
-        };
+        });
         let _ = tx.send(started(std::process::id()));
         attempt_ct.cancelled().await;
         let _ = tx.send(RunEvent::Finished(Outcome::Cancelled));
@@ -1599,18 +1643,18 @@ mod tests {
         );
         let ct = CancellationToken::new();
         let attempt_ct = ct.child_token();
-        let current = StdMutex::new(Attempt::default());
+        let attempts = StdMutex::new(Vec::new());
         let cx = Consumer {
             db: &db,
             job: &job,
             ct: &ct,
             attempt_ct: &attempt_ct,
-            current: &current,
+            attempts: &attempts,
             restart_after: Some(Duration::ZERO),
             locate: never_found,
         };
         let (tx, rx) = unbounded_channel();
-        let chain = attempt_until_cancelled(&tx, &current, &attempt_ct, "d-5:N5");
+        let chain = attempt_until_cancelled(&tx, &attempts, &attempt_ct, "d-5:N5");
         let successor = drive_bounded(&cx, chain, rx)
             .await
             .expect("the watchdog restarts the run");
@@ -1646,20 +1690,20 @@ mod tests {
         let job = job(&id, Backend::Codex, &dir, Some("d-6:N6"));
         let ct = CancellationToken::new();
         let attempt_ct = ct.child_token();
-        let current = StdMutex::new(Attempt::default());
+        let attempts = StdMutex::new(Vec::new());
         let cx = Consumer {
             db: &db,
             job: &job,
             ct: &ct,
             attempt_ct: &attempt_ct,
-            current: &current,
+            attempts: &attempts,
             restart_after: Some(Duration::ZERO),
             locate: never_found,
         };
         // dispatch_cancel fires the task token; the attempt token is its child.
         ct.cancel();
         let (tx, rx) = unbounded_channel();
-        let chain = attempt_until_cancelled(&tx, &current, &attempt_ct, "d-6:N6");
+        let chain = attempt_until_cancelled(&tx, &attempts, &attempt_ct, "d-6:N6");
         assert!(drive_bounded(&cx, chain, rx).await.is_none());
 
         let r = row(&db, &id);
@@ -1681,23 +1725,23 @@ mod tests {
         let job = job(&id, Backend::Codex, &dir, Some("d-8:N8"));
         let ct = CancellationToken::new();
         let attempt_ct = ct.child_token();
-        let current = StdMutex::new(Attempt::default());
+        let attempts = StdMutex::new(Vec::new());
         let cx = Consumer {
             db: &db,
             job: &job,
             ct: &ct,
             attempt_ct: &attempt_ct,
-            current: &current,
+            attempts: &attempts,
             restart_after: Some(Duration::ZERO),
             locate: found,
         };
         let (tx, rx) = unbounded_channel();
         let chain = async {
-            *lock(&current) = Attempt {
+            lock(&attempts).push(Attempt {
                 nonce: Some("d-8:N8".into()),
                 spawn_time: Some(SystemTime::now()),
                 ..Attempt::default()
-            };
+            });
             let _ = tx.send(started(std::process::id()));
             // Let the watchdog run before the attempt completes.
             tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1715,6 +1759,202 @@ mod tests {
         assert_eq!(r.status, store::STATUS_SUCCEEDED);
         assert_eq!(r.session_id.as_deref(), Some("sid-9"));
         assert_eq!(r.rollout_path.as_deref(), Some("rollout-x-sid-9.jsonl"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    static NUMBERED: AtomicUsize = AtomicUsize::new(0);
+
+    /// A snapshot that names the call it came from.
+    fn numbered_snapshot() -> HashSet<PathBuf> {
+        let n = NUMBERED.fetch_add(1, Ordering::SeqCst);
+        HashSet::from([PathBuf::from(format!("snapshot-{n}.jsonl"))])
+    }
+
+    #[test]
+    fn each_start_reads_its_own_attempt_even_when_later_ones_are_built() {
+        let dir = scratch("identity-claude");
+        let (db, id) = db_with_row(Backend::Claude, &dir, Some("d-3:N3"));
+        let job = job(&id, Backend::Claude, &dir, Some("d-3:N3"));
+        let attempts = StdMutex::new(Vec::new());
+        let b = AttemptBuilder {
+            db: &db,
+            job: &job,
+            attempts: &attempts,
+            snapshot: HashSet::new,
+        };
+        // Both attempts are built before the first Started is handled.
+        b.build(0, None);
+        b.build(1, None);
+        let pins: Vec<String> = lock(&attempts)
+            .iter()
+            .map(|a| a.pin.clone().unwrap())
+            .collect();
+        let ct = CancellationToken::new();
+        let attempt_ct = ct.child_token();
+        let cx = Consumer {
+            db: &db,
+            job: &job,
+            ct: &ct,
+            attempt_ct: &attempt_ct,
+            attempts: &attempts,
+            restart_after: None,
+            locate: never_found,
+        };
+        let mut seen = Seen::default();
+        let _ = cx.on_event(started(11), &mut seen);
+        assert_eq!(row(&db, &id).session_id.as_deref(), Some(pins[0].as_str()));
+        let _ = cx.on_event(RunEvent::Finished(record(false, "", "429")), &mut seen);
+        let _ = cx.on_event(started(12), &mut seen);
+        assert_eq!(row(&db, &id).session_id.as_deref(), Some(pins[1].as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_codex_watch_gets_its_own_nonce_and_snapshot() {
+        let dir = scratch("identity-codex");
+        let (db, id) = db_with_row(Backend::Codex, &dir, Some("d-4:N4"));
+        let job = job(&id, Backend::Codex, &dir, Some("d-4:N4"));
+        let attempts = StdMutex::new(Vec::new());
+        let b = AttemptBuilder {
+            db: &db,
+            job: &job,
+            attempts: &attempts,
+            snapshot: numbered_snapshot,
+        };
+        b.build(0, None);
+        b.build(1, None);
+        let snaps: Vec<HashSet<PathBuf>> =
+            lock(&attempts).iter().map(|a| a.snapshot.clone()).collect();
+        assert_ne!(snaps[0], snaps[1]);
+        let ct = CancellationToken::new();
+        let attempt_ct = ct.child_token();
+        let cx = Consumer {
+            db: &db,
+            job: &job,
+            ct: &ct,
+            attempt_ct: &attempt_ct,
+            attempts: &attempts,
+            restart_after: None,
+            locate: never_found,
+        };
+        let mut seen = Seen::default();
+        let Next::Watch(first) = cx.on_event(started(21), &mut seen) else {
+            panic!("a codex start starts a watch");
+        };
+        assert_eq!(first.nonce.as_deref(), Some("d-4:N4"));
+        assert_eq!(first.snapshot, snaps[0]);
+        assert!(matches!(
+            cx.on_event(RunEvent::Finished(record(false, "", "429")), &mut seen),
+            Next::StopWatch
+        ));
+        let Next::Watch(second) = cx.on_event(started(22), &mut seen) else {
+            panic!("a codex start starts a watch");
+        };
+        assert_eq!(second.nonce.as_deref(), Some("d-4:N4-retry1"));
+        assert_eq!(second.snapshot, snaps[1]);
+        // A start the builder never prepared records nothing and watches nothing.
+        let _ = cx.on_event(RunEvent::Finished(record(false, "", "x")), &mut seen);
+        assert!(matches!(cx.on_event(started(23), &mut seen), Next::Nothing));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_user_cancel_after_the_watchdog_decided_still_wins() {
+        let dir = scratch("drive-cancel-after-restart");
+        let (db, id) = db_with_row(Backend::Codex, &dir, Some("d-7:N7"));
+        let job = job(&id, Backend::Codex, &dir, Some("d-7:N7"));
+        let ct = CancellationToken::new();
+        let attempt_ct = ct.child_token();
+        let attempts = StdMutex::new(Vec::new());
+        let cx = Consumer {
+            db: &db,
+            job: &job,
+            ct: &ct,
+            attempt_ct: &attempt_ct,
+            attempts: &attempts,
+            restart_after: Some(Duration::ZERO),
+            locate: never_found,
+        };
+        let (tx, rx) = unbounded_channel();
+        let chain = async {
+            lock(&attempts).push(Attempt {
+                nonce: Some("d-7:N7".into()),
+                spawn_time: Some(SystemTime::now()),
+                ..Attempt::default()
+            });
+            let _ = tx.send(started(std::process::id()));
+            // The watchdog decides to restart and cancels the attempt ...
+            attempt_ct.cancelled().await;
+            assert!(!ct.is_cancelled());
+            // ... then dispatch_cancel fires before the chain returns.
+            ct.cancel();
+            let _ = tx.send(RunEvent::Finished(Outcome::Cancelled));
+            FallbackOutcome {
+                outcome: Outcome::Cancelled,
+                model: Some("m1".into()),
+                discarded: Vec::new(),
+            }
+        };
+        assert!(drive_bounded(&cx, chain, rx).await.is_none());
+        let r = row(&db, &id);
+        assert_eq!(r.status, store::STATUS_CANCELLED);
+        assert_eq!(
+            r.error.as_deref(),
+            Some("cancelled by request; the backend process group was killed")
+        );
+        let conn = db.lock().unwrap();
+        assert_eq!(store::restart_successor(&conn, &id).unwrap(), None);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_attempt_that_exited_keeps_its_record_over_a_restart() {
+        let dir = scratch("drive-exit-over-restart");
+        let (db, id) = db_with_row(Backend::Codex, &dir, Some("d-9:N9"));
+        let job = job(&id, Backend::Codex, &dir, Some("d-9:N9"));
+        let ct = CancellationToken::new();
+        let attempt_ct = ct.child_token();
+        let attempts = StdMutex::new(Vec::new());
+        let cx = Consumer {
+            db: &db,
+            job: &job,
+            ct: &ct,
+            attempt_ct: &attempt_ct,
+            attempts: &attempts,
+            restart_after: Some(Duration::ZERO),
+            locate: never_found,
+        };
+        let (tx, rx) = unbounded_channel();
+        let chain = async {
+            lock(&attempts).push(Attempt {
+                nonce: Some("d-9:N9".into()),
+                spawn_time: Some(SystemTime::now()),
+                ..Attempt::default()
+            });
+            let _ = tx.send(started(std::process::id()));
+            // The watchdog decides to restart, but the process had already
+            // exited on its own: the run reports its record.
+            attempt_ct.cancelled().await;
+            let done = record(true, "real result", "");
+            let _ = tx.send(RunEvent::Finished(done.clone()));
+            FallbackOutcome {
+                outcome: done,
+                model: Some("m1".into()),
+                discarded: Vec::new(),
+            }
+        };
+        assert!(drive_bounded(&cx, chain, rx).await.is_none());
+        assert!(
+            attempt_ct.is_cancelled(),
+            "the watchdog did decide to restart"
+        );
+        let r = row(&db, &id);
+        assert_eq!(r.status, store::STATUS_SUCCEEDED);
+        assert_eq!(r.result.as_deref(), Some("real result"));
+        let conn = db.lock().unwrap();
+        assert_eq!(store::restart_successor(&conn, &id).unwrap(), None);
+        drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
