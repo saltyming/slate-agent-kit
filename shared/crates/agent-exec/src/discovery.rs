@@ -34,8 +34,14 @@ pub fn which(binary: &str) -> Option<PathBuf> {
 /// is missing, fails to run or prints nothing. The probe is short-lived and is
 /// not guarded.
 pub async fn version(backend: Backend, reentry: &Reentry) -> Option<String> {
-    let _ = which(backend.binary())?;
-    let mut cmd = Command::new(backend.binary());
+    version_of(backend.binary(), reentry).await
+}
+
+/// [`version`] for a CLI named by its binary, for a caller that also reports
+/// a CLI this crate does not run as a [`Backend`].
+pub async fn version_of(binary: &str, reentry: &Reentry) -> Option<String> {
+    let _ = which(binary)?;
+    let mut cmd = Command::new(binary);
     cmd.arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

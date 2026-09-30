@@ -13,18 +13,14 @@
 //! dispatch rule and preferences file.
 
 mod backend;
-mod errkind;
 mod executor;
 mod lenient;
+mod liveness;
 mod opencode;
 mod params;
-#[cfg(unix)]
-mod pdeath_guard;
 mod render;
 mod rollout;
 mod store;
-#[cfg(windows)]
-mod winjob;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -45,6 +41,7 @@ use rmcp::{
 use serde_json::{Value, json};
 
 use backend::Backend;
+use liveness::process_alive;
 use params::{
     BackendsParams, CancelParams, ListParams, LogsParams, StatusParams, SteerParams, SubmitParams,
 };
@@ -367,7 +364,7 @@ impl Dispatch {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let mut report = Vec::new();
         for b in Backend::all() {
-            let entry = match backend::which(b.binary()) {
+            let entry = match agent_exec::which(b.binary()) {
                 Some(path) => {
                     let ver = backend::version(*b)
                         .await
@@ -730,8 +727,9 @@ impl Dispatch {
     }
 
     /// Observability fields for status/wait responses. For an ACTIVE row:
-    /// `child_process_alive` (the spawned process-group leader — on Unix the
-    /// pdeath guard, which lives exactly as long as the backend subtree),
+    /// `child_process_alive` (the spawned process-group leader — on Linux and
+    /// macOS the `agent-guard` process, which lives exactly as long as the
+    /// backend subtree),
     /// `log_associated`, and `log_last_write_age_seconds` (mtime age of the
     /// associated backend log — a liveness-of-output signal, NOT proof of
     /// semantic progress or of a hang: a live process with an old log may be
@@ -839,13 +837,13 @@ impl Dispatch {
     fn locate_validated(&self, row: &store::TaskRow) -> Option<(PathBuf, String)> {
         if row.backend == "claude" {
             let sid = row.session_id.as_deref().filter(|s| !s.is_empty())?;
-            let p = rollout::claude_session_path(Path::new(&row.working_dir), sid);
+            let p = harness_log::claude::claude_session_path(Path::new(&row.working_dir), sid);
             if p.exists() {
                 return Some((p, sid.to_string()));
             }
             // Slug-formula miss (Claude's exact slugging has edge cases) —
             // find the pinned sid's file wherever Claude put it.
-            return rollout::find_claude_session(sid).map(|p| (p, sid.to_string()));
+            return harness_log::claude::find_claude_session(sid).map(|p| (p, sid.to_string()));
         }
         if let Some(n) = row.nonce.as_deref().filter(|n| !n.is_empty()) {
             return rollout::locate_by_nonce(Path::new(&row.working_dir), n);
@@ -856,7 +854,9 @@ impl Dispatch {
                 .session_id
                 .as_deref()
                 .filter(|s| !s.is_empty())
-                .and_then(|sid| rollout::locate_by_session_id(sid).map(|p| (p, sid.to_string())));
+                .and_then(|sid| {
+                    harness_log::codex::locate_by_session_id(sid).map(|p| (p, sid.to_string()))
+                });
         }
         rollout::locate_new_by_cwd(
             Path::new(&row.working_dir),
@@ -1036,7 +1036,7 @@ fn err_struct(code: ErrCode, msg: impl Into<String>) -> CallToolResult {
 /// `backend → dispatch → backend → …` recursion. A dispatch backend consulting
 /// *aside* is deliberately unaffected (that path uses a separate marker).
 fn reentry_refusal() -> Option<CallToolResult> {
-    let depth = backend::reentry_depth();
+    let depth = agent_exec::reentry::depth(backend::REENTRY_ENV);
     if depth >= backend::REENTRY_CEILING {
         Some(err_struct(
             ErrCode::Reentrant,
@@ -1044,7 +1044,7 @@ fn reentry_refusal() -> Option<CallToolResult> {
                 "this dispatch server is running inside a dispatch-spawned backend ({}={}); \
                  nested dispatch runs are refused to prevent recursive backend spawning. Do the \
                  work in the current backend session instead.",
-                backend::REENTRY_DEPTH_ENV,
+                backend::REENTRY_ENV,
                 depth
             ),
         ))
@@ -1270,33 +1270,6 @@ fn parse_extra_roots() -> Vec<PathBuf> {
     }
 }
 
-#[cfg(unix)]
-fn process_alive(pid: i32) -> bool {
-    if pid <= 0 {
-        return false;
-    }
-    // kill(pid, 0): 0 => alive & signalable; EPERM => alive but not ours; ESRCH => dead.
-    if unsafe { libc::kill(pid, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(windows)]
-fn process_alive(pid: i32) -> bool {
-    if pid <= 0 {
-        return false;
-    }
-    winjob::process_alive(pid as u32)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn process_alive(_pid: i32) -> bool {
-    // No portable liveness check; assume alive so a peer server's tasks are never
-    // clobbered. A crashed non-unix server may leave a stale 'running' row.
-    true
-}
-
 /// Boot reconciliation: a freshly started server owns no running child, so any
 /// `queued`/`running` row whose owner process is gone is stranded — mark it
 /// interrupted. Rows owned by a still-live peer server are left untouched.
@@ -1390,19 +1363,8 @@ impl ServerHandler for Dispatch {
 
 // ── main ──────────────────────────────────────────────────
 
-/// Sync entrypoint: argv-sniffs for the hidden `__pdeath_guard` re-invocation
-/// (Linux/macOS only — see `pdeath_guard`) BEFORE booting Tokio, since guard
-/// mode never needs an async runtime and stays deliberately minimal-surface.
-/// Everything else boots Tokio and runs the real server unchanged.
+/// Boots Tokio and runs the server.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(unix)]
-    {
-        let mut args = std::env::args_os();
-        let _argv0 = args.next();
-        if args.next().as_deref() == Some(std::ffi::OsStr::new("__pdeath_guard")) {
-            return pdeath_guard::run(args);
-        }
-    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -1478,8 +1440,8 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Resolves on Ctrl+C (all platforms) or SIGTERM (Unix only) — the
 /// interceptable-termination cases. Does nothing for a hard `SIGKILL`, which
-/// the native per-platform mechanisms (`pdeath_guard` on Linux/macOS, Job
-/// Objects on Windows — see those modules) exist specifically to cover.
+/// the parent-death guard (`agent-guard` on Linux/macOS, Job Objects on
+/// Windows — see `agent_exec::guard`) exists specifically to cover.
 #[cfg(unix)]
 async fn shutdown_signal() {
     use tokio::signal::unix::{SignalKind, signal};

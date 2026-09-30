@@ -30,11 +30,12 @@ mod spec;
 
 pub use argv::command;
 pub use capture::{Cap, CapturePolicy, Keep, Unit};
-pub use discovery::{install_hint, version, which};
+pub use discovery::{install_hint, version, version_of, which};
 pub use errkind::BackendErrorKind;
 pub use failure::{FailureTextPolicy, failure_text};
 pub use harness_log::{Usage, UsageSource};
 pub use run::{
-    DiscardedAttempt, FallbackOutcome, Outcome, RunEvent, RunRecord, run, run_with_fallback,
+    AttemptResult, DiscardedAttempt, FallbackOutcome, Outcome, RunEvent, RunRecord, fallback_chain,
+    run, run_with_fallback,
 };
 pub use spec::{Backend, GuardMode, Isolation, OutputMode, Reentry, RunSpec, Sandbox};

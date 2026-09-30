@@ -40,7 +40,8 @@ Entry points
 
 Release assets
   ``slate-setup-<target>`` and ``palette-<target>`` archives beside the aside
-  and dispatch archives, listed in the release's ``checksums.txt``.
+  and dispatch archives, and ``agent-guard-<target>`` for the Linux and macOS
+  targets, listed in the release's ``checksums.txt``.
 
 Kit payload
 ~~~~~~~~~~~
@@ -161,7 +162,8 @@ Install steps
 3. Summarize and confirm.
 4. Legacy cleanup for every entry in ``legacy`` (below) and for binaries and
    registrations that earlier installers left elsewhere.
-5. Binaries: aside, dispatch and palette into the binary folder.
+5. Binaries: aside, dispatch and palette into the binary folder and, on Linux
+   and macOS, ``agent-guard`` beside them.
 6. Payload files: primary file, rules and skills; for ``concat`` the combined
    primary file.
 7. Prefs files and custom rules.
@@ -175,7 +177,16 @@ Binaries
   uses the latest release and says so. Every archive is checked against the
   release's ``checksums.txt``; a mismatch aborts; a missing checksum file warns.
 - ``build`` runs ``cargo build --release -p aside -p dispatch -p palette`` in
-  ``--slate-dir``.
+  ``--slate-dir``, and on Linux and macOS then ``cargo build --release -p
+  agent-exec --bin agent-guard``.
+- ``agent-guard`` is the executable aside and dispatch start their backends
+  through on Linux and macOS. It is installed, replaced and recorded like a
+  server binary and is never registered with a harness. ``prebuilt`` downloads
+  ``agent-guard-<target>.tar.gz`` and checks it like the others; a release
+  that does not carry it installs the servers and adds one warning that
+  dispatch refuses to start backends and aside runs unguarded until a release
+  that ships it is installed; a checksum entry for an asset that is absent is
+  an error. Nothing is installed for it on Windows.
 - ``skip`` installs no binary and registers nothing.
 - A binary is replaced by writing a temporary file and renaming it over the
   old one, so a running server keeps its old file; on macOS the new file is
@@ -286,7 +297,8 @@ Uninstall
   removes it if it did not exist, but only when its current value is still the
   one the installer wrote; otherwise it reports the key and leaves it.
 - Removes a binary only when no other kit's manifest in any harness home lists
-  it.
+  it; ``agent-guard`` also stays while another kit's manifest lists aside or
+  dispatch.
 - Runs the legacy cleanups.
 
 Legacy cleanup

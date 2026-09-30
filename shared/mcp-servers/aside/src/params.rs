@@ -13,8 +13,8 @@ use serde::Deserialize;
 
 /// Parameters for `aside_codex` / `aside_claude`.
 ///
-/// Both tools share this schema. Backend-specific behaviour (argv
-/// construction, prompt transport) lives in `crate::backend`.
+/// Both tools share this schema. Backend-specific behaviour (isolation,
+/// output mode) lives in `crate::spec`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 pub struct AskParams {
     /// The question to put to the backend. Required.

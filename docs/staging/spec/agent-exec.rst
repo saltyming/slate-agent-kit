@@ -191,7 +191,8 @@ Functions
   shims.
 - ``version(backend, reentry)`` runs ``<binary> --version`` with the given
   re-entry marker stamped and returns its first non-empty output, else
-  ``None``.
+  ``None``; ``version_of(binary, reentry)`` does the same for a CLI named by
+  its binary.
 - ``install_hint(backend)`` returns one line telling how to install the CLI.
 - ``run(spec, events, ct)`` performs one attempt and returns its ``Outcome``,
   after sending ``Started`` and ``Finished``.
@@ -204,6 +205,11 @@ Functions
   model that produced it and the discarded attempts (model, kind, the first
   2,000 characters of the failure text). A ``Cancelled`` outcome ends the
   chain.
+- ``fallback_chain(attempt, models, events, ct)`` is the same chain for an
+  attempt that is not a ``RunSpec`` (dispatch's opencode runner): ``attempt(
+  index, model)`` performs one attempt, reports through ``events`` itself and
+  returns its outcome with its failure text; ``run_with_fallback`` is built on
+  it.
 - ``errkind::classify(text)`` returns ``BackendErrorKind``: ``RateLimited``,
   ``QuotaOrBilling``, ``ModelUnavailable``, ``AuthOrPermission`` or ``Other``;
   the first three are retry-worthy. The text of a ``Spawn`` or ``WaitFailed``

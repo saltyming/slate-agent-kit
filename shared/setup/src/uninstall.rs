@@ -8,6 +8,7 @@
 //!
 //! Main entry points: [`plan`], [`print_summary`] and [`apply`].
 
+use crate::binaries;
 use crate::config::ConfigRecord;
 use crate::created;
 use crate::env::{Env, Harness};
@@ -100,6 +101,24 @@ fn all_homes(env: &Env, kit: &Kit) -> Vec<PathBuf> {
     homes
 }
 
+/// Why a kept binary is kept, for the plan: the guard is also kept for kits that list only its servers.
+fn keep_reason(binary: &Path) -> &'static str {
+    if binaries::is_guard(binary) {
+        "also listed, or needed by a server listed, by"
+    } else {
+        "also listed by"
+    }
+}
+
+/// Why a kept binary is kept, for the report.
+fn keep_note(binary: &Path) -> &'static str {
+    if binaries::is_guard(binary) {
+        "also lists it or a server that needs it"
+    } else {
+        "also lists it"
+    }
+}
+
 /// Builds the uninstall plan from the manifest.
 pub fn plan(env: &Env, kit: &Kit, remove_user: bool) -> Plan {
     let mut plan = Plan {
@@ -138,7 +157,7 @@ pub fn plan(env: &Env, kit: &Kit, remove_user: bool) -> Plan {
         if !b.exists() {
             continue;
         }
-        let others = other_manifests_listing(&homes, &own, b);
+        let others = other_manifests_listing(&homes, &own, &binaries::keepers_of(env, b));
         match others.into_iter().next() {
             Some(o) => plan.binaries_keep.push((b.clone(), o)),
             None => plan.binaries_remove.push(b.clone()),
@@ -244,8 +263,9 @@ pub fn print_summary(ui: &mut Ui, kit: &Kit, plan: &Plan) {
         }
         for (b, by) in &plan.binaries_keep {
             ui.line(&format!(
-                "    keep {} (also listed by {})",
+                "    keep {} ({} {})",
                 b.display(),
+                keep_reason(b),
                 by.display()
             ));
         }
@@ -340,9 +360,10 @@ fn run_steps(env: &Env, ui: &mut Ui, kit: &Kit, plan: &Plan, report: &mut Report
     }
     for (b, by) in &plan.binaries_keep {
         report.note(format!(
-            "{} was kept: {} also lists it",
+            "{} was kept: {} {}",
             b.display(),
-            by.display()
+            by.display(),
+            keep_note(b)
         ));
     }
 

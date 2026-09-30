@@ -1,95 +1,43 @@
-//! Backend CLI adapters for dispatch.
+//! The coding-agent backends dispatch delegates to, and dispatch's spawn policy
+//! for the two that run as processes.
 //!
 //! Unlike `aside` (read-only Q&A), dispatch runs the backend **write-capable**:
 //! codex executes in `-s workspace-write` and may modify files in the target
-//! directory. The argv template per backend is localised in `build_command`, so
-//! future CLI syntax drift is a single-site change; a future agent is a new
-//! `Backend` variant plus one match arm.
+//! directory. codex and claude are started through the `agent-exec` crate, which
+//! owns lookup, argv, spawning under the parent-death guard, capture and the
+//! fallback loop; this module only chooses the [`agent_exec::RunSpec`] values
+//! ([`run_spec`]). opencode is driven over HTTP by `opencode.rs`.
 //!
-//! This module owns the subprocess mechanics — command construction, spawn,
-//! capped stdout/stderr capture, process-group teardown on cancel. The
-//! orchestration around it (the cancellation registry, the SQLite write-back)
-//! lives in `executor.rs`, which is backend-agnostic.
-//!
-//! There is intentionally no wall-clock timeout — a delegated step can take
-//! many minutes. Cancellation is explicit via `dispatch_cancel`, which fires
-//! the `CancellationToken` this module selects on.
+//! Anti-recursion: every process dispatch spawns carries
+//! [`REENTRY_ENV`] at this server's depth plus one, and `dispatch_submit` /
+//! `dispatch_steer` refuse at [`REENTRY_CEILING`]. That covers **claude** and
+//! **opencode**, which pass their process env to the MCP servers they boot.
+//! **codex** launches MCP servers with a clean env, so the marker never reaches a
+//! codex-booted dispatch; codex is instead guarded, fail-closed, by disabling the
+//! `dispatch` MCP server on its command line
+//! (`Isolation::DisableMcpServer("dispatch")`). A dispatch backend calling
+//! *aside* stays allowed (a different marker, and aside is left enabled); only
+//! dispatch→dispatch is blocked.
 
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::Path;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
-use tokio_util::sync::CancellationToken;
-
-/// stdout cap: dispatched runs are agent transcripts and can be verbose, so this
-/// is larger than aside's 50 KB. Overflow is drained (so the child never blocks
-/// on a full pipe) but discarded, and a truncation marker is recorded.
-const MAX_STDOUT: usize = 200 * 1024;
-const MAX_STDERR: usize = 16 * 1024;
+use agent_exec::{
+    CapturePolicy, FailureTextPolicy, GuardMode, Isolation, OutputMode, Reentry, RunSpec, Sandbox,
+};
 
 /// Env var marking that this dispatch server is running inside a
-/// dispatch-spawned backend.
-///
-/// A top-level call has it unset (depth 0). Every backend dispatch spawns
-/// carries the incremented value; if the backend passes its process env down to
-/// the `dispatch` MCP server it boots from its config, that nested dispatch sees
-/// the marker and `dispatch_submit` / `dispatch_steer` refuse the call.
-///
-/// This works for **claude** and **opencode** (both forward process env to their
-/// MCP children — verified empirically). It does NOT work for **codex**, which
-/// launches MCP servers with a clean env plus only their configured `env` table,
-/// so the marker never reaches a codex-booted dispatch server. codex is therefore
-/// guarded separately, fail-closed, by `-c mcp_servers.dispatch.enabled=false` on
-/// its spawn (see `build_command`'s codex arm) — the marker below is the guard
-/// for the other two backends and defense-in-depth generally. A dispatch backend
-/// calling *aside* stays allowed (a different marker, and aside is left enabled);
-/// only dispatch→dispatch is blocked.
-pub(crate) const REENTRY_DEPTH_ENV: &str = "DISPATCH_REENTRY_DEPTH";
+/// dispatch-spawned backend. A top-level call has it unset (depth 0).
+pub(crate) const REENTRY_ENV: &str = "DISPATCH_REENTRY_DEPTH";
 
 /// Depth at or above which a submit/steer is refused. `1` = no nesting.
 pub(crate) const REENTRY_CEILING: u32 = 1;
 
-/// Parse a re-entry depth from the raw env value. Fail-closed: unset/empty is a
-/// legitimate top-level call (0); a present-but-malformed value is treated as
-/// past the ceiling (`u32::MAX`) so a corrupt marker refuses rather than
-/// silently permitting recursion.
-fn parse_reentry_depth(raw: Option<&str>) -> u32 {
-    match raw {
-        None => 0,
-        Some(s) if s.trim().is_empty() => 0,
-        Some(s) => s.trim().parse::<u32>().unwrap_or(u32::MAX),
+/// dispatch's re-entry marker, as stamped on every spawned process.
+pub(crate) fn reentry() -> Reentry {
+    Reentry {
+        name: REENTRY_ENV.to_string(),
+        ceiling: REENTRY_CEILING,
     }
-}
-
-/// Current re-entry depth, read from the environment. Uses `var_os` so a
-/// present-but-non-Unicode value fails closed (`u32::MAX`) instead of being
-/// misread as unset (which `env::var().ok()` would do).
-pub(crate) fn reentry_depth() -> u32 {
-    depth_from_env(std::env::var_os(REENTRY_DEPTH_ENV).as_deref())
-}
-
-/// Pure core of `reentry_depth`, split out for testing: unset → 0; valid Unicode
-/// → `parse_reentry_depth`; present-but-non-Unicode (malformed) → `u32::MAX`.
-fn depth_from_env(raw: Option<&std::ffi::OsStr>) -> u32 {
-    match raw {
-        None => 0,
-        Some(v) => match v.to_str() {
-            Some(s) => parse_reentry_depth(Some(s)),
-            None => u32::MAX,
-        },
-    }
-}
-
-/// Stamp the next depth (current + 1, saturating) on a spawned child so the
-/// backend — and anything it spawns, including a nested dispatch server — inherits
-/// the marker. Called for every backend spawn path (codex/claude via
-/// `spawn_child`, opencode via `opencode::spawn_server`).
-pub(crate) fn stamp_reentry_depth(cmd: &mut Command) {
-    cmd.env(
-        REENTRY_DEPTH_ENV,
-        reentry_depth().saturating_add(1).to_string(),
-    );
 }
 
 /// Which coding-agent CLI we delegate to.
@@ -127,503 +75,85 @@ impl Backend {
     pub fn all() -> &'static [Backend] {
         &[Backend::Codex, Backend::Opencode, Backend::Claude]
     }
+
+    /// The `agent-exec` process backend, or `None` for opencode (driven over
+    /// HTTP by `opencode.rs`).
+    pub fn process(&self) -> Option<agent_exec::Backend> {
+        match self {
+            Backend::Codex => Some(agent_exec::Backend::Codex),
+            Backend::Claude => Some(agent_exec::Backend::Claude),
+            Backend::Opencode => None,
+        }
+    }
 }
 
-/// Everything `build_command` needs except the prompt (which is written to the
-/// child's stdin, not passed on argv).
-pub struct SpawnSpec<'a> {
+/// Ask the backend CLI for its `--version` string, with the re-entry marker
+/// stamped. Returns `None` if missing.
+pub async fn version(backend: Backend) -> Option<String> {
+    match backend.process() {
+        Some(b) => agent_exec::version(b, &reentry()).await,
+        None => crate::opencode::version(&reentry()).await,
+    }
+}
+
+/// What one codex or claude attempt of a job runs with, besides the backend.
+pub struct AttemptSpec<'a> {
+    /// The canonical working directory: the process directory and codex `-C`.
     pub working_dir: &'a Path,
+    /// The job's sandbox string (`read-only`, `workspace-write`,
+    /// `danger-full-access`); the danger ceiling was applied at submit.
     pub sandbox: &'a str,
+    /// The attempt's model; `None` is the backend default.
     pub model: Option<&'a str>,
+    /// Codex `model_reasoning_effort`; claude `--effort`.
     pub reasoning_effort: Option<&'a str>,
+    /// Codex `--skip-git-repo-check`.
     pub skip_git_repo_check: bool,
-    /// When `Some(session_id)`, continue an existing backend session
-    /// (`codex exec resume <id>` / `claude -p --resume <id> --fork-session`)
-    /// instead of starting a fresh one — the basis of `dispatch_steer`. The
+    /// Continue this backend session (`dispatch_steer`): codex
+    /// `exec resume <id>`, claude `--resume <id> --fork-session`. The
     /// accumulated conversation context is preserved.
     pub resume_session: Option<&'a str>,
-    /// Claude only: pin the (new) session id via `--session-id <uuid>` so the
-    /// session log path under `~/.claude/projects/` is deterministic — no
-    /// discovery/polling needed. Ignored by other backends.
+    /// Claude only: the attempt's pinned session id (`--session-id`), so its
+    /// session log path under `~/.claude/projects/` is known in advance.
     pub pin_session: Option<&'a str>,
+    /// The backend's `--version`, probed at boot, recorded with the run.
+    pub backend_version: Option<&'a str>,
 }
 
-/// Build the `Command` for a backend. stdio, process group, and kill_on_drop are
-/// configured by `spawn_child`. Returns the command plus the argv vector (for
-/// audit recording). The prompt is intentionally absent from argv.
-pub fn build_command(backend: Backend, spec: &SpawnSpec) -> (Command, Vec<String>) {
-    match backend {
-        Backend::Codex => {
-            // codex -C <dir> -s <sandbox> -a never [-m MODEL] [-c model_reasoning_effort=EFF]
-            //       -c mcp_servers.dispatch.enabled=false
-            //       exec [resume <sid>] [--skip-git-repo-check]   (prompt on stdin)
-            //   -C <dir>:     working root, set explicitly (and recorded in argv) to match
-            //                 the cmd.current_dir below — so the rollout's cwd is unambiguous.
-            //   -s <sandbox>: workspace-write lets codex edit files under cwd; read-only is
-            //                 read-only; danger-full-access drops the sandbox (server-gated).
-            //   -a never:     non-interactive — never pause for an approval prompt.
-            //   -c mcp_servers.dispatch.enabled=false: disable the `dispatch` MCP server in the
-            //                 spawned codex so it cannot re-invoke dispatch (fork-bomb recursion).
-            //                 codex does NOT pass its process env to the MCP servers it boots
-            //                 (verified empirically), so the DISPATCH_REENTRY_DEPTH marker never
-            //                 reaches a codex-booted dispatch server — this config override is the
-            //                 fail-closed guard for the codex backend specifically (claude and
-            //                 opencode DO propagate env, so the marker covers them). `aside` is
-            //                 left enabled: a dispatch backend may still consult it (a legitimate
-            //                 read-only cross-surface call).
-            //   exec:         non-interactive subcommand. With no positional PROMPT, codex reads
-            //                 instructions from stdin, which dodges OS argv-length limits.
-            //   --skip-git-repo-check: permit running when working_dir is not a git repo.
-            let mut args: Vec<String> = vec![
-                "-C".into(),
-                spec.working_dir.to_string_lossy().into_owned(),
-                "-s".into(),
-                spec.sandbox.into(),
-                "-a".into(),
-                "never".into(),
-            ];
-            if let Some(m) = spec.model {
-                args.push("-m".into());
-                args.push(m.into());
-            }
-            if let Some(eff) = spec.reasoning_effort {
-                args.push("-c".into());
-                args.push(format!("model_reasoning_effort={}", eff));
-            }
-            // Fail-closed anti-recursion guard for codex (see comment above). A top-level `-c`
-            // config override, so it precedes `exec` like the reasoning-effort override.
-            args.push("-c".into());
-            args.push("mcp_servers.dispatch.enabled=false".into());
-            args.push("exec".into());
-            if let Some(sid) = spec.resume_session {
-                // codex exec resume <session_id>: continue the prior session with the
-                // new prompt (on stdin), preserving its accumulated context.
-                args.push("resume".into());
-                args.push(sid.into());
-            }
-            if spec.skip_git_repo_check {
-                args.push("--skip-git-repo-check".into());
-            }
-
-            let mut cmd = Command::new(backend.binary());
-            cmd.args(&args);
-            cmd.current_dir(spec.working_dir);
-
-            let mut argv = vec![backend.binary().to_string()];
-            argv.extend(args);
-            (cmd, argv)
-        }
-        Backend::Claude => {
-            // claude -p [--permission-mode …|--dangerously-skip-permissions]
-            //        [--model M] [--effort E] [--resume SID --fork-session]
-            //        --session-id <uuid>   (prompt on stdin, final text on stdout)
-            //
-            // Sandbox is a policy mapping (like OpenCode's permission rules; Claude
-            // Code has no OS-level dispatch sandbox):
-            //   read-only        → --permission-mode plan (no edits, no state-changing
-            //                      commands)
-            //   workspace-write  → --permission-mode acceptEdits + Bash allowlisted:
-            //                      edits inside working_dir auto-accepted, edits
-            //                      outside it prompt → auto-denied headless; commands
-            //                      may run (parity with OpenCode's workspace-write,
-            //                      which also allows bash while denying
-            //                      external-directory edits)
-            //   danger-full-access → --dangerously-skip-permissions (server-gated)
-            //
-            // --resume <sid> --fork-session --session-id <new>: verified live — a
-            // steered run continues the parent conversation under a NEW pinned id
-            // (--session-id alongside --resume requires --fork-session).
-            let mut args: Vec<String> = vec!["-p".into()];
-            match spec.sandbox {
-                "read-only" => {
-                    args.push("--permission-mode".into());
-                    args.push("plan".into());
-                }
-                "danger-full-access" => {
-                    args.push("--dangerously-skip-permissions".into());
-                }
-                _ => {
-                    args.push("--permission-mode".into());
-                    args.push("acceptEdits".into());
-                    args.push("--allowedTools".into());
-                    args.push("Bash".into());
-                }
-            }
-            if let Some(m) = spec.model {
-                args.push("--model".into());
-                args.push(m.into());
-            }
-            if let Some(eff) = spec.reasoning_effort {
-                // claude --effort accepts low/medium/high/xhigh/max — pass through.
-                args.push("--effort".into());
-                args.push(eff.into());
-            }
-            if let Some(sid) = spec.resume_session {
-                args.push("--resume".into());
-                args.push(sid.into());
-                args.push("--fork-session".into());
-            }
-            if let Some(pin) = spec.pin_session {
-                args.push("--session-id".into());
-                args.push(pin.into());
-            }
-
-            let mut cmd = Command::new(backend.binary());
-            cmd.args(&args);
-            cmd.current_dir(spec.working_dir);
-
-            let mut argv = vec![backend.binary().to_string()];
-            argv.extend(args);
-            (cmd, argv)
-        }
-        Backend::Opencode => unreachable!("opencode dispatch uses the server API runner"),
-    }
-}
-
-/// A spawned child plus the data the executor needs to record `running`.
-pub struct Spawned {
-    pub child: tokio::process::Child,
-    pub child_pid: Option<u32>,
-    pub argv: Vec<String>,
-}
-
-/// Outcome of awaiting a spawned child to completion (or cancellation).
-pub enum RunOutcome {
-    Done {
-        exit_code: Option<i32>,
-        success: bool,
-        stdout: String,
-        stdout_total: usize,
-        stdout_truncated: bool,
-        stderr: String,
-        stderr_truncated: bool,
-    },
-    /// The child was killed because the cancellation token fired.
-    Cancelled,
-    /// Awaiting the child's exit status failed (rare; not a spawn failure).
-    WaitFailed(String),
-}
-
-/// Wraps a fully-built backend argv in a `dispatch __pdeath_guard <dispatch_pid>
-/// -- <argv...>` re-invocation of the current `dispatch` binary, so the guard
-/// (not the real backend) becomes the pgid leader `spawn_child` puts in its own
-/// process group. See `pdeath_guard.rs` for why a guard process is needed
-/// instead of a bare `PR_SET_PDEATHSIG` on the backend directly.
-#[cfg(unix)]
-pub(crate) fn wrap_with_guard(argv: &[String], working_dir: &Path) -> Result<Command, String> {
-    let self_exe = std::env::current_exe()
-        .map_err(|e| format!("resolve current_exe for pdeath_guard failed: {e}"))?;
-    let mut cmd = Command::new(self_exe);
-    cmd.arg("__pdeath_guard")
-        .arg(std::process::id().to_string())
-        .arg("--")
-        .args(argv);
-    cmd.current_dir(working_dir);
-    Ok(cmd)
-}
-
-/// Assigns `child` to a kill-on-close Job Object (`winjob::protect`), or on
-/// failure kills `child` and returns an error. Job Object setup failure is
-/// treated as fatal, not soft-logged — silently continuing would leave
-/// write-capable work running with no orphan protection at all (the same
-/// posture as `spawn_child` already failing outright when the binary is
-/// missing from PATH).
-#[cfg(windows)]
-pub(crate) fn protect_or_kill(
-    child: &mut tokio::process::Child,
-    pid: Option<u32>,
-    label: &str,
-) -> Result<(), String> {
-    let (pid, handle) = match (pid, child.raw_handle()) {
-        (Some(pid), Some(handle)) => (pid, handle),
-        _ => {
-            let _ = child.start_kill();
-            return Err(format!(
-                "Job Object setup for {label} failed: missing pid/handle"
-            ));
-        }
-    };
-    if let Err(e) = crate::winjob::protect(pid, handle as windows_sys::Win32::Foundation::HANDLE) {
-        let _ = child.start_kill();
-        return Err(format!("Job Object setup for {label} failed: {e}"));
-    }
-    Ok(())
-}
-
-/// Spawn the backend child: pipe stdio, put it in its own process group (so the
-/// whole subtree can be torn down on cancel), arm `kill_on_drop`, and stream the
-/// rendered prompt to stdin in a detached writer (a large prompt can't deadlock
-/// against the child filling stdout). Returns immediately after spawn.
+/// dispatch's `RunSpec` for one codex or claude attempt: codex with only the
+/// `dispatch` MCP server disabled, claude with the sandbox's permission mapping
+/// (read-only → plan; workspace-write → acceptEdits + Bash; danger-full-access →
+/// skip permissions), no output-format flags, dispatch's capture and
+/// failure-text policies, and the guard required. The prompt travels on stdin.
 ///
-/// On Unix, the actual OS-level child spawned here is a hidden
-/// `dispatch __pdeath_guard` re-invocation, not the real backend directly — the
-/// guard spawns the real backend as ITS OWN child once armed, so the whole
-/// subtree dies with dispatch even under a hard `SIGKILL` of dispatch itself.
-/// `Spawned.argv` still reports the real backend's argv (not the guard's
-/// wrapper argv) since that's what's meaningful for `dispatch_status`/logs; only
-/// the recorded `child_pid` refers to the guard on Unix — see `pdeath_guard.rs`.
-pub fn spawn_child(backend: Backend, spec: &SpawnSpec, prompt: &str) -> Result<Spawned, String> {
-    if which(backend.binary()).is_none() {
-        return Err(format!(
-            "backend `{}` not found on PATH — {}",
-            backend.binary(),
-            install_hint(backend)
-        ));
-    }
-
-    let (built_cmd, argv) = build_command(backend, spec);
-
-    #[cfg(unix)]
-    let mut cmd = {
-        let _ = built_cmd; // superseded by the guard-wrapped Command below
-        wrap_with_guard(&argv, spec.working_dir)?
+/// A sandbox string outside the three known values runs as workspace-write, the
+/// default dispatch applies at submit.
+pub fn run_spec(backend: agent_exec::Backend, a: &AttemptSpec<'_>, prompt: String) -> RunSpec {
+    let isolation = match backend {
+        agent_exec::Backend::Codex => Isolation::DisableMcpServer("dispatch".to_string()),
+        agent_exec::Backend::Claude => Isolation::Permissions,
     };
-    #[cfg(not(unix))]
-    let mut cmd = built_cmd;
-
-    // Mark the child (and, via env inheritance through the pdeath guard, the real
-    // backend and anything it spawns) as dispatch-spawned, so a nested dispatch
-    // submit/steer from within the backend is refused before it can recurse.
-    stamp_reentry_depth(&mut cmd);
-
-    cmd.stdin(Stdio::piped());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    cmd.kill_on_drop(true);
-    #[cfg(unix)]
-    {
-        // New process group with pgid == child pid, so `kill(-pgid, …)` on cancel
-        // reaps the guard, codex, AND any shells / test runners codex spawned.
-        // kill_on_drop only reaps the direct child.
-        cmd.process_group(0);
-    }
-
-    let mut child = cmd.spawn().map_err(|e| {
-        #[cfg(unix)]
-        {
-            format!("spawn pdeath_guard for {} failed: {}", backend.binary(), e)
-        }
-        #[cfg(not(unix))]
-        {
-            format!("spawn {} failed: {}", backend.binary(), e)
-        }
-    })?;
-    let child_pid = child.id();
-    #[cfg(windows)]
-    protect_or_kill(&mut child, child_pid, backend.binary())?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        let bytes = prompt.as_bytes().to_vec();
-        tokio::spawn(async move {
-            let _ = stdin.write_all(&bytes).await;
-            let _ = stdin.shutdown().await; // close → EOF so codex stops reading
-        });
-    }
-
-    Ok(Spawned {
-        child,
-        child_pid,
-        argv,
-    })
-}
-
-/// Await the child, capturing capped stdout/stderr, or kill its process group if
-/// the cancellation token fires first.
-pub async fn capture(spawned: Spawned, ct: &CancellationToken) -> RunOutcome {
-    let Spawned {
-        mut child,
-        child_pid,
-        argv: _,
-    } = spawned;
-
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let out_task = tokio::spawn(read_capped_opt(stdout, MAX_STDOUT));
-    let err_task = tokio::spawn(read_capped_opt(stderr, MAX_STDERR));
-
-    // Select cancellation against the child's own exit. The cancel arm touches only
-    // the copied `child_pid`, never `child`, so there is no second `&mut child`
-    // borrow; when cancel wins, the `child.wait()` future is dropped *un-reaped*.
-    let status: Option<std::io::Result<std::process::ExitStatus>> = tokio::select! {
-        biased;
-        _ = ct.cancelled() => None,
-        r = child.wait() => Some(r),
-    };
-
-    if status.is_none() {
-        // Cancelled: the child is still LIVE here (wait did not complete), so kill
-        // its whole process group while the pid is unambiguously ours, THEN reap it.
-        // Killing before reaping means the group signal can never hit a reused pgid.
-        if let Some(p) = child_pid {
-            kill_process_group(p);
-        }
-        let _ = child.wait().await;
-    } else if let Some(p) = child_pid {
-        // Natural exit: nothing to kill, but on Windows a Job Object was
-        // registered for this pid in spawn_child — release it (drop closes the
-        // handle) so the registry doesn't grow unboundedly. No-op on Unix,
-        // which has no such registry.
-        release_process_group(p);
-    }
-
-    // Drain the capped readers. Caveat: on a *natural* exit where a descendant
-    // inherited stdout and outlives codex, this await blocks until that descendant
-    // closes the pipe, so the row could linger in `running`. codex `exec` does not
-    // leave lingering daemons, and the cancel path's group-kill closes the fds — so
-    // this is an accepted, documented edge, not a wall-clock timeout.
-    let out = out_task.await.unwrap_or_else(|_| Capped::empty());
-    let err = err_task.await.unwrap_or_else(|_| Capped::empty());
-
-    match status {
-        None => RunOutcome::Cancelled,
-        Some(Ok(st)) => RunOutcome::Done {
-            exit_code: st.code(),
-            success: st.success(),
-            stdout: out.text,
-            stdout_total: out.total,
-            stdout_truncated: out.truncated,
-            stderr: err.text,
-            stderr_truncated: err.truncated,
+    RunSpec {
+        backend,
+        prompt,
+        working_dir: Some(a.working_dir.to_path_buf()),
+        sandbox: Sandbox::parse(a.sandbox).unwrap_or(Sandbox::WorkspaceWrite),
+        isolation,
+        output_mode: OutputMode::Default,
+        capture: CapturePolicy::dispatch(),
+        failure_text: FailureTextPolicy::dispatch(),
+        model: a.model.map(str::to_string),
+        reasoning_effort: a.reasoning_effort.map(str::to_string),
+        resume_session: a.resume_session.map(str::to_string),
+        pin_session: match backend {
+            agent_exec::Backend::Claude => a.pin_session.map(str::to_string),
+            agent_exec::Backend::Codex => None,
         },
-        Some(Err(e)) => RunOutcome::WaitFailed(format!("wait failed: {}", e)),
-    }
-}
-
-// ── capped capture ────────────────────────────────────────
-
-struct Capped {
-    text: String,
-    total: usize,
-    truncated: bool,
-}
-
-impl Capped {
-    fn empty() -> Self {
-        Capped {
-            text: String::new(),
-            total: 0,
-            truncated: false,
-        }
-    }
-}
-
-async fn read_capped_opt<R: AsyncRead + Unpin>(reader: Option<R>, cap: usize) -> Capped {
-    match reader {
-        Some(r) => read_capped(r, cap)
-            .await
-            .unwrap_or_else(|_| Capped::empty()),
-        None => Capped::empty(),
-    }
-}
-
-/// Read a stream into a `cap`-bounded buffer. Bytes past the cap are drained
-/// (kept reading so the child never blocks on a full pipe) but discarded.
-async fn read_capped<R: AsyncRead + Unpin>(mut r: R, cap: usize) -> std::io::Result<Capped> {
-    let mut buf: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 8192];
-    let mut total = 0usize;
-    loop {
-        let n = r.read(&mut chunk).await?;
-        if n == 0 {
-            break;
-        }
-        total += n;
-        if buf.len() < cap {
-            let take = (cap - buf.len()).min(n);
-            buf.extend_from_slice(&chunk[..take]);
-        }
-        // else: drain and discard the overflow.
-    }
-    let truncated = total > buf.len();
-    Ok(Capped {
-        text: String::from_utf8_lossy(&buf).into_owned(),
-        total,
-        truncated,
-    })
-}
-
-// ── process-group teardown ────────────────────────────────
-
-#[cfg(unix)]
-pub(crate) fn kill_process_group(pid: u32) {
-    // `spawn_child` made the child its own group leader (process_group(0)), so the
-    // group id equals the child pid. A negative pid signals the whole group.
-    unsafe {
-        libc::kill(-(pid as i32), libc::SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-pub(crate) fn kill_process_group(pid: u32) {
-    // The Job Object registered for `pid` in spawn_child/spawn_server carries
-    // KILL_ON_JOB_CLOSE, so terminating it kills the whole subtree — the actual
-    // process-group-equivalent behavior, not just the direct child.
-    crate::winjob::terminate(pid);
-}
-
-/// Cleans up any Windows Job Object bookkeeping for `pid` WITHOUT killing
-/// anything — used when the child already exited naturally and there is
-/// nothing left to tear down, only a registry entry to release. A no-op on
-/// Unix, which keeps no such registry (`kill_process_group`'s group-kill there
-/// is fully stateless).
-#[cfg(unix)]
-pub(crate) fn release_process_group(_pid: u32) {}
-
-#[cfg(not(unix))]
-pub(crate) fn release_process_group(pid: u32) {
-    crate::winjob::release(pid);
-}
-
-// ── discovery ─────────────────────────────────────────────
-
-/// Minimal PATH lookup — returns Some(path) if the binary is executable.
-pub fn which(binary: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(binary);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        #[cfg(windows)]
-        {
-            let exe = dir.join(format!("{}.exe", binary));
-            if exe.is_file() {
-                return Some(exe);
-            }
-        }
-    }
-    None
-}
-
-/// Ask the backend CLI for its `--version` string. Returns `None` if missing.
-pub async fn version(backend: Backend) -> Option<String> {
-    let _ = which(backend.binary())?;
-    let output = Command::new(backend.binary())
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .ok()?;
-    let out = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !out.is_empty() {
-        return Some(out);
-    }
-    let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if err.is_empty() { None } else { Some(err) }
-}
-
-pub fn install_hint(backend: Backend) -> String {
-    match backend {
-        Backend::Codex => {
-            "install codex CLI (`npm i -g @openai/codex`; see https://github.com/openai/codex)"
-                .to_string()
-        }
-        Backend::Opencode => "install opencode CLI (see https://opencode.ai/docs/cli/)".to_string(),
-        Backend::Claude => "install Claude Code CLI (`npm i -g @anthropic-ai/claude-code`; see \
-             https://claude.com/claude-code)"
-            .to_string(),
+        skip_git_repo_check: a.skip_git_repo_check,
+        env: Vec::new(),
+        reentry: reentry(),
+        guard: GuardMode::Required,
+        backend_version: a.backend_version.map(str::to_string),
     }
 }
 
@@ -643,131 +173,224 @@ mod tests {
         assert!(Backend::all().contains(&Backend::Claude));
     }
 
-    fn claude_spec<'a>(
+    fn attempt<'a>(
         sandbox: &'a str,
+        model: Option<&'a str>,
+        effort: Option<&'a str>,
         resume: Option<&'a str>,
         pin: Option<&'a str>,
-    ) -> SpawnSpec<'a> {
-        SpawnSpec {
+        skip_git: bool,
+    ) -> AttemptSpec<'a> {
+        AttemptSpec {
             working_dir: Path::new("/w"),
             sandbox,
-            model: Some("haiku"),
-            reasoning_effort: Some("high"),
-            skip_git_repo_check: false,
+            model,
+            reasoning_effort: effort,
+            skip_git_repo_check: skip_git,
             resume_session: resume,
             pin_session: pin,
+            backend_version: Some("1.0"),
         }
     }
 
-    #[test]
-    fn claude_argv_maps_sandbox_and_pins_session() {
-        let (_c, argv) = build_command(
-            Backend::Claude,
-            &claude_spec("workspace-write", None, Some("uuid-1")),
-        );
-        let joined = argv.join(" ");
-        assert!(joined.starts_with("claude -p"));
-        assert!(joined.contains("--permission-mode acceptEdits"));
-        assert!(joined.contains("--allowedTools Bash"));
-        assert!(joined.contains("--model haiku"));
-        assert!(joined.contains("--effort high"));
-        assert!(joined.contains("--session-id uuid-1"));
-        assert!(!joined.contains("--resume"));
+    /// The argv `agent-exec` builds for a spec, binary first.
+    fn argv(backend: agent_exec::Backend, a: &AttemptSpec<'_>) -> Vec<String> {
+        agent_exec::command(&run_spec(backend, a, "prompt".into())).1
+    }
 
-        let (_c, ro) = build_command(Backend::Claude, &claude_spec("read-only", None, Some("u")));
-        assert!(ro.join(" ").contains("--permission-mode plan"));
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
 
-        let (_c, danger) = build_command(
-            Backend::Claude,
-            &claude_spec("danger-full-access", None, Some("u")),
-        );
-        assert!(danger.join(" ").contains("--dangerously-skip-permissions"));
-
-        let (_c, steer) = build_command(
-            Backend::Claude,
-            &claude_spec("workspace-write", Some("old-sid"), Some("new-sid")),
-        );
-        let s = steer.join(" ");
-        assert!(s.contains("--resume old-sid"));
-        assert!(s.contains("--fork-session"));
-        assert!(s.contains("--session-id new-sid"));
+    /// `-C` carries the working dir as rendered by the platform; compare it
+    /// through the same conversion rather than a separator-dependent literal.
+    fn dir() -> String {
+        Path::new("/w").to_string_lossy().into_owned()
     }
 
     #[test]
     fn codex_argv_disables_only_dispatch_mcp_before_exec() {
-        let spec = SpawnSpec {
-            working_dir: Path::new("/w"),
-            sandbox: "workspace-write",
-            model: None,
-            reasoning_effort: None,
-            skip_git_repo_check: false,
-            resume_session: None,
-            pin_session: None,
-        };
-        let (_c, argv) = build_command(Backend::Codex, &spec);
-        let joined = argv.join(" ");
-        // dispatch MCP server disabled (fail-closed guard: codex doesn't propagate
-        // the DISPATCH_REENTRY_DEPTH marker to its MCP children).
-        assert!(
-            joined.contains("-c mcp_servers.dispatch.enabled=false"),
-            "codex must disable the dispatch MCP server: {joined}"
+        let bare = argv(
+            agent_exec::Backend::Codex,
+            &attempt("workspace-write", None, None, None, None, false),
+        );
+        assert_eq!(
+            bare,
+            strs(&[
+                "codex",
+                "-C",
+                &dir(),
+                "-s",
+                "workspace-write",
+                "-a",
+                "never",
+                "-c",
+                "mcp_servers.dispatch.enabled=false",
+                "exec",
+            ])
         );
         // aside stays enabled so dispatch→aside remains allowed.
-        assert!(
-            !joined.contains("mcp_servers.aside"),
-            "aside must NOT be disabled: {joined}"
+        assert!(!bare.iter().any(|a| a.contains("mcp_servers.aside")));
+
+        let full = argv(
+            agent_exec::Backend::Codex,
+            &attempt(
+                "read-only",
+                Some("gpt-x"),
+                Some("high"),
+                Some("sid-1"),
+                // A pin is claude-only: codex never receives it.
+                Some("ignored"),
+                true,
+            ),
         );
-        // the override is a top-level `-c`, so it must precede `exec`.
-        let disable_pos = argv
-            .iter()
-            .position(|a| a == "mcp_servers.dispatch.enabled=false")
-            .unwrap();
-        let exec_pos = argv.iter().position(|a| a == "exec").unwrap();
-        assert!(
-            disable_pos < exec_pos,
-            "the -c disable must come before `exec`: {joined}"
+        assert_eq!(
+            full,
+            strs(&[
+                "codex",
+                "-C",
+                &dir(),
+                "-s",
+                "read-only",
+                "-a",
+                "never",
+                "-m",
+                "gpt-x",
+                "-c",
+                "model_reasoning_effort=high",
+                "-c",
+                "mcp_servers.dispatch.enabled=false",
+                "exec",
+                "resume",
+                "sid-1",
+                "--skip-git-repo-check",
+            ])
         );
     }
 
     #[test]
-    fn parse_reentry_depth_fails_closed() {
-        assert_eq!(parse_reentry_depth(None), 0, "unset is top-level");
-        assert_eq!(parse_reentry_depth(Some("")), 0, "empty is top-level");
-        assert_eq!(parse_reentry_depth(Some("  ")), 0, "blank is top-level");
-        assert_eq!(parse_reentry_depth(Some("0")), 0);
-        assert_eq!(parse_reentry_depth(Some("1")), 1);
-        assert_eq!(parse_reentry_depth(Some(" 2 ")), 2);
-        // malformed markers fail closed (>= ceiling) rather than reading as 0.
-        assert_eq!(parse_reentry_depth(Some("abc")), u32::MAX);
-        assert_eq!(parse_reentry_depth(Some("-1")), u32::MAX);
-        assert!(parse_reentry_depth(Some("abc")) >= REENTRY_CEILING);
-    }
+    fn claude_argv_maps_sandbox_and_pins_session() {
+        let ww = argv(
+            agent_exec::Backend::Claude,
+            &attempt(
+                "workspace-write",
+                Some("haiku"),
+                Some("high"),
+                None,
+                Some("uuid-1"),
+                false,
+            ),
+        );
+        assert_eq!(
+            ww,
+            strs(&[
+                "claude",
+                "-p",
+                "--permission-mode",
+                "acceptEdits",
+                "--allowedTools",
+                "Bash",
+                "--model",
+                "haiku",
+                "--effort",
+                "high",
+                "--session-id",
+                "uuid-1",
+            ])
+        );
 
-    #[test]
-    fn depth_from_env_fails_closed_on_non_unicode() {
-        use std::ffi::OsStr;
-        assert_eq!(depth_from_env(None), 0, "unset is top-level");
-        assert_eq!(depth_from_env(Some(OsStr::new(""))), 0);
-        assert_eq!(depth_from_env(Some(OsStr::new("1"))), 1);
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            let bad = OsStr::from_bytes(&[0xff, 0xfe]); // invalid UTF-8
-            assert_eq!(
-                depth_from_env(Some(bad)),
-                u32::MAX,
-                "present-but-non-Unicode marker must fail closed"
+        let ro = argv(
+            agent_exec::Backend::Claude,
+            &attempt("read-only", None, None, None, Some("u"), false),
+        );
+        assert_eq!(
+            ro,
+            strs(&[
+                "claude",
+                "-p",
+                "--permission-mode",
+                "plan",
+                "--session-id",
+                "u"
+            ])
+        );
+
+        let danger = argv(
+            agent_exec::Backend::Claude,
+            &attempt("danger-full-access", None, None, None, Some("u"), false),
+        );
+        assert_eq!(
+            danger,
+            strs(&[
+                "claude",
+                "-p",
+                "--dangerously-skip-permissions",
+                "--session-id",
+                "u"
+            ])
+        );
+
+        let steer = argv(
+            agent_exec::Backend::Claude,
+            &attempt(
+                "workspace-write",
+                None,
+                None,
+                Some("old-sid"),
+                Some("new-sid"),
+                true,
+            ),
+        );
+        assert_eq!(
+            steer,
+            strs(&[
+                "claude",
+                "-p",
+                "--permission-mode",
+                "acceptEdits",
+                "--allowedTools",
+                "Bash",
+                "--resume",
+                "old-sid",
+                "--fork-session",
+                "--session-id",
+                "new-sid",
+            ])
+        );
+        for a in [&ww, &ro, &danger, &steer] {
+            assert!(
+                !a.iter()
+                    .any(|x| x == "--input-format" || x == "--output-format")
             );
+            assert!(!a.iter().any(|x| x == "--skip-git-repo-check"));
         }
     }
 
     #[test]
-    fn stamped_child_carries_reentry_marker() {
-        let mut cmd = Command::new("true");
-        stamp_reentry_depth(&mut cmd);
-        let marked = cmd.as_std().get_envs().any(|(k, v)| {
-            k == std::ffi::OsStr::new(REENTRY_DEPTH_ENV) && v.is_some_and(|v| !v.is_empty())
-        });
-        assert!(marked, "spawned child must carry {REENTRY_DEPTH_ENV}");
+    fn run_spec_carries_dispatch_policy() {
+        let s = run_spec(
+            agent_exec::Backend::Codex,
+            &attempt("danger-full-access", None, None, None, None, false),
+            "p".into(),
+        );
+        assert_eq!(s.sandbox, Sandbox::DangerFullAccess);
+        assert_eq!(s.output_mode, OutputMode::Default);
+        assert_eq!(s.capture, CapturePolicy::dispatch());
+        assert_eq!(s.failure_text, FailureTextPolicy::dispatch());
+        assert_eq!(s.guard, GuardMode::Required);
+        assert_eq!(s.reentry, reentry());
+        assert_eq!(s.reentry.name, "DISPATCH_REENTRY_DEPTH");
+        assert_eq!(s.reentry.ceiling, 1);
+        assert_eq!(s.working_dir.as_deref(), Some(Path::new("/w")));
+        assert_eq!(s.backend_version.as_deref(), Some("1.0"));
+        assert_eq!(s.prompt, "p");
+
+        let odd = run_spec(
+            agent_exec::Backend::Claude,
+            &attempt("unknown", None, None, None, None, false),
+            "p".into(),
+        );
+        assert_eq!(odd.sandbox, Sandbox::WorkspaceWrite);
+        assert_eq!(odd.isolation, Isolation::Permissions);
     }
 }

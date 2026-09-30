@@ -2,8 +2,9 @@
 //! harnesses, without a kit.
 //!
 //! Owns the flow used by slate's `tooling/install-mcp.sh`: obtain the aside,
-//! dispatch and palette binaries, register them with each named harness, or
-//! unregister them. Registrations and edited keys are recorded in
+//! dispatch and palette binaries (and `agent-guard` beside them on Linux and
+//! macOS; it is not a server and is never registered), register the servers
+//! with each named harness, or unregister them. Registrations and edited keys are recorded in
 //! `<home>/.slate-agent-kit-mcp-manifest.toml` so the reverse is exact. It never
 //! touches instruction files, prefs or the subagent configuration.
 //!
@@ -71,6 +72,7 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
     let request = binaries::Request {
         mode,
         names: servers.clone(),
+        guard: true,
         bin_dir: bin_dir.clone(),
         slate_version: opts
             .slate_version
@@ -101,7 +103,7 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
                 "  Binaries ({}) into {}: {}",
                 mode.name(),
                 bin_dir.display(),
-                servers.join(", ")
+                request.installed_names(&env.platform()).join(", ")
             ));
         }
         for h in &harnesses {

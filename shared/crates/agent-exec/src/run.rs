@@ -178,6 +178,20 @@ pub struct FallbackOutcome {
     pub discarded: Vec<DiscardedAttempt>,
 }
 
+/// What one attempt of a fallback chain produced: its outcome, the text the
+/// classifier reads when it failed (`None` for a success or a cancellation),
+/// and the name the attempt is logged under.
+#[derive(Debug, Clone)]
+pub struct AttemptResult {
+    /// The attempt's outcome.
+    pub outcome: Outcome,
+    /// The failure text, as [`failure_text`] builds it; `None` when the
+    /// attempt did not fail.
+    pub failure_text: Option<String>,
+    /// The backend's name, for the log line of a failed attempt.
+    pub label: String,
+}
+
 /// Run `models` in order — the first entry is the primary model (`None` for
 /// the backend's default), the rest the fallback chain; an empty slice is one
 /// attempt with no model. Before each attempt `build(index, model)` returns
@@ -196,6 +210,42 @@ pub async fn run_with_fallback<F>(
 where
     F: FnMut(usize, Option<&str>) -> RunSpec,
 {
+    fallback_chain(
+        |idx: usize, model: Option<String>| {
+            // Built before the attempt's future starts, so the caller's
+            // preparation is done when the spawn happens.
+            let spec = build(idx, model.as_deref());
+            async move {
+                let outcome = run(&spec, events, ct).await;
+                AttemptResult {
+                    failure_text: failure_text(&spec.failure_text, spec.backend.as_str(), &outcome),
+                    label: spec.backend.binary().to_string(),
+                    outcome,
+                }
+            }
+        },
+        models,
+        events,
+        ct,
+    )
+    .await
+}
+
+/// The chain behind [`run_with_fallback`], for an attempt that is not a
+/// `RunSpec` of this crate (a backend driven some other way): `attempt(index,
+/// model)` performs one attempt, reports through `events` itself and returns
+/// its [`AttemptResult`]. The order, the stopping rules and the discarded
+/// attempts are those of [`run_with_fallback`].
+pub async fn fallback_chain<F, Fut>(
+    mut attempt: F,
+    models: &[Option<String>],
+    events: &UnboundedSender<RunEvent>,
+    ct: &CancellationToken,
+) -> FallbackOutcome
+where
+    F: FnMut(usize, Option<String>) -> Fut,
+    Fut: Future<Output = AttemptResult>,
+{
     let single = [None];
     let models: &[Option<String>] = if models.is_empty() { &single } else { models };
     let last_idx = models.len() - 1;
@@ -210,8 +260,11 @@ where
                 discarded,
             };
         }
-        let spec = build(idx, model.as_deref());
-        let outcome = run(&spec, events, ct).await;
+        let AttemptResult {
+            outcome,
+            failure_text: text,
+            label,
+        } = attempt(idx, model.clone()).await;
         if matches!(outcome, Outcome::Cancelled) {
             return FallbackOutcome {
                 outcome,
@@ -219,11 +272,11 @@ where
                 discarded,
             };
         }
-        if let Some(text) = failure_text(&spec.failure_text, spec.backend.as_str(), &outcome) {
+        if let Some(text) = text {
             let kind = errkind::classify(&text);
             tracing::info!(
                 "agent-exec: {} attempt {}/{} model={:?} failed kind={} detail={:.200}",
-                spec.backend.binary(),
+                label,
                 idx + 1,
                 models.len(),
                 model,

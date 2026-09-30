@@ -115,6 +115,7 @@ dependencies = [
 name = "aside"
 version = "0.1.0"
 dependencies = [
+ "agent-exec",
  "harness-log",
  "rmcp",
  "schemars",
@@ -357,6 +358,7 @@ dependencies = [
 name = "dispatch"
 version = "0.1.0"
 dependencies = [
+ "agent-exec",
  "futures-util",
  "harness-log",
  "libc",

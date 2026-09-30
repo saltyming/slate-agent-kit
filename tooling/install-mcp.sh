@@ -1,8 +1,9 @@
 #!/bin/sh
 # install-mcp.sh - thin wrapper that builds slate-setup and runs `slate-setup mcp`.
 #
-# It installs the shared MCP servers (aside, dispatch, palette) and registers
-# them with Claude Code, Codex and Kimi Code. Every step lives in slate-setup;
+# It installs the shared MCP servers (aside, dispatch, palette), plus the
+# agent-guard helper beside them on Linux and macOS, and registers the servers
+# with Claude Code, Codex and Kimi Code. Every step lives in slate-setup;
 # this script only translates its documented options and environment variables.
 set -eu
 
@@ -12,11 +13,14 @@ usage() {
   cat <<'USAGE'
 Usage: tooling/install-mcp.sh [options]
 
-Build and install the shared Slate MCP servers (aside, dispatch, palette), then
-register them for one or more harnesses. All work is done by `slate-setup mcp`.
+Build and install the shared Slate MCP servers (aside, dispatch, palette) and,
+on Linux and macOS, the agent-guard helper the servers start backends through
+(not a server: it is installed beside them and never registered), then register
+the servers for one or more harnesses. All work is done by `slate-setup mcp`.
 
 Options:
-  --install-only          Build/copy the servers, do not configure a harness
+  --install-only          Build/copy the servers and agent-guard, do not configure
+                          a harness
   --configure-claude      Build/copy and register via `claude mcp add -s user`
   --configure-codex       Build/copy and register via `codex mcp add`
   --configure-kimi        Build/copy and register a Kimi local plugin
@@ -29,7 +33,8 @@ Options:
                           Required for Kimi (its plugin runtime spawns MCP
                           servers outside any project, so there is no project
                           root there) and recommended for Codex.
-  --bin-dir DIR           Install binaries into DIR (default: $HOME/.local/bin)
+  --bin-dir DIR           Install binaries (servers and agent-guard) into DIR
+                          (default: $HOME/.local/bin)
   --prebuilt              Download prebuilt binaries from GitHub Releases instead
                           of building with cargo. Also used automatically when
                           cargo is unavailable. "latest" may be newer than this

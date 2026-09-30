@@ -1,7 +1,6 @@
-mod backend;
-mod errkind;
 mod lenient;
 mod params;
+mod spec;
 mod transcript;
 
 use std::path::PathBuf;
@@ -19,7 +18,7 @@ use rmcp::{
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use backend::{Backend, InvokeOutcome, invoke, version, which};
+use agent_exec::{Backend, CapturePolicy, DiscardedAttempt, Outcome, RunRecord};
 use params::{AskParams, ListParams};
 use transcript::{TranscriptOutcome, render_transcript};
 
@@ -57,10 +56,10 @@ impl Aside {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let mut report = Vec::new();
         for backend in Backend::all() {
-            let path = which(backend.binary());
+            let path = agent_exec::which(backend.binary());
             let entry = match path {
                 Some(p) => {
-                    let ver = version(*backend)
+                    let ver = agent_exec::version(*backend, &spec::reentry())
                         .await
                         .unwrap_or_else(|| "(unknown)".to_string());
                     json!({
@@ -123,13 +122,13 @@ impl Aside {
         // is itself running inside an aside-spawned backend, invoking a backend
         // again would recurse (aside → backend → aside → …). A spawned backend
         // inherits ASIDE_REENTRY_DEPTH; a top-level harness call does not.
-        let depth = backend::reentry_depth();
-        if depth >= backend::REENTRY_CEILING {
+        if agent_exec::reentry::refused(spec::REENTRY_MARKER, spec::REENTRY_CEILING) {
+            let depth = agent_exec::reentry::depth(spec::REENTRY_MARKER);
             return Ok(CallToolResult::error(vec![Content::text(format!(
                 "aside_reentry_blocked: this aside server is running inside an aside-spawned \
                  backend ({}={}); nested advisor calls are refused to prevent recursive backend \
                  spawning. An aside backend is a read-only advisor and must not itself call aside.",
-                backend::REENTRY_DEPTH_ENV,
+                spec::REENTRY_MARKER,
                 depth
             ))]));
         }
@@ -206,99 +205,28 @@ impl Aside {
             .filter(|s| !s.is_empty())
             .map(str::to_string);
         let fallback_chain = params.model_fallback.clone().unwrap_or_default();
-        let attempts: Vec<Option<String>> = std::iter::once(primary_model)
+        let models: Vec<Option<String>> = std::iter::once(primary_model)
             .chain(fallback_chain.into_iter().map(Some))
             .collect();
-        let last_idx = attempts.len() - 1;
 
-        let mut history: Vec<FallbackAttempt> = Vec::new();
-        let mut final_outcome = InvokeOutcome::Cancelled;
-        let mut final_model_used: Option<String> = None;
-
-        for (idx, model) in attempts.iter().enumerate() {
-            let outcome = invoke(
-                backend,
-                &prompt,
-                model.as_deref(),
-                reasoning_effort.as_deref(),
-                &ct,
-            )
-            .await;
-
-            if matches!(outcome, InvokeOutcome::Cancelled) {
-                final_outcome = outcome;
-                final_model_used = model.clone();
-                break;
-            }
-
-            if let Some(text) = dispatch_failure_text(backend, &outcome) {
-                let kind = errkind::classify(&text);
-                tracing::info!(
-                    "aside: {} attempt {}/{} model={:?} failed kind={} detail={:.200}",
-                    backend.binary(),
-                    idx + 1,
-                    attempts.len(),
-                    model,
-                    kind.as_str(),
-                    text
-                );
-                if kind.is_retry_worthy() && idx != last_idx {
-                    history.push(FallbackAttempt {
-                        model: model.clone().unwrap_or_else(|| "(backend default)".into()),
-                        kind,
-                    });
-                    continue;
-                }
-            }
-            final_outcome = outcome;
-            final_model_used = model.clone();
-            break;
-        }
+        // Nothing consumes the run events; a send to the dropped receiver is
+        // ignored by design.
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let result = agent_exec::run_with_fallback(
+            |_, model| spec::attempt(backend, &prompt, model, reasoning_effort.as_deref()),
+            &models,
+            &events,
+            &ct,
+        )
+        .await;
 
         Ok(render_outcome(
             backend,
-            final_outcome,
+            result.outcome,
             transcript_warning,
-            &history,
-            final_model_used.as_deref(),
+            &result.discarded,
+            result.model.as_deref(),
         ))
-    }
-}
-
-/// One fallback attempt's classified failure, kept for the response note.
-struct FallbackAttempt {
-    model: String,
-    kind: errkind::BackendErrorKind,
-}
-
-/// Extract the text `errkind::classify` should judge from a non-success
-/// outcome. `None` for a success or a cancellation.
-///
-/// stdout is folded into the classification text only for `claude`, which prints
-/// its discriminating error (e.g. unknown/inaccessible model) to stdout while
-/// stderr carries only an incidental warning — mirroring dispatch's
-/// `failure_text`. It is deliberately NOT folded in for other backends: their
-/// errors surface on stderr, and their stdout can hold a partial answer that
-/// might spuriously match a transient-error pattern (e.g. a question *about*
-/// rate limits), which would trigger a wasted fallback retry.
-fn dispatch_failure_text(backend: Backend, outcome: &InvokeOutcome) -> Option<String> {
-    match outcome {
-        InvokeOutcome::Failed {
-            code,
-            stderr,
-            stdout,
-        } => {
-            let mut text = format!("exit_code={:?} stderr={}", code, stderr);
-            if backend == Backend::Claude {
-                text.push_str(" stdout=");
-                text.push_str(stdout);
-            }
-            Some(text)
-        }
-        InvokeOutcome::Spawn(msg) => Some(msg.clone()),
-        InvokeOutcome::NotFound { .. } | InvokeOutcome::Ok { .. } | InvokeOutcome::Cancelled => {
-            None
-        }
     }
 }
 
@@ -361,13 +289,13 @@ fn compose_prompt(context: Option<&str>, transcript: Option<&str>, question: &st
     parts.join("\n\n---\n\n")
 }
 
-fn fallback_note(history: &[FallbackAttempt], final_model: Option<&str>) -> Option<String> {
-    if history.is_empty() {
+fn fallback_note(discarded: &[DiscardedAttempt], final_model: Option<&str>) -> Option<String> {
+    if discarded.is_empty() {
         return None;
     }
-    let failed: Vec<String> = history
+    let failed: Vec<String> = discarded
         .iter()
-        .map(|a| format!("{} ({})", a.model, a.kind.as_str()))
+        .map(|a| format!("{} ({})", a.model_label(), a.kind.as_str()))
         .collect();
     Some(format!(
         "[answered by fallback model {} after {} failed]",
@@ -376,63 +304,102 @@ fn fallback_note(history: &[FallbackAttempt], final_model: Option<&str>) -> Opti
     ))
 }
 
+/// Turn the final outcome of a fallback chain into the tool result: the reply
+/// on success, else an error text naming what went wrong. The capture limits
+/// quoted in the truncation markers are those of `CapturePolicy::aside`.
 fn render_outcome(
     backend: Backend,
-    outcome: InvokeOutcome,
+    outcome: Outcome,
     transcript_warning: Option<String>,
-    fallback_history: &[FallbackAttempt],
+    discarded: &[DiscardedAttempt],
     final_model: Option<&str>,
 ) -> CallToolResult {
-    let note = fallback_note(fallback_history, final_model);
+    let note = fallback_note(discarded, final_model);
     match outcome {
-        InvokeOutcome::Ok { stdout, truncated } => {
-            let mut header = format!("[{}]", backend.binary());
-            if truncated {
-                header.push_str(" (response truncated)");
-            }
-            let mut body = format!("{}\n\n{}", header, stdout);
-            if let Some(n) = &note {
-                body.push_str(&format!("\n\n{}", n));
-            }
-            if let Some(w) = transcript_warning {
-                body.push_str(&format!("\n\n{}", w));
-            }
-            CallToolResult::success(vec![Content::text(body)])
-        }
-        InvokeOutcome::NotFound { binary, hint } => CallToolResult::error(vec![Content::text(
-            format!("backend_not_found: `{}` is not on PATH — {}", binary, hint),
+        Outcome::Record(r) if r.success => CallToolResult::success(vec![Content::text(
+            render_reply(backend, &r, note.as_deref(), transcript_warning.as_deref()),
         )]),
-        InvokeOutcome::Failed {
-            code,
-            stderr,
-            stdout,
-        } => {
-            let mut body = format!(
-                "backend_error: {} exited with status {:?}\n\nstderr:\n{}",
-                backend.binary(),
-                code,
-                stderr
-            );
-            // Surface stdout when present: some CLIs (claude) print the real
-            // error there while stderr holds only an incidental warning.
-            if !stdout.trim().is_empty() {
-                body.push_str(&format!("\n\nstdout:\n{}", stdout));
-            }
-            if let Some(n) = &note {
-                body.push_str(&format!(
-                    "\n\n{n} — chain exhausted; this is the final attempt's error."
-                ));
-            }
-            CallToolResult::error(vec![Content::text(body)])
-        }
-        InvokeOutcome::Spawn(msg) => {
+        Outcome::Record(r) => CallToolResult::error(vec![Content::text(render_failure(
+            backend,
+            &r,
+            note.as_deref(),
+        ))]),
+        Outcome::NotFound { binary, hint } => CallToolResult::error(vec![Content::text(format!(
+            "backend_not_found: `{}` is not on PATH — {}",
+            binary, hint
+        ))]),
+        // The crate's wait-failure message already reads `wait failed: …`.
+        Outcome::Spawn(msg) | Outcome::WaitFailed(msg) => {
             CallToolResult::error(vec![Content::text(format!("spawn_error: {}", msg))])
         }
-        InvokeOutcome::Cancelled => CallToolResult::error(vec![Content::text(format!(
+        Outcome::Cancelled => CallToolResult::error(vec![Content::text(format!(
             "cancelled: {} was aborted before it returned (client cancellation). The subprocess was killed.",
             backend.binary()
         ))]),
     }
+}
+
+/// The text of a successful run: a `[backend]` header, the reply, and the
+/// truncation, fallback and transcript notes that apply.
+fn render_reply(
+    backend: Backend,
+    r: &RunRecord,
+    note: Option<&str>,
+    transcript_warning: Option<&str>,
+) -> String {
+    let mut header = format!("[{}]", backend.binary());
+    if r.stdout_truncated {
+        header.push_str(" (response truncated)");
+    }
+    let mut body = format!("{}\n\n{}", header, r.stdout);
+    if r.stdout_truncated {
+        body.push_str(&format!(
+            "\n\n[response truncated after {} characters; original was {} bytes]",
+            CapturePolicy::aside().stdout_cap.limit,
+            r.stdout_total
+        ));
+    }
+    if let Some(n) = note {
+        body.push_str(&format!("\n\n{}", n));
+    }
+    if let Some(w) = transcript_warning {
+        body.push_str(&format!("\n\n{}", w));
+    }
+    body
+}
+
+/// The text of a run that exited non-zero: its status, stderr, stdout when
+/// there is any, and the fallback note when the chain was exhausted.
+fn render_failure(backend: Backend, r: &RunRecord, note: Option<&str>) -> String {
+    let stderr = if r.stderr_truncated {
+        format!(
+            "[stderr truncated to last {} characters]\n{}",
+            CapturePolicy::aside().stderr_cap.limit,
+            r.stderr
+        )
+    } else {
+        r.stderr.clone()
+    };
+    let mut body = format!(
+        "backend_error: {} exited with status {:?}\n\nstderr:\n{}",
+        backend.binary(),
+        r.exit_code,
+        stderr
+    );
+    // Surface stdout when present: some CLIs (claude) print the real error
+    // there while stderr holds only an incidental warning.
+    if !r.stdout.trim().is_empty() {
+        body.push_str(&format!("\n\nstdout:\n{}", r.stdout));
+        if r.stdout_truncated {
+            body.push_str("\n[stdout truncated]");
+        }
+    }
+    if let Some(n) = note {
+        body.push_str(&format!(
+            "\n\n{n} — chain exhausted; this is the final attempt's error."
+        ));
+    }
+    body
 }
 
 // ── ServerHandler ─────────────────────────────────────────
@@ -529,6 +496,232 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use agent_exec::BackendErrorKind;
+
+    fn text_of(result: &CallToolResult) -> String {
+        assert_eq!(result.content.len(), 1);
+        result.content[0]
+            .as_text()
+            .map(|t| t.text.clone())
+            .expect("text content")
+    }
+
+    fn is_error(result: &CallToolResult) -> bool {
+        result.is_error == Some(true)
+    }
+
+    fn ok_record(stdout: &str) -> RunRecord {
+        RunRecord {
+            backend: "codex".into(),
+            exit_code: Some(0),
+            success: true,
+            stdout: stdout.into(),
+            stdout_total: stdout.len() as u64,
+            ..RunRecord::default()
+        }
+    }
+
+    fn failed_record(stdout: &str, stderr: &str) -> RunRecord {
+        RunRecord {
+            backend: "claude".into(),
+            exit_code: Some(1),
+            success: false,
+            stdout: stdout.into(),
+            stdout_total: stdout.len() as u64,
+            stderr: stderr.into(),
+            ..RunRecord::default()
+        }
+    }
+
+    fn discarded(model: Option<&str>, kind: BackendErrorKind) -> DiscardedAttempt {
+        DiscardedAttempt {
+            model: model.map(str::to_string),
+            kind,
+            detail: String::new(),
+        }
+    }
+
+    #[test]
+    fn success_renders_header_and_reply() {
+        let r = render_outcome(
+            Backend::Codex,
+            Outcome::Record(ok_record("the answer")),
+            None,
+            &[],
+            None,
+        );
+        assert!(!is_error(&r));
+        assert_eq!(text_of(&r), "[codex]\n\nthe answer");
+    }
+
+    #[test]
+    fn truncated_success_marks_header_and_appends_footer() {
+        let mut rec = ok_record("kept head");
+        rec.stdout_truncated = true;
+        rec.stdout_total = 60_000;
+        let r = render_outcome(Backend::Claude, Outcome::Record(rec), None, &[], None);
+        assert!(!is_error(&r));
+        assert_eq!(
+            text_of(&r),
+            "[claude] (response truncated)\n\nkept head\n\n\
+             [response truncated after 51200 characters; original was 60000 bytes]"
+        );
+    }
+
+    #[test]
+    fn success_appends_fallback_note_then_transcript_warning() {
+        let r = render_outcome(
+            Backend::Codex,
+            Outcome::Record(ok_record("answer")),
+            Some("transcript unavailable (x); proceeding with question + context only".into()),
+            &[
+                discarded(None, BackendErrorKind::RateLimited),
+                discarded(Some("m2"), BackendErrorKind::ModelUnavailable),
+            ],
+            Some("m3"),
+        );
+        assert!(!is_error(&r));
+        assert_eq!(
+            text_of(&r),
+            "[codex]\n\nanswer\n\n\
+             [answered by fallback model m3 after (backend default) (rate_limited), \
+             m2 (model_unavailable) failed]\n\n\
+             transcript unavailable (x); proceeding with question + context only"
+        );
+    }
+
+    #[test]
+    fn failure_renders_status_stderr_and_stdout() {
+        let r = render_outcome(
+            Backend::Claude,
+            Outcome::Record(failed_record("bad model", "warning")),
+            None,
+            &[],
+            None,
+        );
+        assert!(is_error(&r));
+        assert_eq!(
+            text_of(&r),
+            "backend_error: claude exited with status Some(1)\n\nstderr:\nwarning\n\n\
+             stdout:\nbad model"
+        );
+    }
+
+    #[test]
+    fn failure_with_blank_stdout_has_no_stdout_section() {
+        let r = render_outcome(
+            Backend::Codex,
+            Outcome::Record(failed_record("  \n", "boom")),
+            None,
+            &[],
+            None,
+        );
+        assert_eq!(
+            text_of(&r),
+            "backend_error: codex exited with status Some(1)\n\nstderr:\nboom"
+        );
+    }
+
+    #[test]
+    fn failure_marks_truncated_stderr_and_stdout() {
+        let mut rec = failed_record("stdout head", "stderr tail");
+        rec.stderr_truncated = true;
+        rec.stdout_truncated = true;
+        rec.exit_code = None;
+        let r = render_outcome(Backend::Claude, Outcome::Record(rec), None, &[], None);
+        assert!(is_error(&r));
+        assert_eq!(
+            text_of(&r),
+            "backend_error: claude exited with status None\n\nstderr:\n\
+             [stderr truncated to last 2048 characters]\nstderr tail\n\n\
+             stdout:\nstdout head\n[stdout truncated]"
+        );
+    }
+
+    #[test]
+    fn failure_after_fallbacks_says_the_chain_is_exhausted() {
+        let r = render_outcome(
+            Backend::Codex,
+            Outcome::Record(failed_record("", "rate limit")),
+            Some("ignored on failure".into()),
+            &[discarded(Some("m1"), BackendErrorKind::RateLimited)],
+            Some("m2"),
+        );
+        assert_eq!(
+            text_of(&r),
+            "backend_error: codex exited with status Some(1)\n\nstderr:\nrate limit\n\n\
+             [answered by fallback model m2 after m1 (rate_limited) failed] — chain exhausted; \
+             this is the final attempt's error."
+        );
+    }
+
+    #[test]
+    fn not_found_names_the_binary_and_hint() {
+        let r = render_outcome(
+            Backend::Codex,
+            Outcome::NotFound {
+                binary: "codex".into(),
+                hint: agent_exec::install_hint(Backend::Codex),
+            },
+            None,
+            &[discarded(Some("m1"), BackendErrorKind::RateLimited)],
+            Some("m2"),
+        );
+        assert!(is_error(&r));
+        assert_eq!(
+            text_of(&r),
+            format!(
+                "backend_not_found: `codex` is not on PATH — {}",
+                agent_exec::install_hint(Backend::Codex)
+            )
+        );
+    }
+
+    #[test]
+    fn spawn_and_wait_failures_render_as_spawn_errors() {
+        let r = render_outcome(
+            Backend::Claude,
+            Outcome::Spawn("spawn claude failed: denied".into()),
+            None,
+            &[],
+            None,
+        );
+        assert!(is_error(&r));
+        assert_eq!(text_of(&r), "spawn_error: spawn claude failed: denied");
+
+        let r = render_outcome(
+            Backend::Claude,
+            Outcome::WaitFailed("wait failed: interrupted".into()),
+            None,
+            &[],
+            None,
+        );
+        assert!(is_error(&r));
+        assert_eq!(text_of(&r), "spawn_error: wait failed: interrupted");
+    }
+
+    #[test]
+    fn cancelled_says_the_subprocess_was_killed() {
+        let r = render_outcome(Backend::Codex, Outcome::Cancelled, None, &[], None);
+        assert!(is_error(&r));
+        assert_eq!(
+            text_of(&r),
+            "cancelled: codex was aborted before it returned (client cancellation). \
+             The subprocess was killed."
+        );
+    }
+
+    #[test]
+    fn fallback_note_is_absent_without_discarded_attempts() {
+        assert_eq!(fallback_note(&[], Some("m")), None);
+        assert_eq!(
+            fallback_note(&[discarded(None, BackendErrorKind::QuotaOrBilling)], None).as_deref(),
+            Some(
+                "[answered by fallback model (unknown) after (backend default) (quota_or_billing) failed]"
+            )
+        );
+    }
 
     #[test]
     fn compose_prompt_orders_sections_role_context_transcript_question_reminder() {

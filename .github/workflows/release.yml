@@ -63,11 +63,23 @@ jobs:
         if: runner.os != 'Linux'
         run: cargo build --release --target ${{ matrix.target }} -p aside -p dispatch -p palette -p slate-setup
 
+      # agent-guard is the parent-death guard the servers start beside themselves on
+      # Linux and macOS; Windows uses a Job Object in-process and ships none. `--bin`
+      # narrows every selected package, so it is a build of its own, and only this
+      # target of the crate is built, never its test-support binaries.
+      - name: Build agent-guard (Linux via zigbuild)
+        if: runner.os == 'Linux'
+        run: cargo zigbuild --release --target ${{ matrix.target }} -p agent-exec --bin agent-guard
+
+      - name: Build agent-guard (macOS)
+        if: runner.os == 'macOS'
+        run: cargo build --release --target ${{ matrix.target }} -p agent-exec --bin agent-guard
+
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          for name in aside dispatch palette slate-setup; do
+          for name in aside dispatch palette slate-setup agent-guard; do
             tar czf "../../../$name-${{ matrix.platform }}.tar.gz" "$name"
           done
           cd ../../..

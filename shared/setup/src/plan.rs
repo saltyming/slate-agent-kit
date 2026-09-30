@@ -326,6 +326,7 @@ pub fn build(
             binaries_req = Some(binaries::Request {
                 mode,
                 names: servers.clone(),
+                guard: true,
                 bin_dir: kit.bin_dir.clone(),
                 slate_version: desc.slate_version.clone(),
                 slate_dir: choices.slate_dir.clone(),
@@ -564,10 +565,10 @@ pub fn print_summary(ui: &mut Ui, env: &Env, kit: &Kit, plan: &Plan) {
         ui.blank();
         ui.line("  Binaries");
         ui.line(&format!("    {source}"));
-        for n in &b.names {
+        for n in b.installed_names(&env.platform()) {
             ui.line(&format!(
                 "    + {}",
-                binaries::binary_path(env, &b.bin_dir, n).display()
+                binaries::binary_path(env, &b.bin_dir, &n).display()
             ));
         }
     }

@@ -86,7 +86,8 @@ fn codex_remove(args: &[String]) {
     std::fs::write(&path, doc.render()).unwrap();
 }
 
-/// `cargo build --release -p <name>...`: writes each package's binary under `target/release`.
+/// `cargo build --release -p <name>... [--bin <bin>]`: writes each package's binary under
+/// `target/release`; `--bin` names the one binary of the selected package instead.
 fn cargo_build(args: &[String]) {
     let exe = std::env::current_exe().expect("the fake knows its own path");
     let target = std::env::var("CARGO_TARGET_DIR")
@@ -94,9 +95,12 @@ fn cargo_build(args: &[String]) {
         .unwrap_or_else(|_| std::path::PathBuf::from("target"));
     let release = target.join("release");
     std::fs::create_dir_all(&release).unwrap();
+    let by_bin = args.iter().any(|a| a == "--bin");
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "-p" {
+        if args[i] == "-p" && by_bin {
+            i += 1;
+        } else if args[i] == "-p" || args[i] == "--bin" {
             let name = &args[i + 1];
             let file = if cfg!(windows) {
                 format!("{name}.exe")

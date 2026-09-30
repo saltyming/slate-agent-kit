@@ -364,8 +364,12 @@ fn is_probably_custom(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Finds every TOML manifest that lists `binary`, other than `own`.
-pub fn other_manifests_listing(homes: &[PathBuf], own: &Path, binary: &Path) -> Vec<PathBuf> {
+/// Finds every TOML manifest, other than `own`, that lists any of `binaries`.
+pub fn other_manifests_listing(
+    homes: &[PathBuf],
+    own: &Path,
+    binaries: &[PathBuf],
+) -> Vec<PathBuf> {
     let mut found = Vec::new();
     for home in homes {
         let Ok(entries) = fs::read_dir(home) else {
@@ -386,7 +390,7 @@ pub fn other_manifests_listing(homes: &[PathBuf], own: &Path, binary: &Path) -> 
             let Ok(m) = toml::from_str::<Manifest>(&text) else {
                 continue;
             };
-            if m.lists_binary(binary) {
+            if binaries.iter().any(|b| m.lists_binary(b)) {
                 found.push(path);
             }
         }
@@ -528,13 +532,17 @@ mod tests {
         b.record_binary(&bin);
         b.save(dir.path()).unwrap();
         let own = manifest_path(dir.path(), "a-kit");
-        let others = other_manifests_listing(&[dir.path().to_path_buf()], &own, &bin);
+        let others = other_manifests_listing(
+            &[dir.path().to_path_buf()],
+            &own,
+            std::slice::from_ref(&bin),
+        );
         assert_eq!(others, vec![manifest_path(dir.path(), "b-kit")]);
         assert!(
             other_manifests_listing(
                 &[dir.path().to_path_buf()],
                 &own,
-                &dir.path().join("dispatch")
+                &[dir.path().join("dispatch")]
             )
             .is_empty()
         );

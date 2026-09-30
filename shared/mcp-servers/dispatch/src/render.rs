@@ -32,8 +32,10 @@ pub fn render_prompt(p: &SubmitParams, nonce: &str) -> String {
     parts.join("\n\n")
 }
 
-/// The prompt marker carrying the per-task nonce. `rollout::locate_by_nonce` matches
-/// the bare `nonce` as a substring, so the brackets are only for human legibility.
+/// The prompt marker carrying the per-task nonce. `rollout::locate_by_nonce` and
+/// `rollout::rollout_has_nonce` match this full marker, brackets included, so a
+/// successor's nonce that extends this one (`<nonce>-retryN`, `<nonce>-restart`)
+/// is never claimed for it.
 pub fn nonce_marker(nonce: &str) -> String {
     format!("[dispatch-task: {nonce}]")
 }

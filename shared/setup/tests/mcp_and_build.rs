@@ -196,26 +196,47 @@ fn build_mode_runs_cargo_in_the_checkout_and_installs_what_it_built() {
         .into_iter()
         .filter(|c| c[0] == "build")
         .collect();
-    assert_eq!(builds.len(), 1);
-    assert_eq!(
-        builds[0],
-        [
-            "build",
-            "--release",
-            "-p",
-            "aside",
-            "-p",
-            "dispatch",
-            "-p",
-            "palette"
-        ]
-    );
+    let servers = [
+        "build",
+        "--release",
+        "-p",
+        "aside",
+        "-p",
+        "dispatch",
+        "-p",
+        "palette",
+    ];
+    if cfg!(windows) {
+        assert_eq!(builds, [servers]);
+    } else {
+        assert_eq!(
+            builds,
+            [
+                servers.to_vec(),
+                [
+                    "build",
+                    "--release",
+                    "-p",
+                    "agent-exec",
+                    "--bin",
+                    "agent-guard"
+                ]
+                .to_vec()
+            ]
+        );
+    }
     for name in ["aside", "dispatch", "palette"] {
         assert!(
             sb.bin_dir.join(exe_name(&platform, name)).is_file(),
             "{name}"
         );
     }
+    assert_eq!(
+        sb.bin_dir
+            .join(exe_name(&platform, "agent-guard"))
+            .is_file(),
+        !cfg!(windows)
+    );
     assert!(!sb.env.platform().is_empty());
 }
 

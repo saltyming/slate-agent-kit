@@ -309,11 +309,29 @@ impl ReleaseServer {
     ///
     /// `tamper` names a binary whose archive is replaced after its checksum was recorded.
     /// With `version` set to `None` no release exists under `v0.7.0`; only `latest` is served.
+    ///
+    /// The release also ships `agent-guard` for platforms that use it; see
+    /// [`ReleaseServer::start_without_guard`] for an older release.
     pub fn start(
         platform: &str,
         tamper: Option<&str>,
         versioned: bool,
         with_checksums: bool,
+    ) -> ReleaseServer {
+        ReleaseServer::start_release(platform, tamper, versioned, with_checksums, true)
+    }
+
+    /// Like [`ReleaseServer::start`] for a release from before `agent-guard` was shipped.
+    pub fn start_without_guard(platform: &str, versioned: bool) -> ReleaseServer {
+        ReleaseServer::start_release(platform, None, versioned, true, false)
+    }
+
+    fn start_release(
+        platform: &str,
+        tamper: Option<&str>,
+        versioned: bool,
+        with_checksums: bool,
+        with_guard: bool,
     ) -> ReleaseServer {
         let cli = std::fs::read(fake_cli()).unwrap();
         let mut files: HashMap<String, Vec<u8>> = HashMap::new();
@@ -324,7 +342,11 @@ impl ReleaseServer {
         } else {
             format!("{prefix}/latest/download")
         };
-        for name in ["aside", "dispatch", "palette"] {
+        let mut names = vec!["aside", "dispatch", "palette"];
+        if with_guard && !platform.contains("windows") {
+            names.push("agent-guard");
+        }
+        for name in names {
             let (file, bytes) = archive(platform, name, &cli);
             sums.push_str(&format!("{}  {file}\n", sha256_hex(&bytes)));
             let served = if tamper == Some(name) {

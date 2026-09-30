@@ -6,27 +6,23 @@
 //! JSONL with the same top-level shape. `dispatch_logs` reads either source to
 //! show progress, then curates noise down to a compact timeline and slices it by
 //! **line range** so a long session can't blow the MCP output budget. The
-//! `locate_*` functions positively identify the log a task produced — by
-//! pre-spawn snapshot diff, by the prompt nonce, or by session id (which also
-//! feeds `codex exec resume`) — rather than guessing by cwd alone.
+//! `locate_*` functions here and in `harness_log` positively identify the log a
+//! task produced — by pre-spawn snapshot diff, by the prompt nonce, or by session
+//! id (which also feeds `codex exec resume`) — rather than guessing by cwd alone.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use harness_log::codex::{
-    MessageRole, codex_home, collect, cwd_matches, file_mtime, message_text, read_session_meta,
+    MessageRole, codex_home, collect, cwd_matches, file_mtime, locate_by_marker, message_text,
+    read_session_meta, rollout_has_marker,
 };
 use serde_json::Value;
 
 const RENDER_BYTE_CAP: usize = 40 * 1024;
 const DEFAULT_TAIL_LINES: usize = 150;
 const SCAN_CAP: usize = 60;
-/// How many opening lines of a rollout `locate_by_nonce` scans for the marker — the
-/// dispatch prompt is recorded as a user message among the first events (observed at
-/// lines 4–10 across codex 0.142–0.153; harness-injected context precedes it as a
-/// handful of single-line records).
-const NONCE_SCAN_LINES: usize = 64;
 
 /// The curation categories `dispatch_logs(kinds=…)` can select. OpenCode exposes
 /// plaintext reasoning, so it includes `reasoning` by default; codex and unknown
@@ -388,56 +384,6 @@ pub fn read_to_string(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)
 }
 
-// ── claude session logs ───────────────────────────────────
-//
-// Claude Code (the `claude` backend) persists each session as
-// `~/.claude/projects/<dashed-working-dir>/<session-uuid>.jsonl`, appended
-// live. dispatch pins the session id at spawn (`--session-id`), so the log
-// path is fully deterministic — no snapshot/nonce discovery is needed.
-
-/// The session log path for a pinned claude session in `working_dir`.
-/// `working_dir` must already be canonical (dispatch canonicalizes at the
-/// working_dir guard). Claude's slug is *approximately* the canonical cwd with
-/// path separators (and, on Windows, the drive colon) → `-` — but the exact
-/// formula has edge cases (a leading-dot path component is observed to slug as
-/// `-`, not `.`), so callers must be prepared to fall back to
-/// `find_claude_session` when this path does not exist.
-pub fn claude_session_path(working_dir: &Path, sid: &str) -> PathBuf {
-    let slug = working_dir.to_string_lossy().replace(['/', '\\', ':'], "-");
-    claude_projects_root()
-        .join(slug)
-        .join(format!("{sid}.jsonl"))
-}
-
-fn claude_projects_root() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
-    PathBuf::from(home).join(".claude").join("projects")
-}
-
-/// Locate a pinned claude session by scanning `~/.claude/projects/*/<sid>.jsonl`.
-/// The sid is a dispatch-pinned UUID, so a filename match is positive identity
-/// regardless of which slug directory Claude chose for the working dir.
-pub fn find_claude_session(sid: &str) -> Option<PathBuf> {
-    find_claude_session_in(&claude_projects_root(), sid)
-}
-
-fn find_claude_session_in(root: &Path, sid: &str) -> Option<PathBuf> {
-    if sid.is_empty() {
-        return None;
-    }
-    let name = format!("{sid}.jsonl");
-    let rd = std::fs::read_dir(root).ok()?;
-    for e in rd.flatten() {
-        let candidate = e.path().join(&name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
 /// Curate a Claude session JSONL string into the same compact timeline shape
 /// as codex/OpenCode logs. Claude session entries are `type` `user`/`assistant`
 /// with `message.content` blocks (`text`, `tool_use`, `tool_result`,
@@ -554,8 +500,9 @@ pub fn curate_claude(jsonl: &str, kinds: &[String], elide_prompt: Option<&str>) 
 }
 
 // ── locating a session's rollout file ─────────────────────
-// Discovery/schema primitives (codex_home, collect, read_session_meta,
-// cwd_matches, file_mtime) live in the shared `harness-log` crate.
+// Discovery/schema primitives and the marker and session-id locators live in the
+// shared `harness-log` crate; the Claude session file is found there too
+// (`harness_log::claude`).
 
 /// Snapshot the set of rollout files that exist right now. Taken **before** spawning
 /// a codex child so the post-spawn search can require a *new* file and never match a
@@ -613,90 +560,25 @@ fn locate_new_in(
     None
 }
 
-/// Locate a rollout by its codex session id. The session id is the trailing UUID of
-/// the rollout filename (`rollout-<ts>-<sid>.jsonl`), so this is a cheap, exact
-/// filename match with no scan cap — used by `dispatch_steer`'s resume (the session id
-/// is already known) and as a deterministic re-locate.
-pub fn locate_by_session_id(sid: &str) -> Option<PathBuf> {
-    locate_by_session_id_in(&codex_home().join("sessions"), sid)
-}
-
-fn locate_by_session_id_in(root: &Path, sid: &str) -> Option<PathBuf> {
-    if sid.is_empty() {
-        return None;
-    }
-    let mut files = Vec::new();
-    collect(root, &mut files, 0);
-    let suffix = format!("-{sid}.jsonl");
-    files.into_iter().map(|(p, _)| p).find(|p| {
-        p.file_name()
-            .and_then(|s| s.to_str())
-            .map(|n| n.ends_with(&suffix))
-            .unwrap_or(false)
-    })
-}
-
 /// Find the rollout this task produced by its embedded nonce: the newest rollout
-/// matching `working_dir` whose opening events include a `user_message` containing
-/// `nonce`. Positive identity — survives a concurrent same-cwd codex (e.g. `aside`)
-/// that a snapshot / time gate alone could not distinguish.
+/// matching `working_dir` whose opening events include a user message containing
+/// the nonce's full marker (`render::nonce_marker`). Positive identity — survives a
+/// concurrent same-cwd codex (e.g. `aside`) that a snapshot / time gate alone could
+/// not distinguish.
 pub fn locate_by_nonce(working_dir: &Path, nonce: &str) -> Option<(PathBuf, String)> {
-    locate_by_nonce_in(&codex_home().join("sessions"), working_dir, nonce)
-}
-
-fn locate_by_nonce_in(root: &Path, working_dir: &Path, nonce: &str) -> Option<(PathBuf, String)> {
     if nonce.is_empty() {
         return None;
     }
-    let mut files = Vec::new();
-    collect(root, &mut files, 0);
-    files.sort_by_key(|f| std::cmp::Reverse(f.1)); // newest first
-    let want = working_dir.to_string_lossy().to_string();
-    let want_canon = working_dir.canonicalize().ok();
-    for (path, _) in files.into_iter().take(SCAN_CAP) {
-        if let Some(meta) = read_session_meta(&path)
-            && cwd_matches(&meta.cwd, &want, want_canon.as_deref())
-            && rollout_has_nonce(&path, nonce)
-        {
-            return Some((path, meta.session_id));
-        }
-    }
-    None
+    locate_by_marker(working_dir, &crate::render::nonce_marker(nonce))
 }
 
-/// Scan the opening lines of a rollout for the dispatch nonce's full marker
-/// (`[dispatch-task: <nonce>]`) inside a user message — either codex schema (legacy
-/// `user_message` event or `item_completed` `UserMessage` item). Reads at most
-/// `NONCE_SCAN_LINES` lines — the rendered prompt is recorded among the first events.
+/// Whether the opening lines of a rollout carry the dispatch nonce's full marker
+/// (`[dispatch-task: <nonce>]`) inside a user message, in either codex schema.
 /// The full marker, not the bare nonce, is what must match: a fallback-retry or
 /// watchdog-restart successor's nonce is `<base>-retryN` / `<base>-restart`, so a
 /// substring test on `<base>` would claim the successor's rollout for the original.
 pub fn rollout_has_nonce(path: &Path, nonce: &str) -> bool {
-    use std::io::{BufRead, BufReader};
-    if nonce.is_empty() {
-        return false;
-    }
-    let marker = crate::render::nonce_marker(nonce);
-    let f = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    for line in BufReader::new(f)
-        .lines()
-        .map_while(Result::ok)
-        .take(NONCE_SCAN_LINES)
-    {
-        let o: Value = match serde_json::from_str(line.trim()) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if let Some((MessageRole::User, text)) = message_text(&o)
-            && text.contains(&marker)
-        {
-            return true;
-        }
-    }
-    false
+    !nonce.is_empty() && rollout_has_marker(path, &crate::render::nonce_marker(nonce))
 }
 
 /// Whether the rollout at `path` was produced by codex session `sid` (its
@@ -1050,17 +932,6 @@ mod tests {
     }
 
     #[test]
-    fn locate_by_session_id_matches_filename_suffix() {
-        let root = test_root("by-sid");
-        let day = root.join("2026/06/27");
-        write_rollout(&day, "aaa-111", "/w", "x");
-        let target = write_rollout(&day, "bbb-222", "/w", "y");
-        assert_eq!(locate_by_session_id_in(&root, "bbb-222"), Some(target));
-        assert_eq!(locate_by_session_id_in(&root, "no-such-sid"), None);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn curate_claude_maps_session_blocks_to_kinds() {
         let jsonl = [
             r#"{"type":"queue-operation","op":"x"}"#.to_string(),
@@ -1094,65 +965,14 @@ mod tests {
     }
 
     #[test]
-    fn claude_session_path_is_deterministic_slug() {
-        // Compare path components, not a rendered string — the string form is
-        // separator-dependent (`\` on Windows) while the components are not.
-        let p = claude_session_path(Path::new("/w/proj"), "sid-1");
-        let tail: Vec<_> = p.iter().rev().take(4).collect();
-        assert_eq!(tail[0], "sid-1.jsonl", "{}", p.display());
-        assert_eq!(tail[1], "-w-proj", "{}", p.display());
-        assert_eq!(tail[2], "projects", "{}", p.display());
-        assert_eq!(tail[3], ".claude", "{}", p.display());
-
-        // Windows-style cwd: backslashes and the drive colon slug to `-`.
-        let w = claude_session_path(Path::new(r"C:\w\proj"), "sid-2");
-        let wtail: Vec<_> = w.iter().rev().take(2).collect();
-        assert_eq!(wtail[0], "sid-2.jsonl", "{}", w.display());
-        assert_eq!(wtail[1], "C--w-proj", "{}", w.display());
-    }
-
-    #[test]
-    fn find_claude_session_scans_project_dirs_by_pinned_sid() {
-        let root = test_root("claude-find");
-        // Claude chose a slug the formula can't predict (leading-dot mangling).
-        let dir = root.join("-w--hidden-proj");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("pinned-sid.jsonl"), "{}\n").unwrap();
-        assert_eq!(
-            find_claude_session_in(&root, "pinned-sid"),
-            Some(dir.join("pinned-sid.jsonl"))
-        );
-        assert_eq!(find_claude_session_in(&root, "absent-sid"), None);
-        assert_eq!(find_claude_session_in(&root, ""), None);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn locate_by_nonce_picks_the_marked_rollout() {
-        let root = test_root("by-nonce");
-        let day = root.join("2026/06/27");
-        // identical cwd on both — only the nonce disambiguates
-        write_rollout(&day, "aaa", "/w", "an unrelated codex run");
-        let marked = write_rollout(&day, "bbb", "/w", "do it [dispatch-task: d-7:NONCE42]");
-        let got = locate_by_nonce_in(&root, Path::new("/w"), "d-7:NONCE42");
-        assert_eq!(got, Some((marked, "bbb".to_string())));
-        assert!(locate_by_nonce_in(&root, Path::new("/w"), "absent").is_none());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// The 0.153 schema (no `user_message` event) associates by the same nonce; a
-    /// same-cwd rollout whose marker is only in the injected `response_item` mirror
-    /// of a *different* prompt is not claimed.
-    #[test]
-    fn locate_by_nonce_reads_item_completed_schema() {
-        let root = test_root("by-nonce-v2");
+    fn rollout_has_nonce_reads_item_completed_schema() {
+        let root = test_root("nonce-v2");
         let day = root.join("2026/09/05");
-        write_rollout_v2(&day, "aaa", "/w", "an unrelated codex run");
+        let other = write_rollout_v2(&day, "aaa", "/w", "an unrelated codex run");
         let marked = write_rollout_v2(&day, "bbb", "/w", "do it [dispatch-task: d-9:NONCE9]");
-        let got = locate_by_nonce_in(&root, Path::new("/w"), "d-9:NONCE9");
-        assert_eq!(got, Some((marked.clone(), "bbb".to_string())));
         assert!(rollout_has_nonce(&marked, "d-9:NONCE9"));
-        assert!(locate_by_nonce_in(&root, Path::new("/w"), "absent").is_none());
+        assert!(!rollout_has_nonce(&other, "d-9:NONCE9"));
+        assert!(!rollout_has_nonce(&marked, "absent"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

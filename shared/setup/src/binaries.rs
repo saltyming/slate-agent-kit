@@ -1,12 +1,17 @@
-//! Obtaining the aside, dispatch and palette binaries and placing them in the binary folder.
+//! Obtaining the aside, dispatch and palette binaries, and the `agent-guard`
+//! helper beside them where the platform uses it, and placing them in the binary folder.
 //!
 //! Owns the three binary modes: `prebuilt` (download from the slate release,
 //! verify against `checksums.txt`), `build` (cargo build in a slate checkout) and
 //! `skip`. Owns the safe replacement of a binary that a running server may hold.
 //! It does not register servers; `harness::*` does.
 //!
-//! Main entry points: [`install`], [`Mode`], [`Fetch`], [`exe_name`] and
-//! [`replace_binary`].
+//! `agent-guard` is not an MCP server: it is a helper the servers start beside
+//! themselves on Linux and macOS, so it is never registered, and it is optional
+//! in a prebuilt release (older releases do not ship it).
+//!
+//! Main entry points: [`install`], [`Mode`], [`Fetch`], [`exe_name`],
+//! [`GUARD_BINARY`] and [`replace_binary`].
 
 use crate::env::Env;
 use crate::error::{Error, IoContext, Result};
@@ -49,6 +54,39 @@ impl Mode {
     }
 }
 
+/// The parent-death guard executable the servers start backends through.
+pub const GUARD_BINARY: &str = "agent-guard";
+
+/// The workspace package that builds [`GUARD_BINARY`].
+const GUARD_PACKAGE: &str = "agent-exec";
+
+/// The server binaries that start backends through [`GUARD_BINARY`].
+const GUARD_USERS: [&str; 2] = ["aside", "dispatch"];
+
+/// The binaries whose presence in a manifest keeps `binary` installed: `binary`
+/// itself and, for the guard, the servers that start backends through it. A kit
+/// that predates the guard lists those servers and not the guard, yet the
+/// servers that stay for it are the ones that need it.
+pub fn keepers_of(env: &Env, binary: &Path) -> Vec<PathBuf> {
+    let platform = env.platform();
+    let mut keepers = vec![binary.to_path_buf()];
+    if uses_guard(&platform) && is_guard(binary) {
+        let dir = binary.parent().unwrap_or(Path::new(""));
+        keepers.extend(GUARD_USERS.iter().map(|s| dir.join(exe_name(&platform, s))));
+    }
+    keepers
+}
+
+/// True when `binary` is the guard, whose keepers are more than its own listing.
+pub fn is_guard(binary: &Path) -> bool {
+    binary.file_name().is_some_and(|n| n == GUARD_BINARY)
+}
+
+/// True when `platform` uses [`GUARD_BINARY`]; Windows contains the process tree with a Job Object instead.
+pub fn uses_guard(platform: &str) -> bool {
+    !platform.contains("windows")
+}
+
 /// What to install and from where.
 #[derive(Debug, Clone)]
 pub struct Request {
@@ -56,12 +94,25 @@ pub struct Request {
     pub mode: Mode,
     /// Binary names to install (`aside`, `dispatch`, `palette`).
     pub names: Vec<String>,
+    /// Also install [`GUARD_BINARY`] beside `names` on platforms that use it.
+    pub guard: bool,
     /// Destination folder.
     pub bin_dir: PathBuf,
     /// Slate release the prebuilt binaries come from.
     pub slate_version: String,
     /// Slate checkout for `build`.
     pub slate_dir: Option<PathBuf>,
+}
+
+impl Request {
+    /// The binaries this request installs on `platform`: `names`, then the guard where it applies.
+    pub fn installed_names(&self, platform: &str) -> Vec<String> {
+        let mut all = self.names.clone();
+        if self.guard && uses_guard(platform) {
+            all.push(GUARD_BINARY.to_string());
+        }
+        all
+    }
 }
 
 /// The result of installing binaries.
@@ -311,7 +362,8 @@ pub fn download_all(
         notes.push("the release has no checksums.txt; the binaries were not verified".to_string());
     }
     let mut out = Vec::new();
-    for name in &req.names {
+    for name in req.installed_names(&platform) {
+        let optional = name == GUARD_BINARY;
         let asset = format!("{name}-{platform}.{ext}");
         let url = format!("{}/{asset}", resolved.base);
         ui.detail(&format!("downloading {asset}"));
@@ -322,11 +374,27 @@ pub fn download_all(
             .map(|(_, b)| b.clone());
         let bytes = match cached {
             Some(b) => b,
-            None => fetch.get(&url)?.ok_or_else(|| {
-                Error::network(format!("{url} does not exist"))
-                    .with_state("no binary was replaced")
-                    .with_fix("use `--binaries build --slate-dir <slate checkout>` or a slate release that ships this binary")
-            })?,
+            None => match fetch.get(&url)? {
+                Some(b) => b,
+                // Releases up to v0.9.1 do not ship the guard: the servers still install.
+                // A checksum entry for an asset that is absent is a broken release, not an old one.
+                None if optional
+                    && !resolved
+                        .checksums
+                        .as_deref()
+                        .is_some_and(|sums| find_checksum(sums, &asset).is_some()) =>
+                {
+                    notes.push(format!(
+                        "this slate release has no {GUARD_BINARY} for {platform}; dispatch refuses to start backends and aside runs unguarded until a release that ships it is installed"
+                    ));
+                    continue;
+                }
+                None => {
+                    return Err(Error::network(format!("{url} does not exist"))
+                        .with_state("no binary was replaced")
+                        .with_fix("use `--binaries build --slate-dir <slate checkout>` or a slate release that ships this binary"));
+                }
+            },
         };
         if let Some(sums) = &resolved.checksums {
             match find_checksum(sums, &asset) {
@@ -345,8 +413,8 @@ pub fn download_all(
                 )),
             }
         }
-        let binary = extract(&bytes, &exe_name(&platform, name), zip_format)?;
-        out.push((name.clone(), binary));
+        let binary = extract(&bytes, &exe_name(&platform, &name), zip_format)?;
+        out.push((name, binary));
     }
     Ok((out, notes))
 }
@@ -410,18 +478,13 @@ pub fn replace_binary(dest: &Path, bytes: &[u8]) -> Result<Option<String>> {
     Ok(warning)
 }
 
-fn run_build(
-    env: &Env,
-    req: &Request,
-    slate_dir: &Path,
-    ui: &mut Ui,
-) -> Result<Vec<(String, Vec<u8>)>> {
+/// Runs `cargo build --release` with `args` in `slate_dir`.
+fn cargo_release(env: &Env, slate_dir: &Path, args: &[&str], ui: &mut Ui) -> Result<()> {
     let cargo = env.get("CARGO_BIN").unwrap_or("cargo");
     let mut cmd = env.command(cargo);
-    cmd.current_dir(slate_dir).args(["build", "--release"]);
-    for n in &req.names {
-        cmd.args(["-p", n]);
-    }
+    cmd.current_dir(slate_dir)
+        .args(["build", "--release"])
+        .args(args);
     ui.detail(&format!("cargo build --release in {}", slate_dir.display()));
     let status = cmd.status().map_err(|e| {
         Error::command(format!("cannot run `{cargo}`: {e}"))
@@ -436,19 +499,43 @@ fn run_build(
         .with_state("no binary was replaced")
         .with_fix("fix the build error above and re-run, or use `--binaries prebuilt`"));
     }
+    Ok(())
+}
+
+fn run_build(
+    env: &Env,
+    req: &Request,
+    slate_dir: &Path,
+    ui: &mut Ui,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let platform = env.platform();
+    let mut servers: Vec<&str> = Vec::new();
+    for n in &req.names {
+        servers.extend(["-p", n]);
+    }
+    cargo_release(env, slate_dir, &servers, ui)?;
+    if req.guard && uses_guard(&platform) {
+        // `--bin` narrows every selected package to that target, so the guard is its own
+        // invocation; the crate's test-support binaries are never built.
+        cargo_release(
+            env,
+            slate_dir,
+            &["-p", GUARD_PACKAGE, "--bin", GUARD_BINARY],
+            ui,
+        )?;
+    }
     let target = env
         .get("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| slate_dir.join("target"));
-    let platform = env.platform();
     let mut out = Vec::new();
-    for n in &req.names {
-        let built = target.join("release").join(exe_name(&platform, n));
+    for n in req.installed_names(&platform) {
+        let built = target.join("release").join(exe_name(&platform, &n));
         let bytes = fs::read(&built).map_err(|e| {
             Error::io(format!("reading the built binary {}", built.display()), e)
                 .with_fix("check that the slate checkout builds this package")
         })?;
-        out.push((n.clone(), bytes));
+        out.push((n, bytes));
     }
     Ok(out)
 }
@@ -574,6 +661,7 @@ mod tests {
         Request {
             mode: Mode::Prebuilt,
             names: vec!["aside".into(), "dispatch".into(), "palette".into()],
+            guard: false,
             bin_dir: dir.to_path_buf(),
             slate_version: "0.7.0".into(),
             slate_dir: None,
@@ -581,9 +669,25 @@ mod tests {
     }
 
     fn release(platform: &str, base: &str, zip_format: bool, with_sums: bool) -> MapFetch {
+        release_of(
+            platform,
+            base,
+            zip_format,
+            with_sums,
+            &["aside", "dispatch", "palette"],
+        )
+    }
+
+    fn release_of(
+        platform: &str,
+        base: &str,
+        zip_format: bool,
+        with_sums: bool,
+        names: &[&str],
+    ) -> MapFetch {
         let mut m = HashMap::new();
         let mut sums = String::new();
-        for name in ["aside", "dispatch", "palette"] {
+        for name in names.iter().copied() {
             let exe = exe_name(platform, name);
             let body = format!("binary {name}").into_bytes();
             let (asset, bytes) = if zip_format {
@@ -795,6 +899,177 @@ mod tests {
         req.mode = Mode::Build;
         let err = install(&env, &mut ui, &req, &MapFetch::new(HashMap::new())).unwrap_err();
         assert!(err.to_string().contains("--slate-dir"));
+    }
+
+    const WITH_GUARD: [&str; 4] = ["aside", "dispatch", "palette", GUARD_BINARY];
+
+    fn guard_request(dir: &Path) -> Request {
+        Request {
+            guard: true,
+            ..request(dir)
+        }
+    }
+
+    #[test]
+    fn the_guard_is_listed_after_the_servers_except_on_windows() {
+        let req = guard_request(Path::new("/b"));
+        assert_eq!(
+            req.installed_names("aarch64-apple-darwin"),
+            ["aside", "dispatch", "palette", "agent-guard"]
+        );
+        assert_eq!(
+            req.installed_names("x86_64-pc-windows-msvc"),
+            ["aside", "dispatch", "palette"]
+        );
+        assert_eq!(
+            request(Path::new("/b"))
+                .installed_names("x86_64-unknown-linux-gnu")
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn the_guard_is_kept_by_the_servers_that_use_it_and_others_only_by_themselves() {
+        let env = env_for("aarch64-apple-darwin");
+        let dir = Path::new("/b");
+        assert_eq!(
+            keepers_of(&env, &dir.join("agent-guard")),
+            [
+                dir.join("agent-guard"),
+                dir.join("aside"),
+                dir.join("dispatch")
+            ]
+        );
+        assert_eq!(
+            keepers_of(&env, &dir.join("palette")),
+            [dir.join("palette")]
+        );
+        assert_eq!(keepers_of(&env, &dir.join("aside")), [dir.join("aside")]);
+        let win = env_for("x86_64-pc-windows-msvc");
+        assert_eq!(
+            keepers_of(&win, &dir.join("agent-guard")),
+            [dir.join("agent-guard")]
+        );
+    }
+
+    #[test]
+    fn prebuilt_installs_the_guard_beside_the_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = "x86_64-unknown-linux-musl";
+        let env = env_for(platform);
+        let (versioned, _) = release_bases(&env, "0.7.0");
+        let fetch = release_of(platform, &versioned, false, true, &WITH_GUARD);
+        let mut ui = Ui::captured(new_sink());
+        let got = install(&env, &mut ui, &guard_request(dir.path()), &fetch).unwrap();
+        assert_eq!(got.paths.len(), 4);
+        assert_eq!(got.paths.last().unwrap(), &dir.path().join(GUARD_BINARY));
+        assert_eq!(
+            fs::read(dir.path().join(GUARD_BINARY)).unwrap(),
+            b"binary agent-guard"
+        );
+        assert!(got.notes.is_empty(), "{:?}", got.notes);
+    }
+
+    #[test]
+    fn a_release_without_the_guard_installs_the_servers_and_warns_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = "aarch64-apple-darwin";
+        let env = env_for(platform);
+        let (versioned, _) = release_bases(&env, "0.7.0");
+        let fetch = release(platform, &versioned, false, true);
+        let mut ui = Ui::captured(new_sink());
+        let got = install(&env, &mut ui, &guard_request(dir.path()), &fetch).unwrap();
+        assert_eq!(got.paths.len(), 3);
+        assert!(!dir.path().join(GUARD_BINARY).exists());
+        let warnings: Vec<_> = got
+            .notes
+            .iter()
+            .filter(|n| n.contains(GUARD_BINARY))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{:?}", got.notes);
+        assert!(
+            warnings[0].contains("dispatch refuses to start backends"),
+            "{warnings:?}"
+        );
+        assert!(warnings[0].contains("aside runs unguarded"), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_release_without_checksums_and_without_the_guard_still_installs() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = "x86_64-unknown-linux-gnu";
+        let env = env_for(platform);
+        let (versioned, _) = release_bases(&env, "0.7.0");
+        let fetch = release(platform, &versioned, false, false);
+        let mut ui = Ui::captured(new_sink());
+        let got = install(&env, &mut ui, &guard_request(dir.path()), &fetch).unwrap();
+        assert_eq!(got.paths.len(), 3);
+        assert_eq!(
+            got.notes
+                .iter()
+                .filter(|n| n.contains(GUARD_BINARY))
+                .count(),
+            1,
+            "{:?}",
+            got.notes
+        );
+    }
+
+    #[test]
+    fn a_checksum_entry_for_a_missing_guard_asset_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = "x86_64-unknown-linux-gnu";
+        let env = env_for(platform);
+        let (versioned, _) = release_bases(&env, "0.7.0");
+        let mut fetch = release_of(platform, &versioned, false, true, &WITH_GUARD);
+        fetch
+            .0
+            .remove(&format!("{versioned}/{GUARD_BINARY}-{platform}.tar.gz"));
+        let mut ui = Ui::captured(new_sink());
+        let err = install(&env, &mut ui, &guard_request(dir.path()), &fetch).unwrap_err();
+        assert!(err.to_string().contains("agent-guard-"), "{err}");
+        assert!(!dir.path().join("aside").exists());
+    }
+
+    #[test]
+    fn a_guard_checksum_mismatch_aborts_like_a_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = "x86_64-unknown-linux-gnu";
+        let env = env_for(platform);
+        let (versioned, _) = release_bases(&env, "0.7.0");
+        let mut fetch = release_of(platform, &versioned, false, true, &WITH_GUARD);
+        fetch.0.insert(
+            format!("{versioned}/{GUARD_BINARY}-{platform}.tar.gz"),
+            targz(GUARD_BINARY, b"tampered"),
+        );
+        let mut ui = Ui::captured(new_sink());
+        let err = install(&env, &mut ui, &guard_request(dir.path()), &fetch).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("checksum mismatch for agent-guard-"),
+            "{err}"
+        );
+        assert!(err.state.unwrap().contains("no binary was replaced"));
+        assert!(!dir.path().join("aside").exists());
+    }
+
+    #[test]
+    fn windows_neither_downloads_nor_mentions_the_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = "x86_64-pc-windows-msvc";
+        let env = env_for(platform);
+        let (versioned, _) = release_bases(&env, "0.7.0");
+        let fetch = release(platform, &versioned, true, true);
+        let mut ui = Ui::captured(new_sink());
+        let got = install(&env, &mut ui, &guard_request(dir.path()), &fetch).unwrap();
+        assert_eq!(got.paths.len(), 3);
+        assert!(got.notes.is_empty(), "{:?}", got.notes);
+        assert!(
+            fetch.1.borrow().iter().all(|c| !c.contains(GUARD_BINARY)),
+            "{:?}",
+            fetch.1.borrow()
+        );
     }
 
     #[test]

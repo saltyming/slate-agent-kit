@@ -5,22 +5,34 @@
 //! event streaming without scraping an interactive transcript. The log file we
 //! expose through `dispatch_logs` is dispatch-owned normalized JSONL; every event
 //! keeps the native OpenCode event under `native` for debugging.
+//!
+//! Entry point: [`run`], one attempt. It reports through `agent_exec::RunEvent`
+//! exactly as the crate's process runs do — `Started` right after the server
+//! spawn, `Session` once the session exists and its log is initialized,
+//! `Progress` for each normalized JSONL line it appends to the log, `Finished`
+//! with every terminal outcome — so the executor writes the store for every
+//! backend in one place. The `opencode serve` process runs under the
+//! parent-death guard (`agent-guard` on Linux and macOS, a Job Object on
+//! Windows) and carries dispatch's re-entry marker.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
+use agent_exec::guard::{self, ProcessTree};
+use agent_exec::{Outcome, Reentry, RunEvent, RunRecord};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-#[cfg(not(unix))]
-use tokio::process::Command;
+use tokio::process::{Child, Command};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
-use crate::backend::{self, RunOutcome};
-use crate::executor::DbHandle;
-use crate::store;
+use crate::backend::REENTRY_ENV;
+
+/// The binary looked up on `PATH`, and the backend's name in records.
+pub const BINARY: &str = "opencode";
 
 const STARTUP_TIMEOUT_MS: u64 = 10_000;
 const STARTUP_POLL_MS: u64 = 150;
@@ -39,22 +51,68 @@ pub struct RunSpec<'a> {
     pub rollout_path: Option<&'a Path>,
 }
 
-pub async fn run(db: &DbHandle, spec: RunSpec<'_>, ct: &CancellationToken) -> RunOutcome {
-    if backend::which("opencode").is_none() {
-        return RunOutcome::WaitFailed(backend::install_hint(backend::Backend::Opencode));
+/// One line telling how to install the opencode CLI.
+pub fn install_hint() -> String {
+    "install opencode CLI (see https://opencode.ai/docs/cli/)".to_string()
+}
+
+/// `opencode --version` with dispatch's re-entry marker stamped; `None` when
+/// the binary is missing, fails to run or prints nothing.
+pub async fn version(reentry: &Reentry) -> Option<String> {
+    agent_exec::version_of(BINARY, reentry).await
+}
+
+/// The dispatch-owned log of an opencode session: the log a resumed task
+/// inherits (`rollout_path`), else a fresh file under the state directory.
+pub fn log_path(rollout_path: Option<&Path>, state_dir: &Path, session_id: &str) -> PathBuf {
+    rollout_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| opencode_log_path(state_dir, session_id))
+}
+
+/// Perform one opencode attempt and return its outcome, after sending
+/// `Started` (once the server process exists), `Session`, `Progress` and
+/// `Finished` to `events`. Send errors (the receiver dropped) are ignored.
+pub async fn run(
+    spec: RunSpec<'_>,
+    events: &UnboundedSender<RunEvent>,
+    ct: &CancellationToken,
+) -> Outcome {
+    let outcome = run_inner(&spec, events, ct).await;
+    let _ = events.send(RunEvent::Finished(outcome.clone()));
+    outcome
+}
+
+async fn run_inner(
+    spec: &RunSpec<'_>,
+    events: &UnboundedSender<RunEvent>,
+    ct: &CancellationToken,
+) -> Outcome {
+    let started_at = unix_ms();
+    let clock = Instant::now();
+    if agent_exec::which(BINARY).is_none() {
+        return Outcome::NotFound {
+            binary: BINARY.to_string(),
+            hint: install_hint(),
+        };
     }
 
     let port = match open_port() {
         Ok(p) => p,
-        Err(e) => return RunOutcome::WaitFailed(format!("allocate localhost port failed: {e}")),
+        Err(e) => return Outcome::Spawn(format!("allocate localhost port failed: {e}")),
     };
     let base_url = format!("http://127.0.0.1:{port}");
-    let mut child = match spawn_server(spec.working_dir, port) {
-        Ok(c) => c,
-        Err(e) => return RunOutcome::WaitFailed(e),
+    let argv = server_argv(port);
+    let (mut child, tree) = match spawn_server(spec.working_dir, &argv) {
+        Ok(pair) => pair,
+        Err(e) => return Outcome::Spawn(e),
     };
-    let child_pid = child.id();
-    mark_running(db, &spec, child_pid, port);
+    let _ = events.send(RunEvent::Started {
+        pid: child.id(),
+        argv: argv.clone(),
+        backend_version: spec.backend_version.map(str::to_string),
+        guarded: true,
+    });
     let stderr = child.stderr.take();
     let stderr_task = tokio::spawn(read_capped_opt(stderr, SERVER_STDERR_CAP));
     let client = match reqwest::Client::builder()
@@ -62,47 +120,48 @@ pub async fn run(db: &DbHandle, spec: RunSpec<'_>, ct: &CancellationToken) -> Ru
         .build()
     {
         Ok(c) => c,
-        Err(e) => return RunOutcome::WaitFailed(format!("http client build failed: {e}")),
+        Err(e) => {
+            stop_server(&tree, &mut child).await;
+            return Outcome::WaitFailed(format!("http client build failed: {e}"));
+        }
     };
 
     if let Err(e) = wait_health(&client, &base_url, ct).await {
-        kill_server(child_pid);
-        let _ = child.wait().await;
+        stop_server(&tree, &mut child).await;
         let stderr = stderr_task.await.unwrap_or_default();
-        return RunOutcome::WaitFailed(format!("{e}\n{}", stderr.trim()));
+        return Outcome::WaitFailed(format!("{e}\n{}", stderr.trim()));
     }
 
     let session_id = match spec.resume_session {
         Some(s) => s.to_string(),
-        None => match create_session(&client, &base_url, &spec).await {
+        None => match create_session(&client, &base_url, spec).await {
             Ok(s) => s,
             Err(e) => {
-                kill_server(child_pid);
-                let _ = child.wait().await;
+                stop_server(&tree, &mut child).await;
                 let stderr = stderr_task.await.unwrap_or_default();
-                return RunOutcome::WaitFailed(format!("{e}\n{}", stderr.trim()));
+                return Outcome::WaitFailed(format!("{e}\n{}", stderr.trim()));
             }
         },
     };
 
-    let log_path = spec
-        .rollout_path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| opencode_log_path(spec.state_dir, &session_id));
-    if let Err(e) = init_log(&log_path, &session_id, spec.working_dir, spec.prompt).await {
-        kill_server(child_pid);
-        let _ = child.wait().await;
-        return RunOutcome::WaitFailed(format!("initialize opencode log failed: {e}"));
+    let log = Log {
+        path: log_path(spec.rollout_path, spec.state_dir, &session_id),
+        events: events.clone(),
+    };
+    if let Err(e) = init_log(&log, &session_id, spec.working_dir, spec.prompt).await {
+        stop_server(&tree, &mut child).await;
+        return Outcome::WaitFailed(format!("initialize opencode log failed: {e}"));
     }
-    if let Ok(conn) = db.lock() {
-        let _ = store::set_session(&conn, spec.id, &session_id, &log_path.to_string_lossy());
-    }
+    let _ = events.send(RunEvent::Session {
+        session_id: session_id.clone(),
+        port: Some(port),
+    });
 
     let event_ct = ct.child_token();
     let event_client = client.clone();
     let event_base = base_url.clone();
     let event_sid = session_id.clone();
-    let event_log = log_path.clone();
+    let event_log = log.clone();
     let event_task_ct = event_ct.clone();
     let event_task = tokio::spawn(async move {
         stream_events(
@@ -115,96 +174,101 @@ pub async fn run(db: &DbHandle, spec: RunSpec<'_>, ct: &CancellationToken) -> Ru
         .await
     });
 
-    let message = send_message(&client, &base_url, &session_id, &spec);
+    let message = send_message(&client, &base_url, &session_id, spec);
     let response = tokio::select! {
         biased;
         _ = ct.cancelled() => {
             let _ = abort_session(&client, &base_url, &session_id).await;
             event_task.abort();
-            kill_server(child_pid);
-            let _ = child.wait().await;
-            return RunOutcome::Cancelled;
+            stop_server(&tree, &mut child).await;
+            return Outcome::Cancelled;
         }
         r = message => r,
     };
 
     event_ct.cancel();
     let _ = event_task.await;
-    kill_server(child_pid);
-    let _ = child.wait().await;
+    stop_server(&tree, &mut child).await;
     let stderr = stderr_task.await.unwrap_or_default();
 
+    let record = |exit_code: i32, stdout: String, stdout_total: u64, stderr: String| RunRecord {
+        backend: BINARY.to_string(),
+        argv: argv.clone(),
+        model: spec.model.map(str::to_string),
+        reasoning_effort: spec.reasoning_effort.map(str::to_string),
+        started_at,
+        wall_ms: clock.elapsed().as_millis() as u64,
+        exit_code: Some(exit_code),
+        success: exit_code == 0,
+        final_text: (exit_code == 0).then(|| stdout.clone()),
+        stdout,
+        stdout_total,
+        stdout_truncated: false,
+        stderr,
+        stderr_truncated: false,
+        session_id: Some(session_id.clone()),
+        backend_version: spec.backend_version.map(str::to_string),
+        usage: None,
+    };
     match response {
         Ok(v) => {
             let text = assistant_text(&v);
-            let _ = append_event(&log_path, agent_message(&text, json!({"final": true}))).await;
-            let _ = append_event(&log_path, task_complete(&text, None)).await;
+            let _ = log
+                .append(agent_message(&text, json!({"final": true})))
+                .await;
+            let _ = log.append(task_complete(&text, None)).await;
             let error = v.pointer("/info/error").filter(|e| !e.is_null());
             if let Some(e) = error {
-                RunOutcome::Done {
-                    exit_code: Some(1),
-                    success: false,
-                    stdout: text,
-                    stdout_total: 0,
-                    stdout_truncated: false,
-                    stderr: format!("opencode error: {e}\n{stderr}"),
-                    stderr_truncated: false,
-                }
+                Outcome::Record(record(1, text, 0, format!("opencode error: {e}\n{stderr}")))
             } else {
-                RunOutcome::Done {
-                    exit_code: Some(0),
-                    success: true,
-                    stdout: text.clone(),
-                    stdout_total: text.len(),
-                    stdout_truncated: false,
-                    stderr,
-                    stderr_truncated: false,
-                }
+                let total = text.len() as u64;
+                Outcome::Record(record(0, text, total, stderr))
             }
         }
         Err(e) => {
-            let _ = append_event(&log_path, task_complete("", Some(&e))).await;
-            RunOutcome::Done {
-                exit_code: Some(1),
-                success: false,
-                stdout: String::new(),
-                stdout_total: 0,
-                stdout_truncated: false,
-                stderr: format!("{e}\n{stderr}"),
-                stderr_truncated: false,
-            }
+            let _ = log.append(task_complete("", Some(&e))).await;
+            Outcome::Record(record(1, String::new(), 0, format!("{e}\n{stderr}")))
         }
     }
 }
 
-/// On Unix, spawns a hidden `dispatch __pdeath_guard` re-invocation in place of
-/// `opencode serve` directly — the guard becomes the pgid leader instead, and
-/// `opencode serve` runs as ITS child, so the whole subtree (including a
-/// long-lived `opencode serve` process) dies with dispatch even under a hard
-/// `SIGKILL` of dispatch itself. See `pdeath_guard.rs` for why a guard process
-/// is needed instead of a bare `PR_SET_PDEATHSIG` directly on `opencode serve`.
-fn spawn_server(working_dir: &Path, port: u16) -> Result<tokio::process::Child, String> {
-    let opencode_argv = [
-        "opencode".to_string(),
+/// The `opencode serve` argv for `port`, recorded as the run's argv.
+fn server_argv(port: u16) -> Vec<String> {
+    vec![
+        BINARY.to_string(),
         "serve".to_string(),
         "--hostname".to_string(),
         "127.0.0.1".to_string(),
         "--port".to_string(),
         port.to_string(),
-    ];
+    ]
+}
 
-    #[cfg(unix)]
-    let mut cmd = backend::wrap_with_guard(&opencode_argv, working_dir)?;
-    #[cfg(not(unix))]
-    let mut cmd = {
-        let mut cmd = Command::new("opencode");
-        cmd.args(&opencode_argv[1..]).current_dir(working_dir);
-        cmd
-    };
-
+/// Start `opencode serve` under the parent-death guard, which is required:
+/// on Linux and macOS through `agent-guard` (the guard leads the process group
+/// and `opencode serve` runs as its child, so the whole subtree dies with
+/// dispatch even under a hard `SIGKILL`); on Windows in a kill-on-close Job
+/// Object, whose setup failure kills the process and fails the run rather than
+/// leave it running unprotected. The returned tree kills the whole subtree.
+fn spawn_server(working_dir: &Path, argv: &[String]) -> Result<(Child, ProcessTree), String> {
+    let mut built = Command::new(&argv[0]);
+    built.args(&argv[1..]).current_dir(working_dir);
     // Mark the opencode server (and its whole subtree) as dispatch-spawned so a
     // nested dispatch submit/steer from within the opencode session is refused.
-    backend::stamp_reentry_depth(&mut cmd);
+    agent_exec::reentry::stamp(&mut built, REENTRY_ENV);
+
+    #[cfg(not(windows))]
+    let mut cmd = match guard::locate() {
+        Some(path) => guard::wrap(&built, &path),
+        None => {
+            return Err(format!(
+                "cannot start opencode serve under the parent-death guard: {}",
+                guard::install_hint()
+            ));
+        }
+    };
+    #[cfg(windows)]
+    let mut cmd = built;
 
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -216,42 +280,60 @@ fn spawn_server(working_dir: &Path, port: u16) -> Result<tokio::process::Child, 
     }
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut child = cmd.spawn().map_err(|e| {
-        #[cfg(unix)]
+        #[cfg(not(windows))]
         {
-            format!("spawn pdeath_guard for opencode serve failed: {e}")
+            format!(
+                "spawn {} for opencode serve failed: {e}",
+                guard::GUARD_BINARY
+            )
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
             format!("spawn opencode serve failed: {e}")
         }
     })?;
     #[cfg(windows)]
-    {
-        let pid = child.id();
-        backend::protect_or_kill(&mut child, pid, "opencode serve")?;
-    }
-    Ok(child)
+    let tree = match guard::protect(&mut child) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = child.start_kill();
+            return Err(format!("Job Object setup for opencode serve failed: {e}"));
+        }
+    };
+    #[cfg(not(windows))]
+    let tree = ProcessTree::unprotected(&child);
+    Ok((child, tree))
 }
 
-fn mark_running(db: &DbHandle, spec: &RunSpec<'_>, child_pid: Option<u32>, port: u16) {
-    let argv = vec![
-        "opencode".to_string(),
-        "serve".to_string(),
-        "--hostname".to_string(),
-        "127.0.0.1".to_string(),
-        "--port".to_string(),
-        port.to_string(),
-    ];
-    let argv_json = serde_json::to_string(&argv).unwrap_or_default();
-    if let Ok(conn) = db.lock() {
-        let _ = store::mark_running(
-            &conn,
-            spec.id,
-            child_pid.map(|p| p as i64),
-            &argv_json,
-            spec.backend_version,
-        );
+/// Kill the server's whole tree while its id is ours, then reap it.
+async fn stop_server(tree: &ProcessTree, child: &mut Child) {
+    tree.kill(child);
+    let _ = child.wait().await;
+}
+
+/// The dispatch-owned log file, plus the channel each appended line is also
+/// reported on as `RunEvent::Progress`.
+#[derive(Clone)]
+struct Log {
+    path: PathBuf,
+    events: UnboundedSender<RunEvent>,
+}
+
+impl Log {
+    /// Append one normalized event as a JSONL line and report it.
+    async fn append(&self, v: Value) -> std::io::Result<()> {
+        let line = v.to_string();
+        append_line(&self.path, &line).await?;
+        let _ = self.events.send(RunEvent::Progress(line));
+        Ok(())
     }
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn open_port() -> std::io::Result<u16> {
@@ -422,45 +504,36 @@ fn opencode_log_path(state_dir: &Path, session_id: &str) -> PathBuf {
 }
 
 async fn init_log(
-    path: &Path,
+    log: &Log,
     session_id: &str,
     working_dir: &Path,
     prompt: &str,
 ) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = log.path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    if !path.exists() {
-        append_event(
-            path,
-            json!({
+    if !log.path.exists() {
+        log.append(json!({
                 "type": "session_meta",
                 "payload": {
                     "backend": "opencode",
                     "session_id": session_id,
                     "cwd": working_dir.to_string_lossy(),
                 }
-            }),
-        )
+        }))
         .await?;
     }
-    append_event(
-        path,
-        json!({"type": "event_msg", "payload": {"type": "task_started"}}),
-    )
-    .await?;
-    append_event(
-        path,
-        json!({"type": "event_msg", "payload": {"type": "user_message", "message": prompt}, "backend": "opencode"}),
-    )
-    .await
+    log.append(json!({"type": "event_msg", "payload": {"type": "task_started"}}))
+        .await?;
+    log.append(json!({"type": "event_msg", "payload": {"type": "user_message", "message": prompt}, "backend": "opencode"}))
+        .await
 }
 
 async fn stream_events(
     client: reqwest::Client,
     base_url: String,
     session_id: String,
-    log_path: PathBuf,
+    log: Log,
     ct: CancellationToken,
 ) {
     let resp = match client.get(format!("{base_url}/event")).send().await {
@@ -481,7 +554,7 @@ async fn stream_events(
             buf = rest;
             if let Some(v) = parse_sse_data(&block) {
                 for event in normalize_event(&session_id, &v) {
-                    let _ = append_event(&log_path, event).await;
+                    let _ = log.append(event).await;
                 }
             }
         }
@@ -710,7 +783,7 @@ fn task_complete(last: &str, error: Option<&str>) -> Value {
     })
 }
 
-async fn append_event(path: &Path, v: Value) -> std::io::Result<()> {
+async fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -719,7 +792,7 @@ async fn append_event(path: &Path, v: Value) -> std::io::Result<()> {
         .append(true)
         .open(path)
         .await?;
-    f.write_all(v.to_string().as_bytes()).await?;
+    f.write_all(line.as_bytes()).await?;
     f.write_all(b"\n").await
 }
 
@@ -739,12 +812,6 @@ async fn read_capped_opt<R: AsyncRead + Unpin>(reader: Option<R>, cap: usize) ->
         }
     }
     String::from_utf8_lossy(&buf).into_owned()
-}
-
-fn kill_server(pid: Option<u32>) {
-    if let Some(p) = pid {
-        backend::kill_process_group(p);
-    }
 }
 
 #[cfg(test)]
