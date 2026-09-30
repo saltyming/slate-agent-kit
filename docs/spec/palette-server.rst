@@ -190,6 +190,13 @@ line and a message.
   ``Implementation``, ``Verification``, ``Implementers`` or ``Revised`` not in
   its template format.
 
+``P015`` Stray files (error)
+  A file under ``_palette/`` other than ``layout.rst``, ``.gitignore``,
+  ``.palette.lock`` and the documents the layout places; a file or folder
+  inside a placed family folder that is not a document of that family. Research
+  and evidence belong inside the record that relies on them; a decision or
+  question in state; anything else outside the palette folders.
+
 Read tools
 ~~~~~~~~~~
 

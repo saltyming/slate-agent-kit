@@ -141,6 +141,9 @@ Additions and changes of substance, all discussed with the user on
 - The framework-conventions rule file (React, Rust, Python naming) is
   removed: it stated what the models already know and what each repository
   decides for itself.
+- § 4 (3), added after the 2026-09-30 review: the compression had dropped the
+  general "plan, get approval, implement" checkpoint of the earlier kernel's
+  quick reference; it is restored as a clause of § 4.
 
 The rule files keep only what the articles do not imply: the reading order,
 the planning outline, the refactoring and comment conventions, the undo

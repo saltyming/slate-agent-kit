@@ -24,7 +24,7 @@ When a tool or behavior is removed or changed, rewrite the rule text so the new 
 
 ## Topology
 
-- `shared/rules/core/` — kernel (direction, autonomy, prohibitions, reporting, memory) + execution, delegation, git and convention rules; `shared/rules/mcp/` — consultation (aside) and dispatch.
+- `shared/rules/core/` — kernel (the articles, § 1 to § 21, in six parts) + the execution, delegation and git rule files, which hold only what the articles do not imply; `shared/rules/mcp/` — consultation (aside) and dispatch.
 - `shared/workflows/palette/` — palette rule, skills, and `templates/` (also the palette server's schema); `shared/workflows/memory/` — the memory-triage skill; `shared/prefs/` — prefs templates.
 - `shared/mcp-servers/{aside,dispatch,harness-log,palette}` and `shared/setup` (the `slate-setup` installer) — the Rust workspace (repo-root `Cargo.toml`). The kits ship no binaries of their own.
 - `adapters/<harness>/` — `tokens.sed` (render-time `{{TOKEN}}` values, including `KIT_VERSION`), `inserts/*.md` (per-marker fragments); codex and kimi also have `surface.md` (harness surface rules).
@@ -36,7 +36,7 @@ When a tool or behavior is removed or changed, rewrite the rule text so the new 
 - `{{TOKEN}}` — substituted from `adapters/<h>/tokens.sed`. Kit version bumps happen there (`KIT_VERSION`); the slate release number lives in `tooling/slate-version`.
 - `{{@INSERT name}}` — replaced with `adapters/<h>/inserts/<name>.md`. Every harness must have the file for every marker: empty file = no contribution, missing file = hard render error. Insert content passes through `tokens.sed` afterwards.
 - Entry points and the maintainer `AGENTS.md` take per-kit tokens (`{{KIT_NAME}}`, `{{KIT_REPO}}`, `{{SLATE_VERSION}}`, `{{HARNESS}}`) from `render-kit.sh` itself.
-- Invariant/gate IDs: each `INV-*` / `GATE-*` is defined exactly once, as a bold `**ID — Title.**` anchor; everything else references the ID. `validate.sh` enforces uniqueness and cross-file reference integrity, harness-leak greps (no `advisor()`/`ultracode`/`ScheduleWakeup` in codex/kimi renders; no `TodoList`/`AgentSwarm`/`apply_patch` in claude renders; no `workslate` in any render), retired terms and trigger phrases, hard byte budgets on each rendered corpus, and `palette check` on this repo's own documents when a palette binary is built.
+- Articles: each `§ N` is defined exactly once, in the kernel, as a bold `**§ N Title.**` anchor with numbered clauses and a `Test:` line; everything else cites the number. Numbers never move: a new article takes the next free number or a letter suffix. `validate.sh` enforces one definition per cited article, treats `INV-`/`GATE-` as retired terms, harness-leak greps (no `advisor()`/`ultracode`/`ScheduleWakeup` in codex/kimi renders; no `TodoList`/`AgentSwarm`/`apply_patch` in claude renders; no `workslate` in any render), retired terms and trigger phrases, hard byte budgets on each rendered corpus, and `palette check` on this repo's own documents when a palette binary is built.
 
 ## Rust workspace
 

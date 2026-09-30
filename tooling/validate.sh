@@ -178,7 +178,7 @@ fi
 # purpose and judgment, never a mandatory trigger.
 
 for kit in claude codex kimi; do
-  hits=$(grep -rniE '\b(story|stories|slice|slices|handoff|hand-off)\b|(INV|GATE)-[A-Z]|whether or not the user asked|do not reconsider|use them without asking' \
+  hits=$(grep -rniE '\b(story|stories|slice|slices|handoff|hand-off)\b|\\b(INV|GATE)-[A-Z]|whether or not the user asked|do not reconsider|use them without asking' \
       "$ROOT/kits/${kit}-agent-kit/dist/rules" "$ROOT"/kits/${kit}-agent-kit/dist/*.md 2>/dev/null || true)
   if [ -n "$hits" ]; then
     echo "retired term or trigger phrase in $kit render:" >&2

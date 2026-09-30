@@ -36,7 +36,7 @@ This repository documents itself in `docs/` (RST: `rfc/`, `adr/`,
 Rust crates use edition 2024 and standard `rustfmt` formatting. Use `snake_case`
 for functions and modules, `PascalCase` for types, and avoid `unwrap()` in
 production paths. Shell tooling is POSIX `sh` with `set -eu`. For rule text,
-define each `INV-*` or `GATE-*` ID exactly once and reference that ID elsewhere,
+define each article `§ N` exactly once in the kernel and cite the number elsewhere,
 and use the terms in `docs/glossary.rst`. Documents in `docs/` and `_palette/`
 follow the RST house style in
 `shared/workflows/palette/templates/house-style.rst`.

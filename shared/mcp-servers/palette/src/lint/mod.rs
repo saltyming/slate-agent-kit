@@ -1,4 +1,4 @@
-//! The lint engine: rules P001 to P014 over a project snapshot.
+//! The lint engine: rules P001 to P015 over a project snapshot.
 //!
 //! Owns the [`Finding`] type, the derived analysis shared by the rules (records,
 //! changesets, staging plan) and the ordering of results. Each rule group lives in its
@@ -9,6 +9,7 @@ mod changes;
 mod links;
 pub mod patterns;
 mod relations;
+mod stray;
 mod structure;
 mod syntax;
 mod work;
@@ -43,7 +44,7 @@ impl Severity {
 /// One lint finding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
-    /// Rule id, `P001` to `P014`.
+    /// Rule id, `P001` to `P015`.
     pub rule: &'static str,
     /// Severity.
     pub severity: Severity,
@@ -140,6 +141,7 @@ pub fn run(src: &dyn FileSource, snap: &Snapshot, an: &Analysis) -> Vec<Finding>
     relations::check(&cx, &mut out);
     changes::check(&cx, &mut out);
     work::check(&cx, &mut out);
+    stray::check(&cx, &mut out);
     out.sort_by(|a, b| {
         (a.severity, &a.file, a.line, a.rule, &a.message)
             .cmp(&(b.severity, &b.file, b.line, b.rule, &b.message))

@@ -597,8 +597,16 @@ mod tests {
         env.set_var("CODEX_BIN", "/definitely/not/there");
         let ctx = test_ctx(Harness::Codex, "/h/.codex", "/h/.codex");
         let mut ui = Ui::captured(crate::ui::new_sink());
+        env.set_var("SLATE_PLATFORM", "x86_64-unknown-linux-gnu");
         let out = register(&env, &mut ui, &ctx).unwrap();
         assert!(out.registered.is_empty());
         assert!(out.manual[0].starts_with("CODEX_HOME=/h/.codex /definitely/not/there mcp add aside --env ASIDE_HARNESS=codex -- "), "{:?}", out.manual);
+        env.set_var("SLATE_PLATFORM", "x86_64-pc-windows-msvc");
+        let ps = register(&env, &mut ui, &ctx).unwrap();
+        assert!(
+            ps.manual[0].starts_with("$env:CODEX_HOME='/h/.codex'; "),
+            "{:?}",
+            ps.manual
+        );
     }
 }

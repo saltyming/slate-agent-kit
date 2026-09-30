@@ -1,4 +1,4 @@
-//! One failing fixture per lint rule P001 to P014, made by mutating the valid fixture,
+//! One failing fixture per lint rule P001 to P015, made by mutating the valid fixture,
 //! plus positive variants for the rules that have an exception.
 
 mod common;
@@ -962,4 +962,35 @@ fn findings_are_ordered_errors_first_and_render_as_json() {
     for key in ["rule", "severity", "file", "line", "message"] {
         assert!(first.get(key).is_some(), "missing {key}");
     }
+}
+
+// ── P015 ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn p015_stray_files() {
+    failing(
+        "P015",
+        "_palette/notes/research.md",
+        "belongs to no document family",
+        |p| {
+            p.write("_palette/notes/research.md", "# notes\n");
+        },
+    );
+    failing(
+        "P015",
+        "docs/rfc/README.md",
+        "belongs to no document family",
+        |p| {
+            p.write("docs/rfc/README.md", "readme\n");
+        },
+    );
+    failing(
+        "P015",
+        "docs/spec/drafts",
+        "belongs to no document family",
+        |p| {
+            std::fs::create_dir_all(p.path("docs/spec/drafts")).expect("mk");
+        },
+    );
+    passing("P015", |_| {});
 }
