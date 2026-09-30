@@ -9,7 +9,7 @@ RFC-0002: Installer and kit layout
   Windows through slate CI on next (run 36659672290, green)
 :Areas: installer; kit layout; prefs; MCP registration
 :Authors: Claude Opus 5.5
-:Reviewers: none yet
+:Reviewers: Hamin Sung
 :Implementers: Claude Opus 5.5 (2026-09-29 to 2026-09-30)
 :Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)
 :Date: 2026-09-29

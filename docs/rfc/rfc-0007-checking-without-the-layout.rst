@@ -9,7 +9,7 @@ RFC-0007: Checking shared documents without the layout
   findings; slate CI on ``next`` green (run 36659672290)
 :Areas: palette; MCP servers; CI
 :Authors: Claude Fable 5.1
-:Reviewers: none yet
+:Reviewers: Hamin Sung
 :Implementers: Claude Fable 5.1
 :Accepted: 2026-09-30, Hamin Sung (decision made in conversation)
 :Date: 2026-09-30

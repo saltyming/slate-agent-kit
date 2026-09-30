@@ -9,7 +9,7 @@ RFC-0004: palette MCP server
   Windows through slate CI on next (run 36659672290, green)
 :Areas: palette; MCP servers
 :Authors: Claude Opus 5.5
-:Reviewers: none yet
+:Reviewers: Hamin Sung
 :Implementers: Claude Opus 5.5 (2026-09-29 to 2026-09-30), Claude Fable 5.1
   (2026-09-30, inference without a layout)
 :Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)

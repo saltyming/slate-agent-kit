@@ -8,7 +8,7 @@ RFC-0005: Memory discipline
   memory triaged to zero files on 2026-09-30
 :Areas: rule kernel; native memory
 :Authors: Claude Opus 5.5
-:Reviewers: none yet
+:Reviewers: Hamin Sung
 :Implementers: Claude Opus 5.5 (2026-09-29), Claude Fable 5.1 (2026-09-30, triage)
 :Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)
 :Date: 2026-09-29

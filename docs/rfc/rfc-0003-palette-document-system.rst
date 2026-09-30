@@ -8,7 +8,7 @@ RFC-0003: palette document system
   documents, 0 findings; render and ``validate.sh``
 :Areas: palette; project documentation
 :Authors: Claude Opus 5.5
-:Reviewers: none yet
+:Reviewers: Hamin Sung
 :Implementers: Claude Opus 5.5 (2026-09-29 to 2026-09-30)
 :Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)
 :Date: 2026-09-29

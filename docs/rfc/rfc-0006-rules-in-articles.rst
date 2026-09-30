@@ -8,7 +8,7 @@ RFC-0006: Rules in articles
   byte counts; no session evidence yet
 :Areas: rule kernel; rule files; prefs templates; validator
 :Authors: Claude Fable 5.1
-:Reviewers: none yet
+:Reviewers: Hamin Sung
 :Implementers: Claude Fable 5.1
 :Accepted: 2026-09-30, Hamin Sung (decision made in conversation)
 :Date: 2026-09-30
