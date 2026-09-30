@@ -9,13 +9,13 @@ Records
 `RFC-0001 <rfc-0001-direction-autonomy-levels.rst>`_ Direction, autonomy and action levels
   Status: Accepted. Implementation: complete.
   Depends: none.
-  Linked from: RFC-0002 (Depends), RFC-0003 (Depends), RFC-0005 (Depends), RFC-0006 (Depends), RFC-0006 (link).
+  Linked from: RFC-0002 (Depends), RFC-0003 (Depends), RFC-0005 (Depends), RFC-0006 (Depends), RFC-0006 (link), RFC-0011 (Related).
   Superseded by: none.
 
 `RFC-0002 <rfc-0002-installer-and-kit-layout.rst>`_ Installer and kit layout
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: RFC-0008 (Depends).
+  Linked from: RFC-0008 (Depends), RFC-0011 (Depends).
   Superseded by: none.
 
 `RFC-0003 <rfc-0003-palette-document-system.rst>`_ palette document system
@@ -51,7 +51,7 @@ Records
 `RFC-0008 <rfc-0008-shared-backend-execution.rst>`_ Shared backend execution layer
   Status: Accepted. Implementation: not-started.
   Depends: RFC-0002.
-  Linked from: none.
+  Linked from: RFC-0011 (Depends), RFC-0011 (link).
   Superseded by: none.
 
 `RFC-0009 <rfc-0009-record-header-rules.rst>`_ Record header rules and several active phases
@@ -63,5 +63,11 @@ Records
 `RFC-0010 <rfc-0010-amends-cutoff-in-contributing.rst>`_ Amends cutoff in the contributing document
   Status: Accepted. Implementation: complete.
   Depends: RFC-0009, RFC-0007.
+  Linked from: none.
+  Superseded by: none.
+
+`RFC-0011 <rfc-0011-measurement.rst>`_ Measurement — bench server and benchmark suite
+  Status: Draft. Implementation: not-started.
+  Depends: RFC-0008, RFC-0002.
   Linked from: none.
   Superseded by: none.

@@ -10,7 +10,7 @@ RFC-0008: Shared backend execution layer
 :Authors: Claude Fable 5.1
 :Reviewers: Hamin Sung
 :Implementers: none yet
-:Accepted: Hamin Sung (2026-09-30T05:50Z)
+:Accepted: Hamin Sung (2026-09-30T05:45Z)
 :Date: 2026-09-30
 :Revised: none
 :Depends: RFC-0002 (the prefs schema and the server registration that the
