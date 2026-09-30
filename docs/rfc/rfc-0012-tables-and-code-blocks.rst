@@ -1,15 +1,17 @@
 RFC-0012: Tables and code blocks in maintained documents and records
 ====================================================================
 
-:Status: Draft
-:Implementation: not-started — the house-style template, the palette server's
+:Status: Accepted
+:Implementation: complete — the house-style template, the palette server's
   scanner and lint, its tests
-:Verification: none — 2026-09-30; not verified yet
+:Verification: build — 2026-09-30; cargo test on macOS (500 tests), palette
+  check on this repository with and without _palette/ and on the saltyos
+  checkout, Linux and Windows through slate CI on the next push
 :Areas: palette; templates; MCP servers
 :Authors: Claude Opus 5.5
-:Reviewers: none yet
-:Implementers: none yet
-:Accepted: none
+:Reviewers: Hamin Sung
+:Implementers: Claude Opus 5.5 (2026-09-30)
+:Accepted: Hamin Sung (2026-09-30T06:50Z)
 :Date: 2026-09-30
 :Revised: none
 :Depends: RFC-0004 (direct use of the lint rules and of changeset staging and

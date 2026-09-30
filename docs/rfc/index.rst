@@ -73,7 +73,7 @@ Records
   Superseded by: none.
 
 `RFC-0012 <rfc-0012-tables-and-code-blocks.rst>`_ Tables and code blocks in maintained documents and records
-  Status: Draft. Implementation: not-started.
+  Status: Accepted. Implementation: complete.
   Depends: RFC-0004.
   Linked from: none.
   Superseded by: none.

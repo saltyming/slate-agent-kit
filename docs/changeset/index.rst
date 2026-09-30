@@ -13,7 +13,3 @@ Changesets
 `RFC-0011 <rfc-0011.rst>`_
   Record status: Draft.
   Edits: 5. Documents: spec/bench.rst, design/benchmark-suite.rst, design/architecture.rst, spec/support-matrix.rst.
-
-`RFC-0012 <rfc-0012.rst>`_
-  Record status: Draft.
-  Edits: 1. Documents: spec/palette-server.rst.

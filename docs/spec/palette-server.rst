@@ -156,7 +156,10 @@ line and a message.
 ``P001`` RST subset (error)
   A table, a directive other than a comment, an overlined title, an underline
   shorter than its title, a heading level out of the house-style order, a
-  substitution, a footnote or a citation.
+  substitution, a footnote or a citation. ``.. list-table::`` and
+  ``.. code-block::`` are not reported in RFC, ADR, changeset, staging,
+  design, spec, principles, glossary and contributing documents; ``P017``
+  checks them there.
 
 ``P002`` Structure (error)
   A missing, extra or out-of-order required section; a missing or out-of-order
@@ -169,7 +172,7 @@ line and a message.
 
 ``P004`` Links (error)
   A link whose target file or anchor does not exist; a link from a project path
-  into ``_palette/``.
+  into ``_palette/``. Links in table cells are checked like any other.
 
 ``P005`` Relations
   A link to a record created later (error); a relation cycle (error); a
@@ -233,6 +236,23 @@ line and a message.
 ``P016`` Acceptance (warning)
   An ``Accepted`` value that names who accepted the record but not the date
   and time.
+
+``P017`` Directive structure (error)
+  In a family that admits them, a ``list-table`` or ``code-block`` that
+  docutils would reject or read differently. A ``list-table`` takes an
+  optional title argument and only the options ``:header-rows:`` (a
+  non-negative integer) and ``:widths:`` (``auto`` or positive integers, one
+  per column), each at most once, directly after the directive line; a blank
+  line, then a body that is one two-level list starting at the options'
+  column: rows start with ``* -`` at the body's indent, further cells with
+  ``-`` two columns deeper, one space separates a marker from the cell text,
+  and cell content continues four columns deeper or more. Every row has as
+  many cells as the first; ``:header-rows:`` greater than zero is less than
+  the number of rows. A ``code-block`` takes exactly one language argument
+  (one token of letters, digits and ``_ + . # -``) and no option; a blank
+  line, then non-blank content indented deeper than the directive. Neither is
+  indented with tabs. Each cell's content is scanned like the rest of the
+  document, on its own; code-block content is not checked.
 
 Read tools
 ~~~~~~~~~~
