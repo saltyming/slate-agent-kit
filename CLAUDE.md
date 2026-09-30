@@ -48,7 +48,7 @@ When a tool or behavior is removed or changed, rewrite the rule text so the new 
 
 ## CI / Release
 
-- `ci.yml` (push/PR to main): 3-OS build+test+clippy+fmt, `validate.sh` (checkout needs `submodules: recursive`), shellcheck (advisory).
+- `ci.yml` (push to main/next, PR to main): `validate.sh` always (checkout needs `submodules: recursive`); the 3-OS build+test+clippy+fmt only when Rust sources, `Cargo.*` or the palette templates changed (`dorny/paths-filter`); shellcheck (advisory) only when `tooling/` changed.
 - `release.yml` (tag `v*`): 8-platform aside/dispatch/palette/slate-setup artifacts (cargo-zigbuild for Linux targets) and `checksums.txt` → GitHub Release. A kit's entry point downloads `slate-setup` from the release named in `tooling/slate-version` (the latest release when that one does not exist yet), and the clone fallback tracks slate **main** — keep main green and consumable.
 - Pushing a tag in the same push that first adds a workflow file does not trigger it; push the tag separately.
 - A script step added to a workflow is checked by running the extracted snippet locally as written, not by running an equivalent check in another form (a PowerShell quoting error once failed kit CI that way).

@@ -7,8 +7,36 @@ on:
     branches: [main]
 
 jobs:
+  # Which parts of the tree changed, so a documentation-only push does not
+  # build the Rust workspace on three operating systems. validate.sh always
+  # runs: it lints the documents and checks the rendered kits.
+  changes:
+    name: changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      shell: ${{ steps.filter.outputs.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'shared/mcp-servers/**'
+              - 'shared/setup/**'
+              - 'shared/workflows/palette/templates/**'
+              - '.github/workflows/ci.yml'
+            shell:
+              - 'tooling/**'
+              - '.github/workflows/ci.yml'
+
   build-and-test:
     name: Build + test (Rust workspace)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -58,6 +86,8 @@ jobs:
 
   shellcheck:
     name: shellcheck (tooling scripts)
+    needs: changes
+    if: needs.changes.outputs.shell == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
