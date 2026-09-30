@@ -122,7 +122,6 @@ fn a_whole_phase_lifecycle_on_a_fresh_project() {
         backlog_text.contains("— closed")
             && backlog_text.contains(":Status: done")
             && backlog_text.contains(":Outcome: the changelog")
-            && backlog_text.contains(":Deliverable: none")
     );
     let files: Vec<String> = p
         .files()
@@ -135,6 +134,8 @@ fn a_whole_phase_lifecycle_on_a_fresh_project() {
             "_palette/.gitignore",
             "_palette/backlog.rst",
             "_palette/layout.rst",
+            "_palette/phase-1/deliverables/deliverable-1-only-item.rst",
+            "_palette/phase-1/phase.rst",
             "_palette/state.rst"
         ]
     );

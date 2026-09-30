@@ -273,8 +273,8 @@ Tools:
 ``palette_phase_close``
   Takes, for every item in the phase, ``done`` with an outcome pointer or
   ``dropped``, plus new proposed items. Updates the backlog, marks the phase
-  ``closed``, removes the state pointers of graduated decisions, and deletes
-  the phase folder. Carries the destructive annotation.
+  ``closed`` and removes the state pointers of graduated decisions. The phase
+  and deliverable files stay as the record of what was approved.
 
 ``palette_state_record``
   Adds a decision (text, source, target), an open question (text, affects,

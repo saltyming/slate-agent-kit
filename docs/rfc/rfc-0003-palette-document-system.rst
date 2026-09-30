@@ -12,8 +12,8 @@ RFC-0003: palette document system
 :Implementers: Claude Opus 5.5 (2026-09-29 to 2026-09-30)
 :Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)
 :Date: 2026-09-29
-:Revised: 2026-09-30 — a thirteenth family, contributing, for how people and
-  agents contribute
+:Revised: 2026-09-30 — a thirteenth family (contributing) and a closed phase
+  keeps its files
 :Depends: RFC-0001 (turn mode; a document's next action is a proposal)
 :Supersedes: none
 :Related: none
@@ -109,7 +109,8 @@ Design
   fact is verified; a new session reads state within a budget, reports,
   proposes and waits.
 - No reviews document: closing a phase moves each outcome to where it is read
-  next and deletes the phase's files.
+  next; the phase and deliverable files stay as the record of what was
+  approved, and the backlog alone carries status.
 - File names are lowercase kebab-case; records are ``rfc-0001-<slug>.rst`` and
   ``adr-0001-<slug>.rst``; a changeset carries its record's name; staging
   mirrors ``design/`` and ``spec/``.

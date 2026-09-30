@@ -345,8 +345,8 @@ fn scenario(p: &Proj, crlf: bool) {
         )
     ));
     assert_eq!(r.allocated, vec!["B-6"]);
-    assert!(!p.exists("_palette/phase-1/phase.rst"));
-    assert!(!p.exists("_palette/phase-1/deliverables/deliverable-1-first-thing.rst"));
+    assert!(p.exists("_palette/phase-1/phase.rst"));
+    assert!(p.exists("_palette/phase-1/deliverables/deliverable-1-first-thing.rst"));
     assert!(!p.read("_palette/state.rst").contains("Graduated to"));
 
     let r = run!("phase_open", |c| backlog::phase_open(

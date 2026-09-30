@@ -75,11 +75,11 @@ fn read_only_tools_come_from_the_annotations() {
             assert_eq!(*ro, Some(true), "{name}");
         } else {
             assert_eq!(*ro, Some(false), "{name}");
-            let want = matches!(name.as_str(), "palette_phase_close" | "palette_layout_set");
+            let want = name.as_str() == "palette_layout_set";
             assert_eq!(
                 *destructive,
                 Some(want),
-                "{name}: only phase_close and layout_set carry the destructive annotation"
+                "{name}: only layout_set carry the destructive annotation"
             );
         }
     }

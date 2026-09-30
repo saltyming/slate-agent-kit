@@ -540,7 +540,6 @@ pub fn phase_close(ctx: &Ctx, p: PhaseCloseParams) -> Res<WriteResult> {
                 if *done { "done" } else { "dropped" },
             )?;
             set_item_field(&mut bsrc, &rel, *id, "Outcome", outcome)?;
-            set_item_field(&mut bsrc, &rel, *id, "Deliverable", "none")?;
         }
         let phase_title = s
             .snap
@@ -573,18 +572,8 @@ pub fn phase_close(ctx: &Ctx, p: PhaseCloseParams) -> Res<WriteResult> {
         }
         s.put(&bpath, &bsrc)?;
         super::state::drop_pointers_and_touch(s)?;
-        let doomed: Vec<PathBuf> = s
-            .snap
-            .files
-            .iter()
-            .filter(
-                |f| matches!(f.role, Role::Phase(Some(k)) | Role::Deliverable(Some(k)) if k == n),
-            )
-            .map(|f| f.path.clone())
-            .collect();
-        for path in doomed {
-            s.remove(&path)?;
-        }
+        // The phase and deliverable files stay: they record what was approved, and the
+        // backlog's `closed` mark and item outcomes are the status.
         Ok(allocated)
     })
 }
