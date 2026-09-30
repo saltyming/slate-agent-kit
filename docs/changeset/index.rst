@@ -13,3 +13,7 @@ Changesets
 `RFC-0015 <rfc-0015.rst>`_
   Record status: Accepted.
   Edits: 1. Documents: design/benchmark-suite.rst.
+
+`RFC-0016 <rfc-0016.rst>`_
+  Record status: Accepted.
+  Edits: 6. Documents: spec/bench.rst.

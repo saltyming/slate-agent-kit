@@ -51,7 +51,7 @@ Records
 `RFC-0008 <rfc-0008-shared-backend-execution.rst>`_ Shared backend execution layer
   Status: Accepted. Implementation: complete.
   Depends: RFC-0002.
-  Linked from: RFC-0011 (Depends), RFC-0011 (link), RFC-0014 (Depends), RFC-0014 (Supersedes), RFC-0014 (link).
+  Linked from: RFC-0011 (Depends), RFC-0011 (link), RFC-0014 (Depends), RFC-0014 (Supersedes), RFC-0014 (link), RFC-0016 (Depends).
   Superseded by: RFC-0014 (in part: the guard as a re-invocation of the server binary that every ``main`` intercepts).
 
 `RFC-0009 <rfc-0009-record-header-rules.rst>`_ Record header rules and several active phases
@@ -69,8 +69,8 @@ Records
 `RFC-0011 <rfc-0011-measurement.rst>`_ Measurement — bench server and benchmark suite
   Status: Accepted. Implementation: not-started.
   Depends: RFC-0008, RFC-0002.
-  Linked from: RFC-0015 (Depends), RFC-0015 (Supersedes), RFC-0015 (link).
-  Superseded by: RFC-0015 (in part: the suite and its fixtures stay outside any public path).
+  Linked from: RFC-0015 (Depends), RFC-0015 (Supersedes), RFC-0015 (link), RFC-0016 (Depends), RFC-0016 (Supersedes).
+  Superseded by: RFC-0015 (in part: the suite and its fixtures stay outside any public path), RFC-0016 (in part: the isolated backend home, the kit and none harness conditions and the kit installation per run).
 
 `RFC-0012 <rfc-0012-tables-and-code-blocks.rst>`_ Tables and code blocks in maintained documents and records
   Status: Accepted. Implementation: complete.
@@ -93,5 +93,11 @@ Records
 `RFC-0015 <rfc-0015-benchmark-suite-committed.rst>`_ The benchmark suite is committed
   Status: Accepted. Implementation: not-started.
   Depends: RFC-0011.
+  Linked from: none.
+  Superseded by: none.
+
+`RFC-0016 <rfc-0016-bench-runs-in-user-home.rst>`_ Bench runs in the user's harness home
+  Status: Accepted. Implementation: not-started.
+  Depends: RFC-0011, RFC-0008.
   Linked from: none.
   Superseded by: none.
