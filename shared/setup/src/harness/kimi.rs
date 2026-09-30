@@ -124,7 +124,6 @@ pub fn plugin_skill(servers: &[String]) -> String {
     for (server, tool) in [
         ("aside", "aside_list"),
         ("aside", "aside_codex"),
-        ("aside", "aside_copilot"),
         ("aside", "aside_claude"),
         ("dispatch", "dispatch_submit"),
         ("dispatch", "dispatch_status"),

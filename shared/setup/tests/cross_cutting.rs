@@ -69,7 +69,6 @@ fn upgrading_from_the_earlier_layout_migrates_prefs_and_replaces_the_line_manife
             "an unbolded fallback line survives: {aside}"
         );
         assert!(aside.contains("## Claude model fallback\n\n**model-c2**\n"));
-        assert!(aside.contains("## Copilot model fallback\n\n****\n"));
         assert!(aside.contains("## Claude model\n\n**model-c**\n"));
         assert!(aside.contains("## Claude reasoning effort\n\n**max**\n"));
         assert!(aside.contains("My own aside note, kept verbatim."));
@@ -118,6 +117,46 @@ fn upgrading_from_the_earlier_layout_migrates_prefs_and_replaces_the_line_manife
         assert!(!home.join(format!(".{kit}-manifest")).exists());
         assert!(!home.join(".kimi-code-agent-kit-manifest").exists());
         assert!(!read(&home.join(harness.primary_file())).contains("Old manual"));
+    }
+}
+
+#[test]
+fn migrating_old_values_of_a_backend_the_kit_lacks_warns_once_and_keeps_unknown_sections() {
+    for filled in [true, false] {
+        let mut sb = Sandbox::new(Harness::Claude);
+        let server = ReleaseServer::start(&sb.env.platform(), None, true, true);
+        sb.use_release(&server);
+        install_old_state(&sb);
+        let path = sb.prefs_path("aside");
+        let mut old = read(&path);
+        if filled {
+            old = old.replace(
+                "- legacy default model: ****",
+                "- legacy default model: **legacy-model**",
+            );
+        }
+        old.push_str("\n## My own section\n\nfirst line\nsecond line\n");
+        fs::write(&path, &old).unwrap();
+        let roots = sb.dir.path().to_string_lossy().into_owned();
+        let out = sb.run("install", &["--roots", roots.as_str()]);
+        assert_eq!(out.code, 0, "{}", out.out);
+        let lines = legacy_lines(&out.out);
+        if filled {
+            assert_eq!(lines.len(), 1, "{}", out.out);
+            assert!(
+                lines[0].contains("`legacy`") && lines[0].contains("backup"),
+                "{}",
+                lines[0]
+            );
+        } else {
+            assert!(lines.is_empty(), "{}", out.out);
+        }
+        let aside = read(&path);
+        assert!(
+            aside.ends_with("## My own section\n\nfirst line\nsecond line\n"),
+            "{aside}"
+        );
+        assert!(!aside.contains("legacy-model"));
     }
 }
 
@@ -276,6 +315,104 @@ fn user_owned_files_are_never_overwritten() {
     assert!(home.join("skills/palette-init/SKILL.md").is_file());
 }
 
+/// An aside prefs file in the current layout whose backend and three settings belong to a
+/// backend the schema does not have.
+fn aside_prefs_with_unknown_backend(sb: &Sandbox) -> String {
+    let template = read(&fixture(&format!(
+        "payload-{}/prefs/aside-prefs.md",
+        sb.harness.name()
+    )));
+    let mine = template
+        .replace("## Backend\n\n**codex**\n", "## Backend\n\n**legacy**\n")
+        .replace(
+            "## Claude model\n",
+            "## Legacy model\n\n**legacy-1**\n\n## Legacy reasoning effort\n\n**high**\n\n## Legacy model fallback\n\n**legacy-2**\n\n## Claude model\n",
+        );
+    assert!(mine.contains("**legacy**") && mine.contains("## Legacy model\n"));
+    fs::create_dir_all(sb.prefs_path("aside").parent().unwrap()).unwrap();
+    fs::write(sb.prefs_path("aside"), &mine).unwrap();
+    mine
+}
+
+/// The distinct warning lines that mention the unknown backend; the plan and the
+/// final report each show every warning, so one warning is one distinct line.
+fn legacy_lines(out: &str) -> Vec<&str> {
+    let mut lines: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("warning") && l.to_lowercase().contains("legacy"))
+        .map(str::trim)
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+#[test]
+fn settings_of_a_backend_the_kit_lacks_are_reported_in_one_line_and_left_in_place() {
+    for cmd in ["install", "configure"] {
+        let sb = Sandbox::new(Harness::Codex);
+        let roots = sb.dir.path().to_string_lossy().into_owned();
+        if cmd == "configure" {
+            let out = sb.run(
+                "install",
+                &["--binaries", "skip", "--roots", roots.as_str()],
+            );
+            assert_eq!(out.code, 0, "{}", out.out);
+        }
+        let mine = aside_prefs_with_unknown_backend(&sb);
+        let out = sb.run(cmd, &["--binaries", "skip", "--roots", roots.as_str()]);
+        assert_eq!(out.code, 0, "{cmd}: {}", out.out);
+        let lines = legacy_lines(&out.out);
+        assert_eq!(lines.len(), 1, "{cmd}: {}", out.out);
+        for part in [
+            "aside",
+            "`legacy`",
+            "Legacy model",
+            "Legacy reasoning effort",
+            "Legacy model fallback",
+        ] {
+            assert!(lines[0].contains(part), "{cmd}: {}", lines[0]);
+        }
+        assert_eq!(
+            read(&sb.prefs_path("aside")),
+            mine,
+            "{cmd}: the user's file is kept byte for byte"
+        );
+    }
+}
+
+#[test]
+fn a_backend_the_kit_lacks_counts_as_unset_when_the_values_are_changed() {
+    let sb = Sandbox::new(Harness::Codex);
+    let roots = sb.dir.path().to_string_lossy().into_owned();
+    aside_prefs_with_unknown_backend(&sb);
+    // Change the aside values, press Enter at level, backend and the three codex
+    // questions, then take the defaults for everything after that.
+    let out = sb.run_scripted(
+        "install",
+        &["--binaries", "skip", "--roots", roots.as_str()],
+        "y\n\n\n\n\n\n",
+    );
+    assert_eq!(out.code, 0, "{}", out.out);
+    assert!(out.out.contains("Choice [codex]"), "{}", out.out);
+    assert!(out.out.contains("codex model"), "{}", out.out);
+    assert!(!out.out.contains("legacy model (blank"), "{}", out.out);
+    let aside = read(&sb.prefs_path("aside"));
+    assert!(aside.contains("## Backend\n\n**codex**\n"), "{aside}");
+    assert!(
+        aside.contains("## Legacy model\n\n**legacy-1**\n"),
+        "the other backend's lines stay: {aside}"
+    );
+    let lines = legacy_lines(&out.out);
+    assert_eq!(lines.len(), 1, "{}", out.out);
+    assert!(!lines[0].contains("`legacy`"), "{}", lines[0]);
+    assert!(
+        out.out.contains("aside.backend: legacy -> codex"),
+        "{}",
+        out.out
+    );
+}
+
 #[test]
 fn uninstall_removes_user_owned_files_only_when_the_user_says_so() {
     let mut sb = Sandbox::new(Harness::Codex);
@@ -303,8 +440,8 @@ fn the_scripted_wizard_asks_conditional_validated_questions_and_confirms() {
     let sb = Sandbox::new(Harness::Codex);
     let roots = sb.dir.path().to_string_lossy().into_owned();
     // Questions in order (all Enter unless noted):
-    //  aside: level 3 (auto); backend "nope" (rejected) then 2 (copilot);
-    //         copilot model "cm", effort 9 (rejected) then 3 (high), fallback "a, b"
+    //  aside: level 3 (auto); backend "nope" (rejected) then 2 (claude);
+    //         claude model "cm", effort 9 (rejected) then 3 (high), fallback "a, b"
     //  dispatch: level, backend, model, effort, fallback (defaults)
     //  subagent: level, model "gpt-x", effort 5 (max)
     //  git: signing 2, attribution 2, commit-format, pr-body, branch-naming
@@ -328,17 +465,17 @@ fn the_scripted_wizard_asks_conditional_validated_questions_and_confirms() {
         out.out
     );
     assert!(
-        out.out.contains("Not valid: `nope`") && out.out.contains("codex, copilot, claude"),
+        out.out.contains("Not valid: `nope`") && out.out.contains("codex, claude"),
         "{}",
         out.out
     );
     assert!(out.out.contains("Not valid: `9`"), "{}", out.out);
     let aside = read(&sb.prefs_path("aside"));
     assert!(aside.contains("## Level\n\n**auto**\n"), "{aside}");
-    assert!(aside.contains("## Backend\n\n**copilot**\n"));
-    assert!(aside.contains("## Copilot model\n\n**cm**\n"));
-    assert!(aside.contains("## Copilot reasoning effort\n\n**high**\n"));
-    assert!(aside.contains("## Copilot model fallback\n\n**a, b**\n"));
+    assert!(aside.contains("## Backend\n\n**claude**\n"));
+    assert!(aside.contains("## Claude model\n\n**cm**\n"));
+    assert!(aside.contains("## Claude reasoning effort\n\n**high**\n"));
+    assert!(aside.contains("## Claude model fallback\n\n**a, b**\n"));
     assert!(
         !out.out.contains("codex model"),
         "questions for backends that were not chosen are not asked"

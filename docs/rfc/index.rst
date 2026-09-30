@@ -49,7 +49,7 @@ Records
   Superseded by: none.
 
 `RFC-0008 <rfc-0008-shared-backend-execution.rst>`_ Shared backend execution layer
-  Status: Accepted. Implementation: not-started.
+  Status: Accepted. Implementation: partial.
   Depends: RFC-0002.
   Linked from: RFC-0011 (Depends), RFC-0011 (link).
   Superseded by: none.
@@ -67,7 +67,7 @@ Records
   Superseded by: none.
 
 `RFC-0011 <rfc-0011-measurement.rst>`_ Measurement — bench server and benchmark suite
-  Status: Draft. Implementation: not-started.
+  Status: Accepted. Implementation: not-started.
   Depends: RFC-0008, RFC-0002.
   Linked from: none.
   Superseded by: none.

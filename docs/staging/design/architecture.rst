@@ -51,10 +51,12 @@ Sources
 
 ``shared/mcp-servers/``
   The Rust MCP servers: aside (consultation, on codex and claude), dispatch
-  (external execution, on codex, claude and opencode) and palette (document
-  reads, checks and writes). aside and dispatch run codex and claude through
-  agent-exec and differ in the parameters they pass; dispatch's opencode
-  runner is its own and reports through agent-exec's event types.
+  (external execution, on codex, claude and opencode), palette (document
+  reads, checks and writes) and bench (model × effort × harness grids that
+  record usage and list-price cost). aside, dispatch and bench run codex and
+  claude through agent-exec and differ in the parameters they pass;
+  dispatch's opencode runner is its own and reports through agent-exec's
+  event types.
 
 ``shared/setup/``
   The Rust installer, ``slate-setup``.
@@ -128,7 +130,9 @@ Interfaces and dependencies
 
 - The installer's contract is ``spec/installer.rst`` and ``spec/prefs.rst``; the
   palette server's is ``spec/palette-server.rst``; the backend execution
-  layer's is ``spec/agent-exec.rst``; what each harness supports is
+  layer's is ``spec/agent-exec.rst``; the bench server's is ``spec/bench.rst``
+  and the benchmark suite that feeds it is ``design/benchmark-suite.rst``;
+  what each harness supports is
   `spec/support-matrix.rst <../spec/support-matrix.rst>`_.
 - The Rust crates use ``rmcp`` for MCP over stdio and cross-build for every
   Linux target with cargo-zigbuild; the shared crates carry no C dependency,

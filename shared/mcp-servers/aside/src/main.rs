@@ -49,7 +49,7 @@ impl Aside {
     }
 
     #[tool(
-        description = "List which backend CLIs (codex, copilot, claude) are available on PATH, with their --version output. Call this when you're unsure which backends are installed on this machine."
+        description = "List which backend CLIs (codex, claude) are available on PATH, with their --version output. Call this when you're unsure which backends are installed on this machine."
     )]
     async fn aside_list(
         &self,
@@ -94,19 +94,6 @@ impl Aside {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let progress_token = ctx.meta.get_progress_token();
         self.dispatch(Backend::Codex, params, ctx.ct, ctx.peer, progress_token)
-            .await
-    }
-
-    #[tool(
-        description = "Ask GitHub's standalone copilot CLI for a second opinion. include_transcript defaults to true — the current harness conversation is forwarded by reading the harness's own session log natively (Claude Code project transcripts, Codex rollouts, Kimi Code wire logs), in REDACTED form (tool_use / tool_result / thinking blocks become placeholders; only text passes through). Runs with --allow-all-tools + --available-tools=view,rg,glob,web_fetch — a read-only whitelist that lets copilot inspect files (view), grep the workspace (rg), pattern-match file paths (glob), and fetch URL bodies (web_fetch). NO shell exec, NO file mutation (bash/write_bash/task/sql and other mutating tools are excluded). **Prefer passing file paths in `question` / `context`** and let copilot read them; embed an excerpt only for focused line-range questions or for off-disk tool output. reasoning_effort maps to copilot --effort (low/medium/high/xhigh). model_fallback: an optional ordered list of models retried in turn on a transient backend error — the response notes when a fallback model answered instead of the first one tried. See the aside rule's Transcript redaction section. Costs third-party API quota."
-    )]
-    async fn aside_copilot(
-        &self,
-        Parameters(params): Parameters<AskParams>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let progress_token = ctx.meta.get_progress_token();
-        self.dispatch(Backend::Copilot, params, ctx.ct, ctx.peer, progress_token)
             .await
     }
 
@@ -453,7 +440,7 @@ fn render_outcome(
 impl ServerHandler for Aside {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Cross-family second-opinion tools. Wraps locally-installed codex / copilot / \
+            "Cross-family second-opinion tools. Wraps locally-installed codex and \
              claude CLIs as MCP tools so the active harness can ask another model family \
              or local advisor CLI for a second opinion. \
              include_transcript defaults to true — the current conversation is forwarded \
@@ -461,7 +448,7 @@ impl ServerHandler for Aside {
              tool_result / thinking blocks are replaced with placeholders. This differs from the \
              harness-native advisor, when one exists, which may receive a different transcript. All \
              backends run in read-only configurations that let them inspect files themselves: \
-             codex uses `-s read-only`; copilot uses `--available-tools=view,rg,glob,web_fetch`; \
+             codex uses `-s read-only`; \
              claude uses safe-mode + `--permission-mode plan` + `--tools Read,Grep,Glob,WebFetch`. \
              PREFER passing file paths in the `question` / `context` parameter and letting the \
              backend read them — this is cheaper than embedding, avoids the transcript's 100 KB \

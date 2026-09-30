@@ -1,15 +1,15 @@
 RFC-0011: Measurement — bench server and benchmark suite
 ========================================================
 
-:Status: Draft
+:Status: Accepted
 :Implementation: not-started — the bench MCP server, its rule and prefs
   template, the benchmark fixtures, scorers and analysis of the first wave
 :Verification: none — 2026-09-30; not verified yet
 :Areas: MCP servers; installer; rules; prefs; benchmarks
 :Authors: Claude Fable 5.1
-:Reviewers: none yet
+:Reviewers: Hamin Sung
 :Implementers: none yet
-:Accepted: none
+:Accepted: Hamin Sung (2026-09-30T08:38Z)
 :Date: 2026-09-30
 :Revised: none
 :Depends: RFC-0008 (direct use of ``RunRecord``, ``Usage`` and the usage

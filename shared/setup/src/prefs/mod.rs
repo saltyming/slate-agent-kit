@@ -5,8 +5,12 @@
 //! the value changes to show, for all five prefs files and all three harnesses
 //! the same way. It does not ask questions (`wizard`) or write files (`install`).
 //!
-//! Main entry points: [`plan_file`], [`current_values`], [`classify_state`] and
-//! [`validate_template`].
+//! A current file may still carry the value or the settings of a backend the
+//! schema no longer has; the plan reports them in one warning, treats them as
+//! blank and leaves their lines in the user's file.
+//!
+//! Main entry points: [`plan_file`], [`current_values`], [`treated_as_unset`],
+//! [`classify_state`] and [`validate_template`].
 
 pub mod doc;
 pub mod migrate;
@@ -147,9 +151,96 @@ fn base_doc(
     }
 }
 
+/// True when `setting` is a `backend` setting and `value` names no backend the schema allows.
+fn is_unknown_backend(setting: &schema::Setting, ctx: &ValidationCtx, value: &str) -> bool {
+    setting.key == "backend" && schema::validate(setting, ctx, value).is_err()
+}
+
+/// Headings of `doc` shaped like a per-backend setting of `name` whose backend the schema lacks.
+///
+/// The shapes come from the schema: a per-backend heading is the backend's name
+/// followed by a suffix such as ` model`, so a heading with the same suffix, a
+/// one-word prefix that is no known backend and a value line is a setting of a
+/// backend this installer does not have.
+fn unknown_backend_headings(name: &str, doc: &PrefsDoc) -> Vec<String> {
+    let per_backend: Vec<(&str, &str)> = schema::for_file(name)
+        .filter_map(|s| {
+            let b = s.backend?;
+            let prefix = s.heading.get(..b.len())?;
+            prefix
+                .eq_ignore_ascii_case(b)
+                .then(|| (b, &s.heading[b.len()..]))
+        })
+        .collect();
+    doc.headings()
+        .filter(|h| {
+            per_backend.iter().any(|(_, suffix)| {
+                h.strip_suffix(suffix).is_some_and(|prefix| {
+                    !prefix.is_empty()
+                        && !prefix.contains(char::is_whitespace)
+                        && !per_backend
+                            .iter()
+                            .any(|(b, _)| prefix.eq_ignore_ascii_case(b))
+                })
+            })
+        })
+        .filter(|h| doc.get(h).is_some())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The one warning for a file that holds a backend value or backend settings the schema lacks.
+fn unknown_backend_warning(name: &str, doc: &PrefsDoc, ctx: &ValidationCtx) -> Option<String> {
+    let mut ignored: Vec<String> = schema::for_file(name)
+        .filter_map(|s| {
+            let v = doc.get(s.heading)?;
+            is_unknown_backend(s, ctx, &v).then(|| format!("`## {}` value `{v}`", s.heading))
+        })
+        .collect();
+    ignored.extend(
+        unknown_backend_headings(name, doc)
+            .into_iter()
+            .map(|h| format!("`## {h}`")),
+    );
+    (!ignored.is_empty()).then(|| {
+        format!(
+            "{name} prefs: ignored {} (a backend this kit does not have); treated as blank and left in the file",
+            ignored.join(", ")
+        )
+    })
+}
+
+/// Keys of `name` whose value in the file names a backend the schema lacks, so the
+/// plan starts them from the template instead.
+///
+/// The wizard records an answer for such a key even when it equals the shown
+/// default, since the file still holds the other value.
+pub fn treated_as_unset(
+    name: &str,
+    existing: Option<&str>,
+    template: &str,
+    state: State,
+    ctx: &ValidationCtx,
+) -> Vec<&'static str> {
+    let mut sink = Vec::new();
+    let doc = base_doc(name, existing, template, state, true, ctx, &mut sink);
+    unset_keys(name, &doc, ctx)
+}
+
+fn unset_keys(name: &str, doc: &PrefsDoc, ctx: &ValidationCtx) -> Vec<&'static str> {
+    schema::for_file(name)
+        .filter(|s| {
+            doc.get(s.heading)
+                .is_some_and(|v| is_unknown_backend(s, ctx, &v))
+        })
+        .map(|s| s.key)
+        .collect()
+}
+
 /// The values of `name` as a plan would start from them, for use as wizard defaults.
 ///
-/// A legacy file is shown as it would look after migration.
+/// A legacy file is shown as it would look after migration. A value that names
+/// a backend the schema lacks is shown as the template's value.
 pub fn current_values(
     name: &str,
     existing: Option<&str>,
@@ -160,10 +251,12 @@ pub fn current_values(
     let mut sink = Vec::new();
     let doc = base_doc(name, existing, template, state, true, ctx, &mut sink);
     let template_doc = PrefsDoc::parse(template);
+    let unset = unset_keys(name, &doc, ctx);
     schema::for_file(name)
         .map(|s| {
             let v = doc
                 .get(s.heading)
+                .filter(|_| !unset.contains(&s.key))
                 .or_else(|| template_doc.get(s.heading))
                 .unwrap_or_default();
             (s.key.to_string(), v)
@@ -212,6 +305,11 @@ pub fn plan_file(
             .map_err(|e| Error::usage(format!("{full}: {e}")))?;
         doc.set(setting.heading, &value)
             .map_err(|e| Error::payload(format!("{name} prefs template: {e}")))?;
+    }
+    if state == State::Current
+        && let Some(w) = unknown_backend_warning(name, &doc, ctx)
+    {
+        warnings.push(w);
     }
     let text = doc.render();
     let changes = schema::for_file(name)
@@ -414,6 +512,103 @@ mod tests {
         .unwrap();
         assert_eq!(p.action, Action::Migrate);
         assert!(p.text.unwrap().contains("**off**"));
+    }
+
+    const ASIDE_TEMPLATE: &str = "<!-- k-custom:aside-prefs -->\n# Aside\n\n## Level\n\n**suggest**\n\n## Backend\n\n**codex**\n\n## Codex model\n\n****\n\n## Codex reasoning effort\n\n****\n\n## Codex model fallback\n\n****\n\n## Claude model\n\n****\n\n## Claude reasoning effort\n\n****\n\n## Claude model fallback\n\n****\n\n## Notes\n\nx\n";
+
+    /// The template with `backend` set to a name the schema lacks and that backend's settings added.
+    fn aside_with_unknown_backend() -> String {
+        ASIDE_TEMPLATE
+            .replace("## Backend\n\n**codex**", "## Backend\n\n**legacy**")
+            .replace(
+                "## Claude model\n",
+                "## Legacy model\n\n**m**\n\n## Legacy reasoning effort\n\n**high**\n\n## Legacy model fallback\n\n****\n\n## Claude model\n",
+            )
+    }
+
+    #[test]
+    fn a_backend_the_schema_lacks_is_reported_once_and_the_file_is_kept() {
+        let existing = aside_with_unknown_backend().replace('\n', "\r\n");
+        let p = plan_file(
+            "aside",
+            Some(&existing),
+            ASIDE_TEMPLATE,
+            State::Current,
+            &Input::default(),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(p.action, Action::Keep);
+        assert_eq!(p.warnings.len(), 1, "{:?}", p.warnings);
+        let w = &p.warnings[0];
+        for part in [
+            "`## Backend` value `legacy`",
+            "`## Legacy model`",
+            "`## Legacy reasoning effort`",
+            "`## Legacy model fallback`",
+        ] {
+            assert!(w.contains(part), "{w}");
+        }
+        assert!(!w.contains("Codex") && !w.contains("Claude"), "{w}");
+    }
+
+    #[test]
+    fn a_backend_the_schema_lacks_counts_as_unset() {
+        let existing = aside_with_unknown_backend();
+        let v = current_values(
+            "aside",
+            Some(&existing),
+            ASIDE_TEMPLATE,
+            State::Current,
+            &ctx(),
+        );
+        assert_eq!(v["backend"], "codex");
+        assert_eq!(
+            treated_as_unset(
+                "aside",
+                Some(&existing),
+                ASIDE_TEMPLATE,
+                State::Current,
+                &ctx()
+            ),
+            vec!["backend"]
+        );
+        // Writing a backend keeps the other backend's lines and reports only them.
+        let p = plan_file(
+            "aside",
+            Some(&existing),
+            ASIDE_TEMPLATE,
+            State::Current,
+            &values(&[("backend", "codex")]),
+            &ctx(),
+        )
+        .unwrap();
+        let text = p.text.unwrap();
+        assert!(text.contains("## Backend\n\n**codex**\n"));
+        assert!(text.contains("## Legacy model\n\n**m**\n"));
+        assert_eq!(p.warnings.len(), 1, "{:?}", p.warnings);
+        assert!(!p.warnings[0].contains("Backend"), "{:?}", p.warnings);
+        // A file without such values has no warning and nothing treated as unset.
+        let p = plan_file(
+            "aside",
+            Some(ASIDE_TEMPLATE),
+            ASIDE_TEMPLATE,
+            State::Current,
+            &Input::default(),
+            &ctx(),
+        )
+        .unwrap();
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        assert!(
+            treated_as_unset(
+                "aside",
+                Some(ASIDE_TEMPLATE),
+                ASIDE_TEMPLATE,
+                State::Current,
+                &ctx()
+            )
+            .is_empty()
+        );
     }
 
     #[test]

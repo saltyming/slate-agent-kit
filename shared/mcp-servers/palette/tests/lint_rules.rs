@@ -482,6 +482,174 @@ fn p004_internal_documents_may_link_to_project_paths() {
     });
 }
 
+// ── Wrapped links ───────────────────────────────────────────────────────
+
+/// The 1-based line of the first line of `rel` that contains `needle`.
+fn line_of(p: &Proj, rel: &str, needle: &str) -> usize {
+    p.read(rel)
+        .lines()
+        .position(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("{rel} has no line containing {needle:?}"))
+        + 1
+}
+
+/// Whether some finding has `rule`, a file containing `file`, `line` and a message
+/// containing `needle`.
+fn has_at(f: &[lint::Finding], rule: &str, file: &str, line: usize, needle: &str) -> bool {
+    f.iter().any(|x| {
+        x.rule == rule && x.file.contains(file) && x.line == line && x.message.contains(needle)
+    })
+}
+
+/// Appends `text` (written with `\n`) to `rel`, in the file's own line endings.
+fn append(p: &Proj, rel: &str, text: &str) {
+    p.mutate(rel, |s| {
+        let eol = if s.contains("\r\n") { "\r\n" } else { "\n" };
+        format!("{s}{}", text.replace('\n', eol))
+    });
+}
+
+fn wrapped_links_are_checked_like_one_line_links(p: &Proj) {
+    let rfc = "docs/rfc/rfc-0001-alpha.rst";
+    append(
+        p,
+        rfc,
+        "\n- `RFC-0002 one line <rfc-0002-beta.rst>`_\n- `missing one line <nope-a.rst>`_\n\
+         - `RFC-0003\n  split <rfc-0003-gamma.rst>`_\n- `missing\n  split <nope-b.rst>`_\n",
+    );
+    let f = p.lint();
+    for (rule, target, needle) in [
+        (
+            "P005",
+            "one line <rfc-0002-beta.rst>",
+            "RFC-0002 is a record created later",
+        ),
+        (
+            "P004",
+            "one line <nope-a.rst>",
+            "`nope-a.rst` does not exist",
+        ),
+        (
+            "P005",
+            "split <rfc-0003-gamma.rst>",
+            "RFC-0003 is a record created later",
+        ),
+        ("P004", "split <nope-b.rst>", "`nope-b.rst` does not exist"),
+    ] {
+        let line = line_of(p, rfc, target);
+        assert!(
+            has_at(&f, rule, "rfc-0001", line, needle),
+            "expected {rule} on line {line} containing {needle:?}; got:\n{}",
+            show(&f)
+        );
+    }
+}
+
+#[test]
+fn wrapped_links_give_the_findings_of_one_line_links() {
+    wrapped_links_are_checked_like_one_line_links(&Proj::valid());
+}
+
+#[test]
+fn wrapped_links_give_the_findings_of_one_line_links_with_crlf() {
+    wrapped_links_are_checked_like_one_line_links(&Proj::valid_crlf());
+}
+
+#[test]
+fn wrapped_links_check_anchors() {
+    failing("P004", "principles.rst", "anchor `#no-such-section`", |p| {
+        append(
+            p,
+            "docs/principles.rst",
+            "\nSee `the\ncontract <spec/thing.rst#no-such-section>`_.\n",
+        )
+    });
+    passing("P004", |p| {
+        append(
+            p,
+            "docs/principles.rst",
+            "\nSee `the\ncontract <spec/thing.rst#contract>`_.\n",
+        )
+    });
+    // A target that wraps is read without the line break and its indentation.
+    passing("P004", |p| {
+        append(
+            p,
+            "docs/principles.rst",
+            "\nSee `the contract <spec/\nthing.rst#contract>`_.\n",
+        )
+    });
+    failing(
+        "P004",
+        "principles.rst",
+        "`spec/nope.rst` does not exist",
+        |p| {
+            append(
+                p,
+                "docs/principles.rst",
+                "\nSee `the contract <spec/\nnope.rst>`_.\n",
+            )
+        },
+    );
+}
+
+#[test]
+fn wrapped_links_in_list_items_fields_and_table_cells() {
+    let p = Proj::valid();
+    append(
+        &p,
+        "docs/principles.rst",
+        "\n- An item.\n\n  - A nested item with `a\n    link <nope-item.rst>`_ in it.\n\n\
+         :Note: A field whose value names `a\n  link <nope-field.rst>`_ too.\n",
+    );
+    append(
+        &p,
+        "docs/design/overview.rst",
+        "\n.. list-table:: Wrapped\n   :header-rows: 1\n\n   * - Key\n     - Meaning\n\
+         \x20  * - ``a``\n     - Described in `a\n       link <nope-cell.rst>`_.\n",
+    );
+    let f = p.lint();
+    for (file, target) in [
+        ("docs/principles.rst", "nope-item.rst"),
+        ("docs/principles.rst", "nope-field.rst"),
+        ("docs/design/overview.rst", "nope-cell.rst"),
+    ] {
+        let line = line_of(&p, file, target);
+        assert!(
+            has_at(
+                &f,
+                "P004",
+                file,
+                line,
+                &format!("`{target}` does not exist")
+            ),
+            "expected P004 for {target} on line {line}; got:\n{}",
+            show(&f)
+        );
+    }
+}
+
+#[test]
+fn wrapped_links_do_not_join_separate_blocks_or_literals() {
+    let p = Proj::valid();
+    append(
+        &p,
+        "docs/principles.rst",
+        // Two list items, a definition term and its body, two fields, and inline
+        // literals (one of them wrapped) that hold link-like text.
+        "\n- ends with `fragment\n- item <nope-items.rst>`_\n\n\
+         term `fragment\n  body <nope-def.rst>`_\n\n\
+         :A: `fragment\n:B: value <nope-fields.rst>`_\n\n\
+         Some ``not `a\nb <nope-literal.rst>`_ here`` text.\n",
+    );
+    let f = p.lint();
+    assert!(
+        !f.iter().any(|x| x.message.contains("nope-")),
+        "{}",
+        show(&f)
+    );
+}
+
 // ── P005 ────────────────────────────────────────────────────────────────
 
 #[test]
@@ -582,6 +750,86 @@ fn p005_supersedes_requires_superseded_status() {
             "docs/rfc/rfc-0001-alpha.rst",
             ":Status: Accepted",
             ":Status: Superseded",
+        );
+    });
+}
+
+#[test]
+fn an_rfc_may_name_an_adr_in_depends_supersedes_and_related() {
+    passing("P002", |p| {
+        p.replace(
+            "docs/rfc/rfc-0003-gamma.rst",
+            ":Depends: RFC-0002 (the beta rules it builds on)",
+            ":Depends: RFC-0002 (the beta rules it builds on); ADR-0001 (the names)",
+        );
+    });
+    passing("P002", |p| {
+        p.replace(
+            "docs/rfc/rfc-0003-gamma.rst",
+            ":Related: none",
+            ":Related: ADR-0001 (the names)",
+        );
+    });
+}
+
+#[test]
+fn an_rfc_supersedes_an_adr_in_part_or_as_a_whole() {
+    // In part: the ADR keeps its status.
+    let p = Proj::valid();
+    p.replace(
+        "docs/rfc/rfc-0003-gamma.rst",
+        ":Supersedes: none",
+        ":Supersedes: ADR-0001 (in part: the close name)",
+    );
+    let f = p.lint();
+    assert!(
+        f.iter().all(|x| x.rule != "P002" && x.rule != "P005"),
+        "{}",
+        show(&f)
+    );
+    assert!(
+        p.read("docs/adr/adr-0001-naming.rst")
+            .contains(":Status: Accepted")
+    );
+    // As a whole: the ADR must be Superseded.
+    failing(
+        "P005",
+        "rfc-0003",
+        "status is Accepted; its status must be Superseded",
+        |p| {
+            p.replace(
+                "docs/rfc/rfc-0003-gamma.rst",
+                ":Supersedes: none",
+                ":Supersedes: ADR-0001 (the naming choice)",
+            );
+        },
+    );
+    let p = Proj::valid();
+    p.replace(
+        "docs/rfc/rfc-0003-gamma.rst",
+        ":Supersedes: none",
+        ":Supersedes: ADR-0001 (the naming choice)",
+    );
+    p.replace(
+        "docs/adr/adr-0001-naming.rst",
+        ":Status: Accepted",
+        ":Status: Superseded",
+    );
+    let f = p.lint();
+    assert!(
+        f.iter().all(|x| x.rule != "P002" && x.rule != "P005"),
+        "{}",
+        show(&f)
+    );
+}
+
+#[test]
+fn an_rfc_cannot_link_to_a_later_dated_adr() {
+    failing("P005", "rfc-0001", "is dated 2026-02-01, later than", |p| {
+        p.replace(
+            "docs/rfc/rfc-0001-alpha.rst",
+            ":Related: none",
+            ":Related: ADR-0001 (the names)",
         );
     });
 }

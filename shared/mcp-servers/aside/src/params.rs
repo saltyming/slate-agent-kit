@@ -11,9 +11,9 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// Parameters for `aside_codex` / `aside_copilot` / `aside_claude`.
+/// Parameters for `aside_codex` / `aside_claude`.
 ///
-/// All three tools share this schema. Backend-specific behaviour (argv
+/// Both tools share this schema. Backend-specific behaviour (argv
 /// construction, prompt transport) lives in `crate::backend`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 pub struct AskParams {
@@ -47,7 +47,6 @@ pub struct AskParams {
 
     /// Forwarded as a reasoning-effort flag where supported:
     /// * codex  → `-c model_reasoning_effort=<val>`
-    /// * copilot → `--effort <val>`
     /// * claude → `--effort <val>`
     ///
     /// Valid values: `low` / `medium` / `high` / `xhigh` / `max`

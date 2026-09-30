@@ -221,6 +221,33 @@ fn a_move_that_would_break_the_link_rules_is_refused() {
     assert_eq!(p.snapshot(), before);
 }
 
+#[test]
+fn moving_a_family_rewrites_wrapped_links() {
+    let p = Proj::valid();
+    // Text on one line, target on the next: the target is rewritten in place.
+    p.replace(
+        "docs/glossary.rst",
+        "Defined: `Contract <spec/thing.rst#contract>`_.",
+        "Defined: `Contract\n  <spec/thing.rst#contract>`_.",
+    );
+    // A target that itself wraps is written back on one line.
+    p.mutate("docs/glossary.rst", |s| {
+        format!("{s}\nother\n  See `the contract <spec/\n  thing.rst#contract>`_ again.\n")
+    });
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+    move_family(&p, "glossary", "internal").expect("glossary");
+    let text = p.read("_palette/glossary.rst");
+    assert!(
+        text.contains("Defined: `Contract\n  <../docs/spec/thing.rst#contract>`_."),
+        "{text}"
+    );
+    assert!(
+        text.contains("  See `the contract <../docs/spec/thing.rst#contract>`_ again.\n"),
+        "{text}"
+    );
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+}
+
 // ── backlog ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -642,6 +669,35 @@ fn a_partial_supersession_leaves_the_older_record_and_shows_the_part() {
 }
 
 #[test]
+fn an_rfc_supersedes_an_adr_in_part_and_the_adr_index_shows_it() {
+    let p = Proj::valid();
+    records::record_update(
+        &p.ctx,
+        params(
+            &p,
+            json!({
+                "record": "RFC-0003",
+                "supersedes": [{"record": "ADR-0001", "note": "the close name", "partial": true}]
+            }),
+        ),
+    )
+    .expect("partial supersede of an ADR");
+    assert!(
+        p.read("docs/rfc/rfc-0003-gamma.rst")
+            .contains(":Supersedes: ADR-0001 (in part: the close name)")
+    );
+    assert!(
+        p.read("docs/adr/adr-0001-naming.rst")
+            .contains(":Status: Accepted")
+    );
+    assert!(
+        p.read("docs/adr/index.rst")
+            .contains("Superseded by: RFC-0003 (in part: the close name).")
+    );
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+}
+
+#[test]
 fn record_create_with_a_partial_supersession() {
     let p = Proj::valid();
     records::record_create(&p.ctx, params(&p, json!({
@@ -670,6 +726,35 @@ fn record_create_with_a_partial_supersession() {
         p.read("docs/rfc/rfc-0001-alpha.rst"),
         before,
         "the older record is untouched"
+    );
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+}
+
+#[test]
+fn a_wrapped_body_link_is_listed_as_linked_from() {
+    let p = Proj::valid();
+    p.replace(
+        "docs/rfc/rfc-0003-gamma.rst",
+        "for the naming choice.",
+        "for the naming choice and\n`the alpha\ncontract <rfc-0001-alpha.rst>`_ for the base.",
+    );
+    // Any write regenerates the index.
+    state::state_record(
+        &p.ctx,
+        params(
+            &p,
+            json!({"kind": "decision", "text": "x", "source": "me", "target": "y"}),
+        ),
+    )
+    .expect("write");
+    let index = p.read("docs/rfc/index.rst");
+    let alpha = index
+        .split("\n\n")
+        .find(|b| b.starts_with("`RFC-0001 "))
+        .expect("RFC-0001 entry");
+    assert!(
+        alpha.contains("Linked from: RFC-0002 (Depends), RFC-0003 (link), ADR-0001 (Depends), ADR-0001 (Within)."),
+        "{alpha}"
     );
     assert!(p.errors().is_empty(), "{}", show(&p.errors()));
 }

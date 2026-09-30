@@ -5,7 +5,7 @@
 //! which headings are settings; `schema` supplies them.
 //!
 //! Main entry points: [`PrefsDoc::parse`], [`PrefsDoc::get`], [`PrefsDoc::set`],
-//! [`PrefsDoc::section`] and [`PrefsDoc::replace_section`].
+//! [`PrefsDoc::headings`], [`PrefsDoc::section`] and [`PrefsDoc::replace_section`].
 
 use crate::util::detect_eol;
 
@@ -88,6 +88,13 @@ impl PrefsDoc {
         (start + 1..end).find(|&i| value_of(&self.lines[i].text).is_some())
     }
 
+    /// The text of every `## <heading>` line, in file order, without the `## ` prefix.
+    pub fn headings(&self) -> impl Iterator<Item = &str> + '_ {
+        self.lines
+            .iter()
+            .filter_map(|l| l.text.trim_end().strip_prefix("## "))
+    }
+
     /// True when the file has a `## <heading>` line.
     pub fn has_heading(&self, heading: &str) -> bool {
         self.heading_index(heading).is_some()
@@ -144,6 +151,14 @@ impl PrefsDoc {
         Some(&line.text.trim_start()[want.len()..])
     }
 
+    /// The label of every list item `- <label>: ...`, in file order.
+    pub fn list_labels(&self) -> impl Iterator<Item = &str> + '_ {
+        self.lines.iter().filter_map(|l| {
+            let (label, _) = l.text.trim_start().strip_prefix("- ")?.split_once(':')?;
+            Some(label)
+        })
+    }
+
     /// True when a list item `- <label>: ...` exists, whether or not its value can be read.
     pub fn has_list_line(&self, label: &str) -> bool {
         self.list_line_rest(label).is_some()
@@ -168,6 +183,9 @@ impl PrefsDoc {
     }
 
     /// Replaces the body of `heading` with `body`, or appends the section when it is missing.
+    ///
+    /// Every line takes the document's line ending. When another heading follows
+    /// and `body` does not end with a blank line, one blank line is added before it.
     pub fn replace_section(&mut self, heading: &str, body: &[Line]) {
         let eol = self.eol.to_string();
         let mut new_body: Vec<Line> = body
@@ -183,6 +201,12 @@ impl PrefsDoc {
                 let tail_is_eof = end == self.lines.len();
                 if tail_is_eof {
                     self.ensure_terminated();
+                } else if new_body.last().is_none_or(|l| !l.text.trim().is_empty()) {
+                    // Keep one blank line before the heading that follows.
+                    new_body.push(Line {
+                        text: String::new(),
+                        eol: eol.clone(),
+                    });
                 }
                 self.lines.splice(start + 1..end, new_body);
             }
@@ -211,6 +235,41 @@ impl PrefsDoc {
         {
             last.eol = eol.to_string();
         }
+    }
+
+    /// Appends every section of `other` whose heading `keep` accepts, in `other`'s order.
+    ///
+    /// Each section is copied byte for byte, heading line included, with its own
+    /// line endings; only a separating blank line and a terminator on the line
+    /// before it are added when the document needs them. Returns the appended headings.
+    pub fn append_sections_from(
+        &mut self,
+        other: &PrefsDoc,
+        keep: impl Fn(&str) -> bool,
+    ) -> Vec<String> {
+        let mut appended = Vec::new();
+        for start in (0..other.lines.len()).filter(|&i| is_heading(&other.lines[i].text)) {
+            let heading = other.lines[start]
+                .text
+                .strip_prefix("## ")
+                .unwrap_or_default()
+                .trim_end()
+                .to_string();
+            if !keep(&heading) {
+                continue;
+            }
+            self.ensure_terminated();
+            if self.lines.last().is_some_and(|l| !l.text.is_empty()) {
+                self.lines.push(Line {
+                    text: String::new(),
+                    eol: self.eol.to_string(),
+                });
+            }
+            let end = other.section_end(start);
+            self.lines.extend_from_slice(&other.lines[start..end]);
+            appended.push(heading);
+        }
+        appended
     }
 
     /// Converts every line ending to `eol`.
@@ -313,12 +372,12 @@ mod tests {
     #[test]
     fn inline_values_are_found_inside_sentences() {
         let d = PrefsDoc::parse(
-            "## Preferred third-party advisor\n\nDefault backend when X decides to ask: **copilot**\n\nValid values: `none`\n",
+            "## Preferred third-party advisor\n\nDefault backend when X decides to ask: **legacy**\n\nValid values: `none`\n",
         );
         assert_eq!(d.get("Preferred third-party advisor"), None);
         assert_eq!(
             d.inline_value("Preferred third-party advisor").as_deref(),
-            Some("copilot")
+            Some("legacy")
         );
         assert_eq!(d.inline_value("Absent"), None);
     }
@@ -342,7 +401,7 @@ mod tests {
     #[test]
     fn list_values_are_read_from_legacy_lines() {
         let d = PrefsDoc::parse(
-            "- codex default model: **gpt-6-astra**\n- codex default model fallback: **gpt-6-sol(high)**   (comma-separated)\n- copilot default model: ****\n- default model: **m**\n- default model fallback: **f**\n",
+            "- codex default model: **gpt-6-astra**\n- codex default model fallback: **gpt-6-sol(high)**   (comma-separated)\n- legacy default model: ****\n- default model: **m**\n- default model fallback: **f**\n",
         );
         assert_eq!(
             d.list_value("codex default model").as_deref(),
@@ -352,7 +411,7 @@ mod tests {
             d.list_value("codex default model fallback").as_deref(),
             Some("gpt-6-sol(high)")
         );
-        assert_eq!(d.list_value("copilot default model").as_deref(), Some(""));
+        assert_eq!(d.list_value("legacy default model").as_deref(), Some(""));
         assert_eq!(d.list_value("default model").as_deref(), Some("m"));
         assert_eq!(d.list_value("default model fallback").as_deref(), Some("f"));
         assert_eq!(d.list_value("claude default model"), None);
@@ -373,11 +432,59 @@ mod tests {
     }
 
     #[test]
+    fn a_replaced_body_is_separated_from_the_next_heading() {
+        for eol in ["\n", "\r\n"] {
+            let template = "## Notes\n\ndefault\n\n## Next\n\nn\n".replace('\n', eol);
+            for (body, want) in [
+                ("## Notes\n\nmine", "## Notes\n\nmine\n\n## Next\n"),
+                ("## Notes\n\nmine\n", "## Notes\n\nmine\n\n## Next\n"),
+                ("## Notes\n\nmine\n\n", "## Notes\n\nmine\n\n## Next\n"),
+                ("## Notes\n", "## Notes\n\n## Next\n"),
+            ] {
+                let old = PrefsDoc::parse(&body.replace('\n', eol));
+                let mut new = PrefsDoc::parse(&template);
+                new.copy_section_from(&old, "Notes");
+                assert_eq!(
+                    new.render(),
+                    format!("{want}\nn\n").replace('\n', eol),
+                    "{body:?} {eol:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_missing_section_is_appended() {
         let old = PrefsDoc::parse("## Notes\n\nmy note\n");
         let mut new = PrefsDoc::parse("# T\n\n**x**\n");
         new.copy_section_from(&old, "Notes");
         assert_eq!(new.render(), "# T\n\n**x**\n\n## Notes\n\nmy note\n");
+    }
+
+    #[test]
+    fn list_labels_are_listed_in_order() {
+        let d = PrefsDoc::parse("## A\n\n- a b: **x**\n  - c: y\n- no colon\ntext: z\n");
+        assert_eq!(d.list_labels().collect::<Vec<_>>(), vec!["a b", "c"]);
+    }
+
+    #[test]
+    fn sections_are_appended_verbatim_in_order() {
+        let old =
+            PrefsDoc::parse("## Skip\n\nx\n\n## Mine\r\n\r\none\r\ntwo\r\n\r\n## Also\n\nlast");
+        let mut new = PrefsDoc::parse("# T\n\n## Notes\n\nn");
+        let appended = new.append_sections_from(&old, |h| h != "Skip");
+        assert_eq!(appended, vec!["Mine", "Also"]);
+        // A heading line with no name is kept too, not a panic.
+        let mut bare = PrefsDoc::parse("x\n");
+        assert_eq!(
+            bare.append_sections_from(&PrefsDoc::parse("## \nbody\n"), |_| true),
+            vec![""]
+        );
+        assert_eq!(bare.render(), "x\n\n## \nbody\n");
+        assert_eq!(
+            new.render(),
+            "# T\n\n## Notes\n\nn\n\n## Mine\r\n\r\none\r\ntwo\r\n\r\n## Also\n\nlast"
+        );
     }
 
     #[test]

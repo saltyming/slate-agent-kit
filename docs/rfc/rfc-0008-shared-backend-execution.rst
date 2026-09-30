@@ -2,14 +2,17 @@ RFC-0008: Shared backend execution layer
 ========================================
 
 :Status: Accepted
-:Implementation: not-started — the agent-exec crate, harness-log moved beside it
+:Implementation: partial — the agent-exec crate, harness-log moved beside it
   with usage parsers, aside and dispatch rebuilt on both, copilot removed from
   servers, installer, prefs and rules
-:Verification: none — 2026-09-30; not verified yet
+:Verification: build — 2026-09-30; copilot removal only: cargo test --workspace
+  on macOS (505 tests), clippy, fmt, validate.sh, and a scratch-HOME install
+  over a prefs file with the retired backend's settings, agent-exec not started
 :Areas: MCP servers; aside; dispatch; installer; rules; prefs
 :Authors: Claude Fable 5.1
 :Reviewers: Hamin Sung
-:Implementers: none yet
+:Implementers: Claude Fable 5.1 with Claude Sonnet and Claude Opus subagents
+  (2026-09-30, copilot removal)
 :Accepted: Hamin Sung (2026-09-30T05:45Z)
 :Date: 2026-09-30
 :Revised: none

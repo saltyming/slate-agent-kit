@@ -27,14 +27,14 @@ Contract
 --------
 Settings
 ~~~~~~~~
+
 Keys for ``--set`` are ``<file>.<key>``. Each key is stored under the heading
 named after it below; a template that lacks a heading makes install fail with
 a message naming the file and the heading. A blank value is written ``****``.
 
 - aside: ``level`` Level; ``backend`` Backend; ``<backend>.model``
   "<Backend> model"; ``<backend>.effort`` "<Backend> reasoning effort";
-  ``<backend>.fallback`` "<Backend> model fallback", for Codex, Copilot and
-  Claude.
+  ``<backend>.fallback`` "<Backend> model fallback", for Codex and Claude.
 - dispatch: ``level`` Level; ``backend`` Backend; ``model`` Model; ``effort``
   Reasoning effort; ``fallback`` Model fallback.
 - subagent: ``level`` Level; ``model`` Default model; ``effort`` Reasoning
@@ -49,10 +49,13 @@ The allowed values:
 
 aside
   ``level`` (``on-request``, ``suggest``, ``auto``; default ``suggest``);
-  ``backend`` (``codex``, ``copilot``, ``claude``); per backend ``model``,
-  ``effort`` (``low``, ``medium``, ``high``, ``xhigh``, ``max``, or blank) and
+  ``backend`` (``codex``, ``claude``); per backend ``model``, ``effort``
+  (``low``, ``medium``, ``high``, ``xhigh``, ``max``, or blank) and
   ``fallback`` (a comma-separated model list, or blank), as
   ``aside.codex.model`` and so on. Only the chosen backend's values are asked.
+  A file that still carries the settings of an earlier backend installs; the
+  installer reports them in one warning line and treats them, and a
+  ``backend`` value naming that backend, as blank.
 
 dispatch
   ``level`` (default ``suggest``); ``backend`` (``codex``, ``opencode``,
@@ -85,7 +88,9 @@ file (without a terminal: migrated). The old file is copied to
 ``<file>.bak-<UTC timestamp>``; the new file starts from the current template,
 takes every value that has a new setting, and keeps the old file's ``Notes`` and
 ``Repository overrides`` sections verbatim, appending a section at the end when
-the template has no heading for it.
+the template has no heading for it. Values of a backend the schema no longer
+has cannot be carried over: the migration reports them in one warning line and
+they stay in the backup.
 
 - aside ``Auto-call policy``: ``conservative`` or ``preference-only`` becomes
   ``level`` ``on-request``; ``proactive`` becomes ``auto``. ``Preferred
@@ -103,7 +108,8 @@ Errors and edge cases
 - A value outside the allowed set is rejected at the prompt with the allowed
   values; a file edited by hand to such a value is reported by the agent when
   it reads the file and the default applies.
-- A heading the template lacks is kept verbatim at the end of the migrated
+- A heading the template lacks, other than the old-layout sections the
+  migration maps or drops by name, is kept verbatim at the end of the migrated
   file.
 - A file without a value line under a heading is reported by path and heading.
 

@@ -13,7 +13,7 @@ use crate::edit;
 use crate::errors::{ErrCode, PalError, Res};
 use crate::layout::{Family, Layout, Placement, normalize_path};
 use crate::params::{InitParams, LayoutSetParams};
-use crate::rst::{Doc, split_anchor};
+use crate::rst::{Doc, Pos, split_anchor};
 use crate::schema::schemas;
 use crate::text::{Eol, Source};
 use crate::util::{join_lexical, relative_link};
@@ -283,7 +283,7 @@ fn move_family(s: &mut Session<'_, '_>, fam: Family, placement: Placement) -> Re
             .map(Path::to_path_buf)
             .unwrap_or_else(|| old_dir.clone());
         let mut src = doc.src.clone();
-        let mut edits: Vec<(usize, (usize, usize), String)> = Vec::new();
+        let mut edits: Vec<(Pos, Pos, String)> = Vec::new();
         for l in doc.links() {
             if crate::rst::is_external(&l.target) {
                 continue;
@@ -308,16 +308,23 @@ fn move_family(s: &mut Session<'_, '_>, fam: Family, placement: Placement) -> Re
                 text.push_str(a);
             }
             if text != l.target {
-                edits.push((l.line, l.target_span, text));
+                edits.push((l.target_start, l.target_end, text));
             }
         }
-        edits.sort_by_key(|e| std::cmp::Reverse((e.0, (e.1).0)));
-        for (line, span, text) in &edits {
-            let mut t = src.text(*line).to_string();
-            t.replace_range(span.0..span.1, text);
-            let eol = src.lines[*line].eol;
-            src.lines[*line].text = t;
-            src.lines[*line].eol = eol;
+        // Last first, so the positions of the edits still to apply stay valid. A target
+        // that wraps is written back on one line: its lines are joined.
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+        for (start, end, text) in &edits {
+            let t = format!(
+                "{}{}{}",
+                &src.text(start.line)[..start.col],
+                text,
+                &src.text(end.line)[end.col..]
+            );
+            let eol = src.lines[end.line].eol;
+            src.lines[start.line].text = t;
+            src.lines[start.line].eol = eol;
+            src.lines.drain(start.line + 1..=end.line);
         }
         if new_path.is_some() || !edits.is_empty() {
             plan.push((f.path.clone(), new_path, src));

@@ -8,8 +8,8 @@ Changesets
 
 `RFC-0008 <rfc-0008.rst>`_
   Record status: Accepted.
-  Edits: 4. Documents: spec/agent-exec.rst, design/architecture.rst, spec/prefs.rst.
+  Edits: 3. Documents: spec/agent-exec.rst, design/architecture.rst.
 
 `RFC-0011 <rfc-0011.rst>`_
-  Record status: Draft.
+  Record status: Accepted.
   Edits: 5. Documents: spec/bench.rst, design/benchmark-suite.rst, design/architecture.rst, spec/support-matrix.rst.

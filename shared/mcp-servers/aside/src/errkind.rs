@@ -7,14 +7,14 @@
 //!
 //! The pattern table was tuned against REAL captured stderr/stdout from the
 //! backends that expose discriminating errors (codex via both aside and
-//! dispatch, copilot, claude, and dispatch's opencode), not
+//! dispatch, claude, and dispatch's opencode), not
 //! guessed:
 //!   - codex, bad model, ChatGPT-account auth: a JSON body containing
 //!     `"type":"invalid_request_error"` and a message like "The 'X' model is
 //!     not supported when using Codex with a ChatGPT account." — note this
 //!     does NOT contain the substring "unsupported model"; the patterns below
 //!     match on "not supported" instead.
-//!   - copilot, policy-denied access: "Access denied by policy settings" — no
+//!   - policy-denied access: "Access denied by policy settings" — no
 //!     401/403/"unauthorized" text at all.
 //!   - claude, bad model: "There's an issue with the selected model (X). It may
 //!     not exist or you may not have access to it." — reported on stdout.
@@ -41,7 +41,7 @@ impl BackendErrorKind {
     /// `AuthOrPermission` is deliberately NOT retry-worthy: a `model_fallback`
     /// chain swaps models *within* a single already-chosen backend/account
     /// (dispatch's `Job.backend`, aside's `backend` param each pick codex vs.
-    /// opencode/copilot once, before any fallback runs), so an auth/permission
+    /// opencode/claude once, before any fallback runs), so an auth/permission
     /// failure affects that whole account and would fail identically on every
     /// model in the chain — retrying just burns the rest of the chain for no
     /// benefit.
@@ -114,7 +114,7 @@ const TRANSIENT_PATTERNS: &[(&str, BackendErrorKind)] = &[
     ("401", BackendErrorKind::AuthOrPermission),
     ("403", BackendErrorKind::AuthOrPermission),
     ("forbidden", BackendErrorKind::AuthOrPermission),
-    // Real copilot shape: "Access denied by policy settings" — no
+    // Policy-denial shape: "Access denied by policy settings" — no
     // 401/403/"unauthorized" text at all.
     ("access denied", BackendErrorKind::AuthOrPermission),
     ("policy setting", BackendErrorKind::AuthOrPermission),
@@ -154,9 +154,9 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_real_captured_copilot_policy_denial_shape() {
-        // Captured live from aside_copilot, 2026-07-02.
-        let text = "Error: Access denied by policy settings (Request ID: E2E0:196D8B:1FB4EB4:22A7BE4:6A462B9F)\n\nYour Copilot CLI policy setting may be preventing access.";
+    fn recognizes_policy_denial_shape() {
+        // Policy-denied access carries no 401/403/"unauthorized" text.
+        let text = "Error: Access denied by policy settings (Request ID: E2E0:196D8B:1FB4EB4:22A7BE4:6A462B9F)\n\nYour CLI policy setting may be preventing access.";
         let kind = classify(text);
         assert_eq!(kind, BackendErrorKind::AuthOrPermission);
         assert!(!kind.is_retry_worthy());

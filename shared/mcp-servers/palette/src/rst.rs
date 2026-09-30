@@ -97,17 +97,32 @@ pub struct Field {
     pub end: usize,
 }
 
-/// A hyperlink `` `text <target>`_ ``.
-#[derive(Clone, Debug)]
-pub struct Link {
+/// A position in a document: a line (0-based) and a byte offset inside its text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Pos {
     /// Line (0-based).
     pub line: usize,
-    /// Link text.
+    /// Byte offset inside the line text.
+    pub col: usize,
+}
+
+/// A hyperlink `` `text <target>`_ ``, possibly wrapped over several lines of one
+/// block of prose.
+#[derive(Clone, Debug)]
+pub struct Link {
+    /// The line that holds the target (its first non-blank character); for a link on
+    /// one line, that line.
+    pub line: usize,
+    /// Link text, with each line break and the indentation around it read as one space.
     pub text: String,
-    /// Link target as written.
+    /// Link target, trimmed, with each line break and the indentation around it
+    /// removed, as docutils reads a wrapped URI.
     pub target: String,
-    /// Byte offsets of the target inside the line text.
-    pub target_span: (usize, usize),
+    /// Start of the target as written between the angle brackets.
+    pub target_start: Pos,
+    /// Exclusive end of the target as written; on a later line than `target_start`
+    /// when the target itself wraps.
+    pub target_end: Pos,
 }
 
 /// A parsed document: the source lines plus per-line kinds and headings.
@@ -123,8 +138,16 @@ pub struct Doc {
 
 static FIELD_RE: LazyLock<Regex> =
     LazyLock::new(|| re(r"^:([^:\s](?:[^:]*[^:\s])?):(?:[ \t]+(.*?))?[ \t]*$"));
-static LINK_RE: LazyLock<Regex> = LazyLock::new(|| re(r"`([^`<>]*?)[ \t]*<([^<>`]+)>`__?"));
-static INLINE_LITERAL_RE: LazyLock<Regex> = LazyLock::new(|| re(r"``.+?``"));
+static LINK_RE: LazyLock<Regex> = LazyLock::new(|| re(r"`([^`<>]*?)\s*<([^<>`]+)>`__?"));
+static INLINE_LITERAL_RE: LazyLock<Regex> = LazyLock::new(|| re(r"(?s)``.+?``"));
+/// A line break with the indentation around it, inside a wrapped link.
+static LINE_BREAK_RE: LazyLock<Regex> = LazyLock::new(|| re(r"[ \t]*\n[ \t]*"));
+/// A bullet, enumerator or field marker opening a list item or a field.
+static ITEM_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"^(?:[-*+•‣⁃]|(?:\d+|#|[A-Za-z]|[ivxlcdmIVXLCDM]+)[.)]|\((?:\d+|#|[A-Za-z]|[ivxlcdmIVXLCDM]+)\))(?:[ \t]|$)|^:[^:\s](?:[^:]*[^:\s])?:(?:[ \t]|$)",
+    )
+});
 static DIRECTIVE_RE: LazyLock<Regex> =
     LazyLock::new(|| re(r"^\.\.[ \t]+[A-Za-z0-9][\w+:.-]*::(\s|$)"));
 
@@ -146,10 +169,21 @@ fn adornment_char(s: &str) -> Option<char> {
     if chars.all(|x| x == c) { Some(c) } else { None }
 }
 
-/// Replaces inline literals with spaces of the same length so column offsets stay valid.
+/// Replaces inline literals with spaces of the same byte length so offsets stay
+/// valid. A literal may span lines of `s`; its line breaks are kept.
 pub fn mask_inline_literals(s: &str) -> String {
     INLINE_LITERAL_RE
-        .replace_all(s, |c: &regex::Captures| " ".repeat(c[0].len()))
+        .replace_all(s, |c: &regex::Captures| {
+            c[0].chars()
+                .map(|ch| {
+                    if ch == '\n' {
+                        "\n".to_string()
+                    } else {
+                        " ".repeat(ch.len_utf8())
+                    }
+                })
+                .collect::<String>()
+        })
         .into_owned()
 }
 
@@ -415,23 +449,84 @@ impl Doc {
         self.fields(h.body_start, h.body_end)
     }
 
-    /// Hyperlinks on prose lines.
+    /// Hyperlinks in prose, each block of prose read as one text so a link may wrap
+    /// over its lines.
     pub fn links(&self) -> Vec<Link> {
         let mut out = Vec::new();
-        for i in 0..self.src.len() {
-            if !self.is_prose(i) {
-                continue;
+        for block in self.prose_blocks() {
+            // Line starts inside the joined text; each line keeps its indentation.
+            let mut starts = Vec::with_capacity(block.len());
+            let mut joined = String::new();
+            for i in block.clone() {
+                if i > block.start {
+                    joined.push('\n');
+                }
+                starts.push(joined.len());
+                joined.push_str(self.src.text(i));
             }
-            let masked = mask_inline_literals(self.src.text(i));
+            let pos = |off: usize| {
+                let k = starts.partition_point(|s| *s <= off) - 1;
+                Pos {
+                    line: block.start + k,
+                    col: off - starts[k],
+                }
+            };
+            let masked = mask_inline_literals(&joined);
             for c in LINK_RE.captures_iter(&masked) {
                 if let (Some(t), Some(target)) = (c.get(1), c.get(2)) {
+                    let raw = &joined[target.range()];
+                    let lead = raw.len() - raw.trim_start().len();
+                    let first = if lead < raw.len() { lead } else { 0 };
                     out.push(Link {
-                        line: i,
-                        text: t.as_str().to_string(),
-                        target: target.as_str().trim().to_string(),
-                        target_span: (target.start(), target.end()),
+                        line: pos(target.start() + first).line,
+                        text: LINE_BREAK_RE
+                            .replace_all(&joined[t.range()], " ")
+                            .into_owned(),
+                        target: LINE_BREAK_RE.replace_all(raw.trim(), "").into_owned(),
+                        target_start: pos(target.start()),
+                        target_end: pos(target.end()),
                     });
                 }
+            }
+        }
+        out
+    }
+
+    /// The blocks of prose inline markup may wrap in: runs of consecutive text lines.
+    /// A block ends at any other line (blank, title, literal, explicit markup) and
+    /// before a line that opens a list item or a field. A block opened by a list item
+    /// or a field continues on lines indented past its marker; any other block (a
+    /// paragraph, a definition body) continues on lines at its first line's indent, so
+    /// a definition term and its body, or a list item and the next, stay apart.
+    /// List-table cells are text lines whose markers open blocks of their own.
+    fn prose_blocks(&self) -> Vec<std::ops::Range<usize>> {
+        let mut out = Vec::new();
+        let n = self.src.len();
+        let mut i = 0;
+        while i < n {
+            match self.kinds[i] {
+                Kind::Title => {
+                    out.push(i..i + 1);
+                    i += 1;
+                }
+                Kind::Text => {
+                    let text = self.src.text(i);
+                    let ind = indent_of(text);
+                    let item = ITEM_MARKER_RE.is_match(&text[ind..]);
+                    let mut j = i + 1;
+                    while j < n && self.kinds[j] == Kind::Text {
+                        let t = self.src.text(j);
+                        let k = indent_of(t);
+                        let continues = if item { k > ind } else { k == ind };
+                        if !continues || ITEM_MARKER_RE.is_match(&t[k..]) {
+                            break;
+                        }
+                        j += 1;
+                    }
+                    out.push(i..j);
+                    i = j;
+                }
+                _ => i += 1,
             }
         }
         out
@@ -604,6 +699,81 @@ mod tests {
         let l = d.links();
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].target, "x.rst#s");
+        // A literal that wraps hides the link inside it too.
+        let d = doc("Title\n=====\n\nsee ``not `b\n<y.rst>`_ here`` and `a\n<x.rst>`_\n");
+        let l = d.links();
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].target, "x.rst");
+    }
+
+    #[test]
+    fn links_wrap_within_a_block() {
+        let d = doc("Title\n=====\n\nsee `the\nx` or `the alpha\ncontract <a.rst#s>`_ now\n");
+        let l = d.links();
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].text, "the alpha contract");
+        assert_eq!(l[0].target, "a.rst#s");
+        assert_eq!(l[0].line, 5);
+        assert_eq!(l[0].target_start, Pos { line: 5, col: 10 });
+        assert_eq!(l[0].target_end, Pos { line: 5, col: 17 });
+
+        // A wrapped target loses the line break and indentation; the link is reported on
+        // the line where the target starts.
+        let d = doc("- item `text <long/\n  path.rst>`_ end\n");
+        let l = d.links();
+        assert_eq!(l[0].target, "long/path.rst");
+        assert_eq!(l[0].line, 0);
+        assert_eq!(l[0].target_start, Pos { line: 0, col: 14 });
+        assert_eq!(l[0].target_end, Pos { line: 1, col: 10 });
+
+        // One-line links keep their positions.
+        let d = doc("a `b <c.rst>`_ and `d < e.rst >`_\n");
+        let l = d.links();
+        assert_eq!(l.len(), 2);
+        assert_eq!((l[0].target_start.col, l[0].target_end.col), (6, 11));
+        assert_eq!(l[1].target, "e.rst");
+        assert_eq!((l[1].target_start.col, l[1].target_end.col), (23, 30));
+    }
+
+    #[test]
+    fn links_do_not_join_separate_blocks() {
+        for text in [
+            // Paragraphs split by a blank line.
+            "a `b\n\nc <x.rst>`_\n",
+            // Two list items, bullet and enumerated.
+            "- a `b\n- c <x.rst>`_\n",
+            "1. a `b\n2. c <x.rst>`_\n",
+            // Two fields.
+            ":A: `b\n:B: c <x.rst>`_\n",
+            // A definition term and its body.
+            "term `b\n  body <x.rst>`_\n",
+            // A paragraph and a shallower line.
+            "  a `b\nc <x.rst>`_\n",
+            // A heading and its body.
+            "Title `b\n=======\n\nc <x.rst>`_\n",
+            // A paragraph and a literal block.
+            "a `b::\n\n  c <x.rst>`_\n",
+            // A paragraph and a directive.
+            "a `b\n.. note:: c <x.rst>`_\n",
+        ] {
+            assert!(doc(text).links().is_empty(), "{text:?}");
+        }
+        // A list item continues on lines indented past its marker.
+        let d = doc("- a `b\n  c <x.rst>`_\n:A: `b\n   c <y.rst>`_\n");
+        let l = d.links();
+        assert_eq!(l.len(), 2);
+        assert_eq!((l[0].line, l[1].line), (1, 3));
+    }
+
+    #[test]
+    fn links_wrap_within_one_list_table_cell() {
+        let d = doc(
+            ".. list-table::\n\n   * - `a\n       b <x.rst>`_\n     - `c\n     - d <y.rst>`_\n",
+        );
+        let l = d.links();
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].target, "x.rst");
+        assert_eq!(l[0].line, 3);
     }
 
     #[test]

@@ -7,26 +7,26 @@
 
 Default backend when Kimi Code decides to ask a cross-family advisor: **claude**
 
-Valid values: `none` | `codex` | `copilot` | `claude`
+Valid values: `none` | `codex` | `legacy` | `claude`
 
 ## Default models (per backend)
 
 When Kimi Code calls an aside tool and the user has not named a specific model for this turn, pass these values as the tool's `model` param. Leave blank to let each CLI use its own default.
 
 - codex default model: **model-a**
-- copilot default model: ****
+- legacy default model: ****
 - claude default model: **model-c**
 
 ## Default reasoning effort (per backend)
 
 - codex default reasoning effort: **high**   (`low` / `medium` / `high` / `xhigh`, or blank)
-- copilot default reasoning effort: **** (`low` / `medium` / `high` / `xhigh`, or blank)
+- legacy default reasoning effort: **** (`low` / `medium` / `high` / `xhigh`, or blank)
 - claude default reasoning effort: **max**  (`low` / `medium` / `high` / `xhigh` / `max`, or blank)
 
 ## Default model fallback chain (per backend)
 
 - codex default model fallback: model-b(high)   (comma-separated; blank = none)
-- copilot default model fallback: **** (comma-separated; blank = none)
+- legacy default model fallback: **** (comma-separated; blank = none)
 - claude default model fallback: model-c2  (comma-separated; blank = none)
 
 ## Auto-call policy

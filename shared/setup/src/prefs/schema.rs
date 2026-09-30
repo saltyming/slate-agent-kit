@@ -51,7 +51,7 @@ pub const LEVELS: &[&str] = &["on-request", "suggest", "auto"];
 /// Reasoning-effort values for consultation and dispatch backends.
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 /// Aside backends.
-pub const ASIDE_BACKENDS: &[&str] = &["codex", "copilot", "claude"];
+pub const ASIDE_BACKENDS: &[&str] = &["codex", "claude"];
 /// Dispatch backends.
 pub const DISPATCH_BACKENDS: &[&str] = &["codex", "opencode", "claude"];
 /// Codex subagent efforts.
@@ -120,30 +120,6 @@ pub const SETTINGS: &[Setting] = &[
         Kind::List,
         Some("codex"),
         "codex fallback models, comma-separated (blank: none)",
-    ),
-    s(
-        "aside",
-        "copilot.model",
-        "Copilot model",
-        Kind::Text,
-        Some("copilot"),
-        "copilot model (blank: the CLI default)",
-    ),
-    s(
-        "aside",
-        "copilot.effort",
-        "Copilot reasoning effort",
-        Kind::EnumOrBlank(EFFORTS),
-        Some("copilot"),
-        "copilot reasoning effort",
-    ),
-    s(
-        "aside",
-        "copilot.fallback",
-        "Copilot model fallback",
-        Kind::List,
-        Some("copilot"),
-        "copilot fallback models, comma-separated (blank: none)",
     ),
     s(
         "aside",

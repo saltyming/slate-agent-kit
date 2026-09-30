@@ -13,7 +13,7 @@ Values: `on-request` | `suggest` | `auto`.
 
 **codex**
 
-Values: `codex` | `copilot` | `claude`.
+Values: `codex` | `claude`.
 
 ## Codex model
 
@@ -24,18 +24,6 @@ Values: `codex` | `copilot` | `claude`.
 ****
 
 ## Codex model fallback
-
-****
-
-## Copilot model
-
-****
-
-## Copilot reasoning effort
-
-****
-
-## Copilot model fallback
 
 ****
 

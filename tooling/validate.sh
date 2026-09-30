@@ -187,6 +187,16 @@ for kit in claude codex kimi; do
   fi
 done
 
+# A retired backend leaves no name behind: not in the sources the kits are
+# built from and not in what a kit installs.
+retired_backend=$(grep -rniE 'copilot' "$ROOT/shared" "$ROOT/adapters" \
+    "$ROOT"/kits/*-agent-kit/dist --exclude-dir=target 2>/dev/null || true)
+if [ -n "$retired_backend" ]; then
+  echo "retired backend named in sources or renders:" >&2
+  echo "$retired_backend" | head -5 >&2
+  fail=1
+fi
+
 # ── 6. article id integrity ───────────────────────────────
 # Every referenced article (§ N, optionally with a letter suffix) must have
 # exactly one bold definition line, in the kernel.

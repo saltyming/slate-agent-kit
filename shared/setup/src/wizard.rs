@@ -281,6 +281,13 @@ fn ask_prefs_file(
         st.state,
         vctx,
     );
+    let unset = prefs::treated_as_unset(
+        &st.name,
+        st.existing.as_deref(),
+        &st.template,
+        st.state,
+        vctx,
+    );
     let file_label = st
         .dest
         .file_name()
@@ -362,7 +369,8 @@ fn ask_prefs_file(
         if st.name == "aside" && setting.key == "backend" {
             backend = answer.clone();
         }
-        if answer != default {
+        // A value shown in place of one the file holds is written even when accepted as shown.
+        if answer != default || unset.contains(&setting.key) {
             input.values.insert(setting.key.to_string(), answer);
         }
     }

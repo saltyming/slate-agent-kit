@@ -30,8 +30,7 @@ const MAX_CAPTURED_STDOUT: usize = 50 * 1024;
 /// its own config. The tool layer refuses a call whose depth is already at the
 /// ceiling, so a spawned backend can never recursively re-enter aside. This is a
 /// defense-in-depth net; the primary guarantee is that each backend is spawned
-/// with no MCP servers at all (codex `--ignore-user-config`, claude `--safe-mode`,
-/// copilot's tool whitelist).
+/// with no MCP servers at all (codex `--ignore-user-config`, claude `--safe-mode`).
 pub const REENTRY_DEPTH_ENV: &str = "ASIDE_REENTRY_DEPTH";
 
 /// Depth at or above which a call is refused. `1` = no nesting: a top-level call
@@ -82,7 +81,6 @@ fn stamp_reentry_depth(cmd: &mut Command) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Codex,
-    Copilot,
     Claude,
 }
 
@@ -90,13 +88,12 @@ impl Backend {
     pub fn binary(&self) -> &'static str {
         match self {
             Backend::Codex => "codex",
-            Backend::Copilot => "copilot",
             Backend::Claude => "claude",
         }
     }
 
     pub fn all() -> &'static [Backend] {
-        &[Backend::Codex, Backend::Copilot, Backend::Claude]
+        &[Backend::Codex, Backend::Claude]
     }
 }
 
@@ -307,41 +304,6 @@ fn build_command(
                 prompt_transport: PromptTransport::Argv,
             }
         }
-        Backend::Copilot => {
-            // copilot -p "<PROMPT>" --allow-all-tools --available-tools=view,rg,glob,web_fetch
-            //         -s --no-color [--model MODEL] [--effort EFF]
-            //   -p:                  non-interactive prompt via argv
-            //   --allow-all-tools:   required for non-interactive mode per help (auto-approve
-            //                        whatever is in --available-tools; no approval prompts)
-            //   --available-tools=…: read-only tool whitelist so copilot can inspect files the
-            //                        caller references by path:
-            //                          view      — read file contents
-            //                          rg        — ripgrep across the workspace
-            //                          glob      — file path pattern match
-            //                          web_fetch — fetch URL bodies for docs / spec lookups
-            //                        Intentionally excludes bash / write_bash / read_bash / task
-            //                        / skill / sql / store_memory / report_intent, which would
-            //                        let copilot exec shells or mutate state — aside is Q&A only.
-            //   -s:                  silent (stdout contains only the response)
-            //   --no-color:          strip ANSI for clean capture
-            let mut cmd = Command::new("copilot");
-            cmd.arg("-p").arg(prompt);
-            cmd.arg("--allow-all-tools");
-            cmd.arg("--available-tools=view,rg,glob,web_fetch");
-            cmd.arg("-s");
-            cmd.arg("--no-color");
-            if let Some(m) = model {
-                cmd.arg("--model").arg(m);
-            }
-            if let Some(eff) = reasoning_effort {
-                cmd.arg("--effort").arg(eff);
-            }
-            BuiltCommand {
-                argv: vec!["copilot".into()],
-                cmd,
-                prompt_transport: PromptTransport::Argv,
-            }
-        }
         Backend::Claude => {
             // claude -p --safe-mode --no-session-persistence --permission-mode plan
             //        --tools Read,Grep,Glob,WebFetch --input-format text --output-format text
@@ -395,10 +357,6 @@ fn install_hint(backend: Backend) -> String {
     match backend {
         Backend::Codex => {
             "install codex CLI (`npm i -g @openai/codex`; see https://github.com/openai/codex)"
-                .to_string()
-        }
-        Backend::Copilot => {
-            "install copilot CLI (see https://docs.github.com/copilot/how-tos/copilot-cli)"
                 .to_string()
         }
         Backend::Claude => "install Claude Code CLI (`npm i -g @anthropic-ai/claude-code`; see \
@@ -455,10 +413,7 @@ mod tests {
 
     #[test]
     fn all_backends_include_claude() {
-        assert_eq!(
-            Backend::all(),
-            &[Backend::Codex, Backend::Copilot, Backend::Claude]
-        );
+        assert_eq!(Backend::all(), &[Backend::Codex, Backend::Claude]);
     }
 
     #[test]
@@ -479,11 +434,9 @@ mod tests {
     }
 
     #[test]
-    fn codex_and_copilot_keep_argv_prompt_transport() {
+    fn codex_keeps_argv_prompt_transport() {
         let codex = build_command(Backend::Codex, "prompt body", None, None);
-        let copilot = build_command(Backend::Copilot, "prompt body", None, None);
         assert_eq!(codex.prompt_transport, PromptTransport::Argv);
-        assert_eq!(copilot.prompt_transport, PromptTransport::Argv);
     }
 
     #[test]
