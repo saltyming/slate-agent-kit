@@ -1,17 +1,17 @@
 # slate-agent-kit — Project Guide
 
-Meta-repo and single source of truth for the agent-kit family. Shared rule
-sources and shared MCP servers live here; the three harness kits
-(`kits/{claude,codex,kimi}-agent-kit`) are git submodules whose rule files are
-**rendered outputs** of this repo. Do not confuse this file with
-`kits/claude-agent-kit/CLAUDE.md` — that one is a rendered artifact; this one
-is the guide for working on the repo itself.
+Meta-repo and single source of truth for the agent-kit family: shared rule
+sources, skills and document templates, the shared MCP servers, and the
+installer. The three harness kits (`kits/{claude,codex,kimi}-agent-kit`) are git
+submodules whose payload is **rendered** from this repo. A kit's root
+`AGENTS.md` describes maintaining that kit; the manual a kit installs is its
+`dist/CLAUDE.md` or `dist/AGENTS.md`.
 
 ## The one hard rule
 
-**Never hand-edit rendered outputs.** The kits' `CLAUDE.md` / `AGENTS.md`,
-`*-rules/*.md`, and prefs templates are generated. Edit the sources
-(`shared/rules/`, `shared/prefs/`, `adapters/<h>/`), then:
+**Never hand-edit rendered outputs.** Each kit's `dist/`, `install.sh`,
+`install.ps1`, `Makefile` and root `AGENTS.md` are generated. Edit the sources
+(`shared/`, `adapters/<h>/`, `tooling/kit-scripts/`), then:
 
 ```sh
 sh tooling/render-kit.sh claude   # and/or codex, kimi
@@ -20,40 +20,44 @@ sh tooling/validate.sh            # must print "validate: OK" before committing
 
 ## Topology
 
-- `shared/rules/core/` — kernel (invariant register) + loop files; `shared/rules/mcp/` — aside/dispatch policy; `shared/workflows/palette/` — palette outer loop; `shared/prefs/` — prefs templates.
-- `shared/mcp-servers/{aside,dispatch,harness-log}` — the Rust workspace (repo-root `Cargo.toml`). The kits ship no binaries of their own.
-- `adapters/<harness>/` — `tokens.sed` (render-time `{{TOKEN}}` values, including `KIT_VERSION`), `inserts/*.md` (per-marker fragments), `surface.md` (harness surface rules).
-- `tooling/` — `render-kit.sh`, `validate.sh`, `install-mcp.sh` (build/download + register MCP servers), `kit-scripts/configure-prefs.sh`.
-- `docs/coverage-matrix.md` — claude 9.4.0 → redesigned-corpus mapping; update it when migrating or superseding rule text.
+- `shared/rules/core/` — kernel (direction, autonomy, prohibitions, reporting, memory) + execution, delegation, git and convention rules; `shared/rules/mcp/` — consultation (aside) and dispatch.
+- `shared/workflows/palette/` — palette rule, skills, and `templates/` (also the palette server's schema); `shared/workflows/memory/` — the memory-triage skill; `shared/prefs/` — prefs templates.
+- `shared/mcp-servers/{aside,dispatch,harness-log,palette}` and `shared/setup` (the `slate-setup` installer) — the Rust workspace (repo-root `Cargo.toml`). The kits ship no binaries of their own.
+- `adapters/<harness>/` — `tokens.sed` (render-time `{{TOKEN}}` values, including `KIT_VERSION`), `inserts/*.md` (per-marker fragments); codex and kimi also have `surface.md` (harness surface rules).
+- `tooling/` — `render-kit.sh`, `validate.sh`, `install-mcp.sh` (build the servers and register them through `slate-setup`), `slate-version` (the slate release a kit's binaries come from), `kit-scripts/` (entry-point and maintainer templates).
+- `docs/` — this repo's own records and maintained documents (RST): `rfc/`, `adr/`, `changeset/`, `staging/`, `design/`, `spec/`, `principles.rst`, `glossary.rst`. `_palette/` holds the internal work documents (git-ignored). Indexes and `staging/` are generated: after changing `docs/` outside the palette server's tools, run `palette generate .` and commit the result; CI only checks them.
 
 ## Render mechanics
 
-- `{{TOKEN}}` — substituted from `adapters/<h>/tokens.sed`. Kit version bumps happen here (`KIT_VERSION`), nowhere else.
+- `{{TOKEN}}` — substituted from `adapters/<h>/tokens.sed`. Kit version bumps happen there (`KIT_VERSION`); the slate release number lives in `tooling/slate-version`.
 - `{{@INSERT name}}` — replaced with `adapters/<h>/inserts/<name>.md`. Every harness must have the file for every marker: empty file = no contribution, missing file = hard render error. Insert content passes through `tokens.sed` afterwards.
-- `@@NAME@@` — configure-time placeholders in the aside/dispatch prefs templates (the git and comment prefs templates have none: they install with literal defaults, and `configure-prefs.sh` edits their value lines in place so recorded answers, overrides, and notes survive a reconfigure); render leaves them intact (`validate.sh`'s `{{` leak check stays strict because of this split).
-- Invariant/gate IDs: each `INV-*` / `GATE-*` is defined exactly once, as a bold `**ID — Title.**` anchor; everything else references the ID. `validate.sh` enforces uniqueness and cross-file reference integrity, plus harness-leak greps (no `advisor()`/`ultracode`/`ScheduleWakeup` in codex/kimi renders; no `TodoList`/`AgentSwarm`/`apply_patch` in claude renders; no `workslate` in any render, since it was removed in claude 12.0.0) and hard byte budgets on each rendered corpus.
+- Entry points and the maintainer `AGENTS.md` take per-kit tokens (`{{KIT_NAME}}`, `{{KIT_REPO}}`, `{{SLATE_VERSION}}`, `{{HARNESS}}`) from `render-kit.sh` itself.
+- Invariant/gate IDs: each `INV-*` / `GATE-*` is defined exactly once, as a bold `**ID — Title.**` anchor; everything else references the ID. `validate.sh` enforces uniqueness and cross-file reference integrity, harness-leak greps (no `advisor()`/`ultracode`/`ScheduleWakeup` in codex/kimi renders; no `TodoList`/`AgentSwarm`/`apply_patch` in claude renders; no `workslate` in any render), retired terms and trigger phrases, hard byte budgets on each rendered corpus, and `palette check` on this repo's own documents when a palette binary is built.
 
 ## Rust workspace
 
-- `cargo build/test/clippy --workspace` at repo root covers aside, dispatch, harness-log.
+- `cargo build/test/clippy --workspace` at repo root covers aside, dispatch, harness-log, palette and slate-setup.
 - CI runs ubuntu/macos/**windows** with `clippy -D warnings` on the **latest stable** — run `rustup update stable` locally before trusting a local clippy pass; an older local toolchain misses new lints.
-- Code and tests must hold on Windows (INV-QUALITY-1's motivating case came from this repo): slugs flatten `\` and `:` alongside `/`; tests assert path components, never separator-dependent rendered strings.
-- Test fixtures are synthetic JSONL only — never commit real session data.
+- Code and tests must hold on Windows: slugs flatten `\` and `:` alongside `/`; tests assert path components, never separator-dependent rendered strings.
+- Release builds Linux targets with cargo-zigbuild: pure-Rust dependencies only.
+- Test fixtures are synthetic only — never commit real session data or a user's configuration.
 
 ## CI / Release
 
 - `ci.yml` (push/PR to main): 3-OS build+test+clippy+fmt, `validate.sh` (checkout needs `submodules: recursive`), shellcheck (advisory).
-- `release.yml` (tag `v*`): 8-platform aside/dispatch artifacts (cargo-zigbuild for Linux targets) → GitHub Release. `tooling/install-mcp.sh --prebuilt` consumes the latest release; the kits' `install.sh` clone-fallback tracks slate **main** — keep main green and consumable.
+- `release.yml` (tag `v*`): 8-platform aside/dispatch/palette/slate-setup artifacts (cargo-zigbuild for Linux targets) and `checksums.txt` → GitHub Release. A kit's entry point downloads `slate-setup` from the release named in `tooling/slate-version` (the latest release when that one does not exist yet), and the clone fallback tracks slate **main** — keep main green and consumable.
 - Pushing a tag in the same push that first adds a workflow file does not trigger it; push the tag separately.
 
 ## Release train (order matters)
 
-1. Change `shared/` (+ `adapters/`); bump `KIT_VERSION` in each affected kit's `tokens.sed`.
-2. Commit + push slate main; wait for CI green.
-3. Re-render kits, update each kit's `CHANGELOG.md`, then commit / tag / push each kit submodule.
-4. **Last**: commit the submodule pin bumps in slate and tag slate `vX.Y.Z` (this publishes the binaries).
-5. ff-sync the standalone checkouts (`~/Workspace/{claude,codex,kimi}-agent-kit`).
-6. For rules-affecting releases, refresh the live homes: `make install SKIP_MCP=1` in each kit (installs to `~/.claude`, `~/.codex`, `~/.kimi-code`; new rules apply from each harness's next session).
+1. Develop a breaking release on a `next` branch in slate and in each kit; ordinary changes go to main directly.
+2. Change `shared/` (+ `adapters/`, `tooling/`); bump `KIT_VERSION` in each affected kit's `tokens.sed` and, for a slate release, `tooling/slate-version`.
+3. Verify locally: render, `validate.sh`, `cargo test`/`clippy` on the latest stable, and installs into a scratch **`HOME`** (a scratch harness home alone is not enough: harness CLIs edit the real user config under `$HOME`). Review the diff (advisor, and aside at its level) **before** any tag.
+4. Re-render the kits, update each kit's `CHANGELOG.md`, commit, and push each kit's main without a tag.
+5. Push slate's source changes and the submodule pin bumps in **one** push, so that main's `validate.sh` never runs a new check against old renders; wait for slate and kit CI to be green.
+6. Tag each kit, then tag slate `vX.Y.Z` (this publishes the binaries).
+7. For rules-affecting releases, refresh the live homes: `make install` in each kit (installs into `~/.claude`, `~/.codex`, `~/.kimi-code`; new rules apply from each harness's next session).
+8. A regression found after a tag is reported and waits for the user; another release is the user's decision.
 
 ## Secrets
 
@@ -64,7 +68,7 @@ exclude them.
 ## Live homes
 
 `~/.claude`, `~/.codex`, `~/.kimi-code` are production installs of the rendered
-kits. Installers are signature-guarded: only kit-signed files are replaced or
-removed; user-owned files (`-custom:` signatures, e.g. prefs) are preserved.
-Replacing MCP binaries uses atomic `mv` + macOS ad-hoc codesign, so live
-sessions keep running and pick the new binary up on restart.
+kits. `slate-setup` replaces or removes only kit-signed files; user-owned files
+(`-custom:` signatures, e.g. prefs and custom rules) are preserved. Replacing
+MCP binaries uses atomic rename + macOS ad-hoc codesign, so live sessions keep
+running and pick the new binary up on restart.

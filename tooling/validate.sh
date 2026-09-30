@@ -11,10 +11,7 @@ required="
 README.md
 LICENSE.md
 Cargo.toml
-docs/architecture.md
-docs/support-matrix.md
-docs/coverage-matrix.md
-docs/legacy/claude-9.4.0-inventory.txt
+docs/glossary.rst
 adapters/claude/tokens.sed
 adapters/codex/tokens.sed
 adapters/kimi/tokens.sed
@@ -29,17 +26,25 @@ shared/rules/mcp/aside.md
 shared/rules/mcp/dispatch.md
 shared/workflows/palette/rules.md
 shared/workflows/palette/skills/palette-init/SKILL.md
+shared/workflows/palette/templates/house-style.rst
+shared/workflows/memory/skills/memory-triage/SKILL.md
 shared/prefs/aside-prefs.md.tmpl
 shared/prefs/dispatch-prefs.md.tmpl
+shared/prefs/subagent-prefs.md.tmpl
 shared/prefs/git-prefs.md.tmpl
 shared/prefs/comment-prefs.md.tmpl
 shared/mcp-servers/aside/Cargo.toml
 shared/mcp-servers/dispatch/Cargo.toml
 shared/mcp-servers/harness-log/Cargo.toml
+shared/mcp-servers/palette/Cargo.toml
+shared/setup/Cargo.toml
 tooling/render-kit.sh
 tooling/install-mcp.sh
-tooling/kit-scripts/configure-prefs.sh
-tooling/kit-scripts/configure-prefs.ps1
+tooling/slate-version
+tooling/kit-scripts/kit-maintainer.md.tmpl
+tooling/kit-scripts/entry/install.sh.tmpl
+tooling/kit-scripts/entry/install.ps1.tmpl
+tooling/kit-scripts/entry/Makefile.tmpl
 "
 
 for path in $required; do
@@ -111,82 +116,37 @@ check_rendered_file() {
   fi
 }
 
-claude_files="CLAUDE.md
-claude-rules/claude-agent-kit--task-execution.md
-claude-rules/claude-agent-kit--parallel-work.md
-claude-rules/claude-agent-kit--palette.md
-claude-rules/claude-agent-kit--git-workflow.md
-claude-rules/claude-agent-kit--framework-conventions.md
-claude-rules/claude-agent-kit--aside.md
-claude-rules/claude-agent-kit--dispatch.md
-scripts/claude-agent-kit--aside-prefs.md.tmpl
-scripts/claude-agent-kit--dispatch-prefs.md.tmpl
-scripts/claude-agent-kit--git-prefs.md.tmpl
-scripts/claude-agent-kit--comment-prefs.md.tmpl
-scripts/configure-prefs.sh
-scripts/configure-prefs.ps1"
-
-codex_files="AGENTS.md
-codex-rules/codex-agent-kit--codex-surface.md
-codex-rules/codex-agent-kit--task-execution.md
-codex-rules/codex-agent-kit--delegation.md
-codex-rules/codex-agent-kit--palette.md
-codex-rules/codex-agent-kit--git-workflow.md
-codex-rules/codex-agent-kit--framework-conventions.md
-codex-rules/codex-agent-kit--aside.md
-codex-rules/codex-agent-kit--dispatch.md
-scripts/codex-agent-kit--aside-prefs.md.tmpl
-scripts/codex-agent-kit--dispatch-prefs.md.tmpl
-scripts/codex-agent-kit--git-prefs.md.tmpl
-scripts/codex-agent-kit--comment-prefs.md.tmpl
-scripts/configure-prefs.sh
-scripts/configure-prefs.ps1"
-
-kimi_files="AGENTS.md
-kimi-rules/kimi-agent-kit--kimi-surface.md
-kimi-rules/kimi-agent-kit--task-execution.md
-kimi-rules/kimi-agent-kit--delegation.md
-kimi-rules/kimi-agent-kit--palette.md
-kimi-rules/kimi-agent-kit--git-workflow.md
-kimi-rules/kimi-agent-kit--framework-conventions.md
-kimi-rules/kimi-agent-kit--aside.md
-kimi-rules/kimi-agent-kit--dispatch.md
-scripts/kimi-agent-kit--aside-prefs.md.tmpl
-scripts/kimi-agent-kit--dispatch-prefs.md.tmpl
-scripts/kimi-agent-kit--git-prefs.md.tmpl
-scripts/kimi-agent-kit--comment-prefs.md.tmpl
-scripts/configure-prefs.sh
-scripts/configure-prefs.ps1"
-
-for f in $claude_files; do check_rendered_file "$ROOT/kits/claude-agent-kit/$f"; done
-for f in $codex_files; do check_rendered_file "$ROOT/kits/codex-agent-kit/$f"; done
-for f in $kimi_files; do check_rendered_file "$ROOT/kits/kimi-agent-kit/$f"; done
-
-# The configure scripts are copied, not rendered, so a kit copy must match its
-# source byte for byte; a stale copy ships the previous prefs behavior.
 for kit in claude codex kimi; do
-  for script in configure-prefs.sh configure-prefs.ps1; do
-    if [ -f "$ROOT/kits/${kit}-agent-kit/scripts/$script" ] \
-      && ! cmp -s "$ROOT/tooling/kit-scripts/$script" "$ROOT/kits/${kit}-agent-kit/scripts/$script"; then
-      echo "stale copy: kits/${kit}-agent-kit/scripts/$script differs from tooling/kit-scripts/$script (re-render)" >&2
-      fail=1
-    fi
+  kd="$ROOT/kits/${kit}-agent-kit"
+  primary=AGENTS.md
+  [ "$kit" = claude ] && primary=CLAUDE.md
+  check_rendered_file "$kd/dist/$primary"
+  check_rendered_file "$kd/dist/kit.toml"
+  check_rendered_file "$kd/AGENTS.md"
+  for f in "$kd"/dist/rules/*.md "$kd"/dist/prefs/*.md "$kd"/dist/skills/*/SKILL.md "$kd"/dist/skills/palette-init/templates/*.rst; do
+    check_rendered_file "$f"
   done
-done
-
-for kit in claude codex kimi; do
-  for skill in palette-init palette-rules palette-spec palette-ui palette-ux; do
-    check_rendered_file "$ROOT/kits/${kit}-agent-kit/${kit}-skills/$skill/SKILL.md"
+  for p in aside dispatch subagent git comment; do
+    [ -f "$kd/dist/prefs/$p-prefs.md" ] || { echo "missing prefs template: $kd/dist/prefs/$p-prefs.md" >&2; fail=1; }
   done
+  for skill in palette-init palette-resume palette-state palette-record palette-spec palette-ux palette-ui palette-rules memory-triage; do
+    [ -f "$kd/dist/skills/$skill/SKILL.md" ] || { echo "missing skill: $kd/dist/skills/$skill/SKILL.md" >&2; fail=1; }
+  done
+  # The earlier layout kept the payload at the kit root; a leftover would be
+  # loaded as the kit repository's own instructions.
+  for old in "${kit}-rules" "${kit}-skills" scripts; do
+    [ -e "$kd/$old" ] && { echo "earlier-layout leftover: $kd/$old" >&2; fail=1; }
+  done
+  [ "$kit" = claude ] && [ -e "$kd/CLAUDE.md" ] && { echo "earlier-layout leftover: $kd/CLAUDE.md" >&2; fail=1; }
 done
 
 # ── 4. harness-leak greps ─────────────────────────────────
 # Claude-only machinery must not leak into codex/kimi renders, and vice versa.
-# workslate was removed in claude-agent-kit 12.0.0; it must not reappear in any render.
+# workslate must not appear in any render.
 
 for kit in codex kimi; do
   leaks=$(grep -rEn 'workslate|advisor\(\)|Agent Team|ScheduleWakeup|ultracode|CLAUDE\.md' \
-      "$ROOT/kits/${kit}-agent-kit/${kit}-rules" "$ROOT/kits/${kit}-agent-kit/AGENTS.md" 2>/dev/null || true)
+      "$ROOT/kits/${kit}-agent-kit/dist/rules" "$ROOT/kits/${kit}-agent-kit/dist/AGENTS.md" 2>/dev/null || true)
   if [ -n "$leaks" ]; then
     echo "claude-only machinery leaked into $kit render:" >&2
     echo "$leaks" | head -5 >&2
@@ -195,7 +155,7 @@ for kit in codex kimi; do
 done
 
 claude_leaks=$(grep -rEn 'workslate|AgentSwarm|TodoList|apply_patch|KIMI_CODE_HOME|CODEX_HOME|update_plan' \
-    "$ROOT/kits/claude-agent-kit/CLAUDE.md" "$ROOT/kits/claude-agent-kit/claude-rules" 2>/dev/null || true)
+    "$ROOT/kits/claude-agent-kit/dist/CLAUDE.md" "$ROOT/kits/claude-agent-kit/dist/rules" 2>/dev/null || true)
 if [ -n "$claude_leaks" ]; then
   echo "non-claude surface bindings leaked into claude render:" >&2
   echo "$claude_leaks" | head -5 >&2
@@ -214,11 +174,26 @@ if grep -R -n "doctrine" "$ROOT" --exclude-dir=.git --exclude-dir=kits --exclude
   fail=1
 fi
 
+# ── 5b. retired terms and trigger phrases ─────────────────
+# The rules and manuals use the glossary's terms (docs/glossary.rst) and state
+# purpose and judgment, never a mandatory trigger.
+
+for kit in claude codex kimi; do
+  hits=$(grep -rniE '\b(story|stories|slice|slices|handoff|hand-off)\b|GATE-DELEGATE|GATE-DISPATCH|INV-GATE-[0-9]|INV-SCOPE-[23]|whether or not the user asked|do not reconsider|use them without asking' \
+      "$ROOT/kits/${kit}-agent-kit/dist/rules" "$ROOT"/kits/${kit}-agent-kit/dist/*.md 2>/dev/null || true)
+  if [ -n "$hits" ]; then
+    echo "retired term or trigger phrase in $kit render:" >&2
+    echo "$hits" | head -5 >&2
+    fail=1
+  fi
+done
+
 # ── 6. INV/GATE id integrity ──────────────────────────────
 # Every referenced INV-*/GATE-* id must have exactly one bold definition line
 # somewhere in the shared sources (+ palette).
 
-src_all=$(cat "$ROOT"/shared/rules/core/*.md "$ROOT"/shared/rules/mcp/*.md "$ROOT/shared/workflows/palette/rules.md" 2>/dev/null)
+src_all=$(cat "$ROOT"/shared/rules/core/*.md "$ROOT"/shared/rules/mcp/*.md "$ROOT/shared/workflows/palette/rules.md" \
+  "$ROOT"/shared/workflows/*/skills/*/SKILL.md "$ROOT"/adapters/*/inserts/*.md "$ROOT"/adapters/*/surface.md 2>/dev/null)
 refs=$(printf '%s' "$src_all" | grep -oE '(INV|GATE)(-[A-Z0-9]+)+' | sort -u)
 for id in $refs; do
   defs=$(printf '%s' "$src_all" | grep -cE "^\*\*$id( |\.| —)" || true)
@@ -227,18 +202,6 @@ for id in $refs; do
     fail=1
   fi
 done
-
-# ── 7. coverage-matrix anchors ────────────────────────────
-# Every inventory line id must appear in the matrix; matrix rows must be
-# non-empty in the new-location column (spot format check only — semantic
-# review is human).
-
-if [ -f "$ROOT/docs/coverage-matrix.md" ]; then
-  if grep -n '| *|' "$ROOT/docs/coverage-matrix.md" | grep -v '^1:' >/dev/null; then
-    echo "coverage-matrix has rows with an empty column" >&2
-    fail=1
-  fi
-fi
 
 # ── 8. size guards (simulated installer concat) ───────────
 
@@ -253,24 +216,8 @@ concat_lines() {
   echo "$total"
 }
 
-codex_concat=$(concat_lines codex-agent-kit AGENTS.md \
-  codex-rules/codex-agent-kit--codex-surface.md \
-  codex-rules/codex-agent-kit--task-execution.md \
-  codex-rules/codex-agent-kit--palette.md \
-  codex-rules/codex-agent-kit--delegation.md \
-  codex-rules/codex-agent-kit--git-workflow.md \
-  codex-rules/codex-agent-kit--framework-conventions.md \
-  codex-rules/codex-agent-kit--aside.md \
-  codex-rules/codex-agent-kit--dispatch.md)
-kimi_concat=$(concat_lines kimi-agent-kit AGENTS.md \
-  kimi-rules/kimi-agent-kit--kimi-surface.md \
-  kimi-rules/kimi-agent-kit--task-execution.md \
-  kimi-rules/kimi-agent-kit--palette.md \
-  kimi-rules/kimi-agent-kit--delegation.md \
-  kimi-rules/kimi-agent-kit--git-workflow.md \
-  kimi-rules/kimi-agent-kit--framework-conventions.md \
-  kimi-rules/kimi-agent-kit--aside.md \
-  kimi-rules/kimi-agent-kit--dispatch.md)
+codex_concat=$(concat_lines codex-agent-kit dist/AGENTS.md $(cd "$ROOT/kits/codex-agent-kit" && ls dist/rules/*.md 2>/dev/null))
+kimi_concat=$(concat_lines kimi-agent-kit dist/AGENTS.md $(cd "$ROOT/kits/kimi-agent-kit" && ls dist/rules/*.md 2>/dev/null))
 
 echo "concat size: codex=${codex_concat} lines, kimi=${kimi_concat} lines"
 for pair in "codex:$codex_concat" "kimi:$kimi_concat"; do
@@ -285,7 +232,8 @@ done
 # The rendered standing rules are injected into every session; per-rule
 # compliance degrades as the corpus grows, so growth past these ceilings is a
 # regression, not a style issue. Raising a ceiling is a deliberate release
-# decision, never a drive-by. Prefs templates are user-owned config, excluded.
+# decision, never a drive-by. Prefs templates are user-owned config and live in
+# dist/prefs/, outside the corpus.
 
 corpus_bytes() {
   total=0
@@ -297,12 +245,9 @@ corpus_bytes() {
   echo "$total"
 }
 
-claude_bytes=$(corpus_bytes "$ROOT/kits/claude-agent-kit/CLAUDE.md" \
-  $(ls "$ROOT"/kits/claude-agent-kit/claude-rules/*.md 2>/dev/null | grep -v 'prefs'))
-codex_bytes=$(corpus_bytes "$ROOT/kits/codex-agent-kit/AGENTS.md" \
-  $(ls "$ROOT"/kits/codex-agent-kit/codex-rules/*.md 2>/dev/null | grep -v 'prefs'))
-kimi_bytes=$(corpus_bytes "$ROOT/kits/kimi-agent-kit/AGENTS.md" \
-  $(ls "$ROOT"/kits/kimi-agent-kit/kimi-rules/*.md 2>/dev/null | grep -v 'prefs'))
+claude_bytes=$(corpus_bytes "$ROOT/kits/claude-agent-kit/dist/CLAUDE.md" "$ROOT"/kits/claude-agent-kit/dist/rules/*.md)
+codex_bytes=$(corpus_bytes "$ROOT/kits/codex-agent-kit/dist/AGENTS.md" "$ROOT"/kits/codex-agent-kit/dist/rules/*.md)
+kimi_bytes=$(corpus_bytes "$ROOT/kits/kimi-agent-kit/dist/AGENTS.md" "$ROOT"/kits/kimi-agent-kit/dist/rules/*.md)
 
 echo "standing corpus: claude=${claude_bytes}B codex=${codex_bytes}B kimi=${kimi_bytes}B"
 budget_check() {
@@ -318,40 +263,37 @@ budget_check kimi "$kimi_bytes" 56000
 
 # ── 9. rendered titles ────────────────────────────────────
 
-if ! grep -n "Codex Agent Operating Manual" "$ROOT/kits/codex-agent-kit/AGENTS.md" >/dev/null 2>&1; then
+if ! grep -n "Codex Agent Operating Manual" "$ROOT/kits/codex-agent-kit/dist/AGENTS.md" >/dev/null 2>&1; then
   echo "codex adapter did not render Codex title" >&2
   fail=1
 fi
 
-if ! grep -n "Kimi Agent Operating Manual" "$ROOT/kits/kimi-agent-kit/AGENTS.md" >/dev/null 2>&1; then
+if ! grep -n "Kimi Agent Operating Manual" "$ROOT/kits/kimi-agent-kit/dist/AGENTS.md" >/dev/null 2>&1; then
   echo "kimi adapter did not render Kimi title" >&2
   fail=1
 fi
 
-if ! grep -n "Claude Agent Operating Manual" "$ROOT/kits/claude-agent-kit/CLAUDE.md" >/dev/null 2>&1; then
+if ! grep -n "Claude Agent Operating Manual" "$ROOT/kits/claude-agent-kit/dist/CLAUDE.md" >/dev/null 2>&1; then
   echo "claude adapter did not render Claude title" >&2
   fail=1
 fi
 
 # ── 10. installer sanity ──────────────────────────────────
-# Guards the per-kit installers — previously untested. The signature check below
-# would have caught the claude/kimi `--uninstall` no-op (install.sh keyed on the
-# wrong signature and silently left every rule/skill installed).
+# The entry points only obtain and run slate-setup; the descriptor tells it
+# what to install. Both are rendered, so a missing or malformed one means the
+# render is stale.
 
 for kit in claude codex kimi; do
   kd="$ROOT/kits/${kit}-agent-kit"
   for f in install.sh Makefile install.ps1; do
-    [ -f "$kd/$f" ] || { echo "$kit: missing installer $f" >&2; fail=1; }
+    [ -f "$kd/$f" ] || { echo "$kit: missing entry point $f" >&2; fail=1; }
   done
   if [ -f "$kd/install.sh" ] && ! sh -n "$kd/install.sh" 2>/dev/null; then
     echo "$kit: install.sh has a syntax error" >&2; fail=1
   fi
-  # install.sh + Makefile uninstall must key on the shared signature, or
-  # `--uninstall` silently leaves every managed rule/skill in place.
-  for f in install.sh Makefile; do
-    if [ -f "$kd/$f" ] && ! grep -q 'slate-agent-kit:common' "$kd/$f"; then
-      echo "$kit: $f never references 'slate-agent-kit:common' (uninstall would no-op)" >&2
-      fail=1
+  for key in kit harness version slate_version primary load rules skills prefs servers; do
+    if [ -f "$kd/dist/kit.toml" ] && ! grep -q "^$key = " "$kd/dist/kit.toml"; then
+      echo "$kit: dist/kit.toml lacks '$key'" >&2; fail=1
     fi
   done
 done
@@ -366,6 +308,25 @@ if command -v pwsh >/dev/null 2>&1; then
       echo "$kit: install.ps1 has parse error(s)" >&2; fail=1
     fi
   done
+fi
+
+# ── 11. palette documents ─────────────────────────────────
+# This repository's own palette and docs/ pass the palette lint. The check runs
+# when a palette binary is available (CI builds it first); otherwise it is
+# reported as skipped.
+
+palette_bin=""
+if [ -x "$ROOT/target/release/palette" ]; then palette_bin="$ROOT/target/release/palette"
+elif [ -x "$ROOT/target/debug/palette" ]; then palette_bin="$ROOT/target/debug/palette"
+elif command -v palette >/dev/null 2>&1; then palette_bin=$(command -v palette)
+fi
+if [ -n "$palette_bin" ]; then
+  if ! "$palette_bin" check "$ROOT" >&2; then
+    echo "palette check failed on this repository" >&2
+    fail=1
+  fi
+else
+  echo "palette check skipped: no palette binary built"
 fi
 
 if [ "$fail" -eq 0 ]; then

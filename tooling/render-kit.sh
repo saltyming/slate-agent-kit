@@ -1,4 +1,11 @@
 #!/bin/sh
+# Render one harness kit from the slate sources: the installable payload under
+# <kit>/dist/ (manual, rules, skills with the palette templates, prefs
+# templates, and the kit.toml descriptor the installer reads), the kit's entry
+# points (install.sh, install.ps1, Makefile) and the maintainer AGENTS.md at the
+# kit root. Paths the earlier layout used are removed so a stale payload never
+# ships. Token values come from adapters/<harness>/tokens.sed and
+# tooling/slate-version; {{@INSERT name}} lines come from adapters/<harness>/inserts/.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -13,32 +20,31 @@ harness="${1:-}"
 
 surface_src=""
 surface_name=""
+legacy=""
 case "$harness" in
   claude)
     target="${2:-$ROOT/kits/claude-agent-kit}"
-    rules_dir="$target/claude-rules"
-    skills_dir="$target/claude-skills"
-    primary="$target/CLAUDE.md"
+    primary="CLAUDE.md"
     prefix="claude-agent-kit"
     delegation_name="parallel-work"
+    load="rules-dir"
+    legacy='"workslate"'
     ;;
   codex)
     target="${2:-$ROOT/kits/codex-agent-kit}"
-    rules_dir="$target/codex-rules"
-    skills_dir="$target/codex-skills"
-    primary="$target/AGENTS.md"
+    primary="AGENTS.md"
     prefix="codex-agent-kit"
     delegation_name="delegation"
+    load="concat"
     surface_src="$ROOT/adapters/codex/surface.md"
     surface_name="codex-surface"
     ;;
   kimi)
     target="${2:-$ROOT/kits/kimi-agent-kit}"
-    rules_dir="$target/kimi-rules"
-    skills_dir="$target/kimi-skills"
-    primary="$target/AGENTS.md"
+    primary="AGENTS.md"
     prefix="kimi-agent-kit"
     delegation_name="delegation"
+    load="concat"
     surface_src="$ROOT/adapters/kimi/surface.md"
     surface_name="kimi-surface"
     ;;
@@ -55,8 +61,24 @@ inserts_dir="$ROOT/adapters/$harness/inserts"
   echo "missing adapter inserts dir: $inserts_dir" >&2
   exit 1
 }
+slate_version=$(sed -n '1p' "$ROOT/tooling/slate-version")
+[ -n "$slate_version" ] || {
+  echo "tooling/slate-version is empty" >&2
+  exit 1
+}
+kit_version=$(sed -n 's/^s#{{KIT_VERSION}}#\([^#]*\)#g$/\1/p' "$sed_script")
+[ -n "$kit_version" ] || {
+  echo "KIT_VERSION missing from $sed_script" >&2
+  exit 1
+}
 
-mkdir -p "$rules_dir" "$skills_dir"
+entry_dir="$ROOT/tooling/kit-scripts/entry"
+for f in install.sh.tmpl install.ps1.tmpl Makefile.tmpl; do
+  [ -f "$entry_dir/$f" ] || {
+    echo "missing entry point template: $entry_dir/$f" >&2
+    exit 1
+  }
+done
 
 # Render one source file: expand `{{@INSERT <name>}}` marker lines from
 # adapters/<harness>/inserts/<name>.md (an empty file means "this harness
@@ -102,40 +124,84 @@ render() {
   fi
 }
 
-render "$ROOT/shared/rules/core/kernel.md" "$primary"
-render "$ROOT/shared/rules/core/loop-execution.md" "$rules_dir/${prefix}--task-execution.md"
-render "$ROOT/shared/rules/core/loop-delegation.md" "$rules_dir/${prefix}--${delegation_name}.md"
-render "$ROOT/shared/rules/core/git-workflow.md" "$rules_dir/${prefix}--git-workflow.md"
-render "$ROOT/shared/rules/core/conventions.md" "$rules_dir/${prefix}--framework-conventions.md"
-render "$ROOT/shared/workflows/palette/rules.md" "$rules_dir/${prefix}--palette.md"
-render "$ROOT/shared/rules/mcp/aside.md" "$rules_dir/${prefix}--aside.md"
-render "$ROOT/shared/rules/mcp/dispatch.md" "$rules_dir/${prefix}--dispatch.md"
+# Substitute the entry-point and maintainer tokens, which are per kit and not
+# part of any adapter's tokens.sed.
+render_entry() {
+  src="$1"
+  dest="$2"
+  sed \
+    -e "s#{{KIT_NAME}}#$prefix#g" \
+    -e "s#{{KIT_REPO}}#saltyming/$prefix#g" \
+    -e "s#{{SLATE_REPO}}#saltyming/slate-agent-kit#g" \
+    -e "s#{{SLATE_VERSION}}#$slate_version#g" \
+    -e "s#{{HARNESS}}#$harness#g" \
+    -e "s#{{PRIMARY_MANUAL_FILE}}#$primary#g" \
+    "$src" > "$dest"
+}
 
+dist="$target/dist"
+rm -rf "$dist"
+mkdir -p "$dist/rules" "$dist/skills" "$dist/prefs"
+
+# Paths of the earlier layout, which had the payload at the kit root.
+rm -rf "$target/${harness}-rules" "$target/${harness}-skills" "$target/scripts"
+[ "$harness" = "claude" ] && rm -f "$target/CLAUDE.md"
+
+render "$ROOT/shared/rules/core/kernel.md" "$dist/$primary"
+
+# Rule files in the order a concatenating harness loads them.
+rules=""
+add_rule() {
+  render "$1" "$dist/rules/${prefix}--$2.md"
+  rules="$rules \"${prefix}--$2.md\","
+}
 if [ -n "$surface_src" ]; then
-  render "$surface_src" "$rules_dir/${prefix}--${surface_name}.md"
+  add_rule "$surface_src" "$surface_name"
 fi
+add_rule "$ROOT/shared/rules/core/loop-execution.md" task-execution
+add_rule "$ROOT/shared/workflows/palette/rules.md" palette
+add_rule "$ROOT/shared/rules/core/loop-delegation.md" "$delegation_name"
+add_rule "$ROOT/shared/rules/core/git-workflow.md" git-workflow
+add_rule "$ROOT/shared/rules/core/conventions.md" framework-conventions
+add_rule "$ROOT/shared/rules/mcp/aside.md" aside
+add_rule "$ROOT/shared/rules/mcp/dispatch.md" dispatch
 
-for skill in palette-init palette-rules palette-spec palette-ui palette-ux; do
-  render "$ROOT/shared/workflows/palette/skills/$skill/SKILL.md" "$skills_dir/$skill/SKILL.md"
+skills=""
+for skill in palette-init palette-resume palette-state palette-record palette-spec palette-ux palette-ui palette-rules; do
+  render "$ROOT/shared/workflows/palette/skills/$skill/SKILL.md" "$dist/skills/$skill/SKILL.md"
+  skills="$skills \"$skill\","
+done
+for t in "$ROOT"/shared/workflows/palette/templates/*.rst; do
+  render "$t" "$dist/skills/palette-init/templates/$(basename "$t")"
+done
+render "$ROOT/shared/workflows/memory/skills/memory-triage/SKILL.md" "$dist/skills/memory-triage/SKILL.md"
+skills="$skills \"memory-triage\","
+
+prefs=""
+for p in aside dispatch subagent git comment; do
+  render "$ROOT/shared/prefs/$p-prefs.md.tmpl" "$dist/prefs/$p-prefs.md"
+  prefs="$prefs \"$p\","
 done
 
-# Prefs templates render for every kit (configure-time values use @@NAME@@
-# placeholders, distinct from render-time {{TOKEN}}s). All three kits use the
-# single shared configure-prefs.sh (interactive-first, injection-safe); claude
-# additionally keeps cak-common.sh for its custom-rules ingestion step.
-mkdir -p "$target/scripts"
-render "$ROOT/shared/prefs/aside-prefs.md.tmpl" "$target/scripts/${prefix}--aside-prefs.md.tmpl"
-render "$ROOT/shared/prefs/dispatch-prefs.md.tmpl" "$target/scripts/${prefix}--dispatch-prefs.md.tmpl"
-render "$ROOT/shared/prefs/git-prefs.md.tmpl" "$target/scripts/${prefix}--git-prefs.md.tmpl"
-render "$ROOT/shared/prefs/comment-prefs.md.tmpl" "$target/scripts/${prefix}--comment-prefs.md.tmpl"
-cp "$ROOT/tooling/kit-scripts/configure-prefs.sh" "$target/scripts/configure-prefs.sh"
-chmod +x "$target/scripts/configure-prefs.sh"
-# Windows twin used by install.ps1 (POSIX configure-prefs.sh can't run there).
-cp "$ROOT/tooling/kit-scripts/configure-prefs.ps1" "$target/scripts/configure-prefs.ps1"
-# Kimi's install.ps1 registers the MCP plugin natively on Windows (slate's POSIX
-# install-mcp.sh cannot run there), so it needs the shared plugin writer on disk.
-if [ "$harness" = "kimi" ]; then
-  cp "$ROOT/tooling/kit-scripts/write-kimi-plugin.js" "$target/scripts/write-kimi-plugin.js"
-fi
+# The descriptor the installer reads (spec/installer.rst, Descriptor).
+{
+  echo "kit = \"$prefix\""
+  echo "harness = \"$harness\""
+  echo "version = \"$kit_version\""
+  echo "slate_version = \"$slate_version\""
+  echo "primary = \"$primary\""
+  echo "load = \"$load\""
+  echo "rules = [${rules%,} ]"
+  echo "skills = [${skills%,} ]"
+  echo "prefs = [${prefs%,} ]"
+  echo 'servers = [ "aside", "dispatch", "palette" ]'
+  echo "legacy = [ $legacy ]"
+} > "$dist/kit.toml"
+
+render_entry "$entry_dir/install.sh.tmpl" "$target/install.sh"
+chmod +x "$target/install.sh"
+render_entry "$entry_dir/install.ps1.tmpl" "$target/install.ps1"
+render_entry "$entry_dir/Makefile.tmpl" "$target/Makefile"
+render_entry "$ROOT/tooling/kit-scripts/kit-maintainer.md.tmpl" "$target/AGENTS.md"
 
 echo "rendered $harness kit into $target"

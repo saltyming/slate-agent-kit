@@ -1,0 +1,27 @@
+{
+    "model": "opus",
+    "permissions": {
+        "allow": ["Bash(ls:*)"]
+    },
+    "env": {
+        "KEEP_ME": "1"
+    },
+    "hooks": {
+        "PreToolUse": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {"type": "command", "command": "/home/u/.local/bin/workslate --hook=pre-tool-use"},
+                    {"type": "command", "command": "/usr/local/bin/my-own-hook"}
+                ]
+            }
+        ],
+        "Stop": [
+            {
+                "hooks": [
+                    {"type": "agent", "prompt": "[workslate-task-verify] check the task list"}
+                ]
+            }
+        ]
+    }
+}

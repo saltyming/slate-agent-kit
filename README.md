@@ -8,15 +8,18 @@ three coding-agent harnesses:
 - **[codex-agent-kit](https://github.com/saltyming/codex-agent-kit)** — OpenAI Codex CLI
 - **[kimi-agent-kit](https://github.com/saltyming/kimi-agent-kit)** — Kimi Code CLI
 
-Each kit is a git submodule under `kits/`. Their rule files are **rendered
-outputs** of the shared source here — edit the source, never the kits.
+Each kit is a git submodule under `kits/`. Its installable payload (`dist/`)
+and entry points are **rendered outputs** of the shared source here — edit the
+source, never the kits.
 
 ## Install a kit
 
-Most users install one harness kit directly (not this repo). Each installer
-lays down that harness's operating manual, rules, and palette skills, then
-registers the shared `aside` / `dispatch` MCP servers and generates the
-preference files.
+Most users install one harness kit directly (not this repo). Every kit installs
+through the same program, `slate-setup`: it asks its questions (with the current
+value as the default), shows a summary of every change, and then lays down the
+harness's operating manual, rules, palette and memory skills, registers the
+shared `aside`, `dispatch` and `palette` MCP servers, writes the preference
+files, and records everything so uninstall can reverse it.
 
 **Claude Code** → `~/.claude`
 
@@ -45,33 +48,41 @@ curl -fsSL https://raw.githubusercontent.com/saltyming/kimi-agent-kit/main/insta
 irm https://raw.githubusercontent.com/saltyming/kimi-agent-kit/main/install.ps1 | iex
 ```
 
-Common options (see each kit's README for the full list):
+Commands and options (see each kit's README for the full list):
 
-- Prerequisites: the harness CLI itself; plus `git` (curl path fetches the
-  shared MCP source) **or** a Rust toolchain to build `aside`/`dispatch`. When
-  cargo is absent the installers download prebuilt release binaries instead.
-- `--uninstall` / `-Uninstall` — remove kit-signed files; your own `-custom:`
-  prefs are kept.
-- `--skip-mcp` (or `SKIP_MCP=1`) — install rules/skills only.
-- Kimi dispatch needs a workspace root: `DISPATCH_ROOTS=/abs/workspace` (the
-  plugin runtime spawns MCP servers outside any project).
+- `install.sh [install|configure|uninstall]` — `configure` re-asks the
+  preferences, custom rules and workspace roots; `uninstall` removes kit-signed
+  files and restores the configuration values it changed, keeping your own
+  `-custom:` files unless you choose otherwise. `--uninstall` still works.
+- Prerequisites: the harness CLI itself. The installer and the servers are
+  downloaded prebuilt for the platform; `--binaries build` builds them from a
+  slate checkout with cargo instead, and `--binaries skip` (or `--skip-mcp`)
+  installs the rules and skills only.
+- `--roots <paths>` — workspace roots for dispatch and palette. Kimi needs one
+  (its plugin runtime starts servers outside any project); the installer asks.
+- `--yes` answers every question with its current or default value; `--dry-run`
+  prints the summary and changes nothing.
 
 ## What lives here
 
-- `shared/rules/core` — the invariant kernel + execution/delegation loops.
-- `shared/rules/mcp` — `aside` (read-only consultation) and `dispatch`
-  (write-capable execution) policy.
-- `shared/workflows/palette` — the palette product-intent loop + skills.
-- `shared/prefs` — aside, dispatch, git, and comment preference templates.
-- `shared/mcp-servers/{aside,dispatch,harness-log}` — the portable Rust MCP
-  workspace shared by every harness.
+- `shared/rules/core` — the kernel (direction, autonomy, prohibitions,
+  reporting, memory) and the execution, delegation, git and convention rules.
+- `shared/rules/mcp` — when to consult (`aside`) and when to dispatch.
+- `shared/workflows/palette` — the palette document system: rule, skills and
+  templates; `shared/workflows/memory` — the memory-triage skill.
+- `shared/prefs` — aside, dispatch, subagent, git and comment preference
+  templates.
+- `shared/mcp-servers/{aside,dispatch,harness-log,palette}` and `shared/setup` —
+  the Rust MCP servers and the `slate-setup` installer, shared by every harness.
 - `adapters/{claude,codex,kimi}` — per-harness render mappings (tokens, insert
   fragments, surface rules).
-- `tooling/` — `render-kit.sh`, `validate.sh`, `install-mcp.sh`, and the shared
-  `kit-scripts/` (single prefs generator + the Kimi plugin writer).
+- `tooling/` — `render-kit.sh`, `validate.sh`, `install-mcp.sh`,
+  `slate-version`, and `kit-scripts/` (the entry-point and maintainer
+  templates).
+- `docs/` — this repository's own decision records and maintained documents.
 
-Harness-specific installers stay in the submodules. The kits ship no binaries
-of their own; `aside` and `dispatch` are built and released from this repo.
+The kits ship no binaries of their own; every binary is built and released from
+this repo.
 
 ## For maintainers
 
@@ -91,14 +102,13 @@ explicitly asks.
 
 ## Releases
 
-Tagging `v*` publishes prebuilt `aside` / `dispatch` binaries for 8 targets
-(macOS, Linux-gnu, Linux-musl, Windows × aarch64/x86_64) plus a `checksums.txt`,
-via GitHub Actions. On macOS/Linux, `tooling/install-mcp.sh --prebuilt`
-auto-selects and SHA-256-verifies the matching binary (musl included); on
-Windows the kits' `install.ps1` fetch the `.zip` builds. Pin a version with
-`SLATE_RELEASE_TAG=vX.Y.Z`, or require integrity verification with
-`SLATE_REQUIRE_CHECKSUM=1`. CI runs build/test/clippy/fmt on the Rust workspace
-plus `tooling/validate.sh` over the rendered kits on every push/PR to `main`.
+Tagging `v*` publishes prebuilt `aside`, `dispatch`, `palette` and `slate-setup`
+binaries for 8 targets (macOS, Linux-gnu, Linux-musl, Windows × aarch64/x86_64)
+plus a `checksums.txt`, via GitHub Actions. A kit's entry point downloads
+`slate-setup` for its platform from the release named in `tooling/slate-version`
+and verifies it against `checksums.txt`; `slate-setup` does the same for the
+servers. CI runs build/test/clippy/fmt on the Rust workspace plus
+`tooling/validate.sh` over the rendered kits on every push/PR to `main`.
 
 ## License
 

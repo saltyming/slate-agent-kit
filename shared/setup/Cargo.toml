@@ -1,0 +1,41 @@
+[package]
+name = "slate-setup"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Installer for the slate agent kits: payload files, MCP servers, prefs and native harness configuration."
+
+[lib]
+name = "slate_setup"
+path = "src/lib.rs"
+
+[[bin]]
+name = "slate-setup"
+path = "src/main.rs"
+
+# Stand-in for the harness CLIs (`claude`, `codex`) and for the palette server's
+# `--read-only-tools` probe; integration tests point CLAUDE_BIN / CODEX_BIN at it.
+[[bin]]
+name = "fake-harness-cli"
+path = "tests/support/fake_harness_cli.rs"
+test = false
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+toml_edit = "0.23"
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "4", default-features = false, features = ["deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,11 @@
+# Kimi configuration (synthetic)
+default_model = "alias-one"
+
+[models.alias-one]
+provider = "synthetic"
+
+[models.alias-two]
+provider = "synthetic"
+
+[loop_control]
+max_steps = 50 # keep

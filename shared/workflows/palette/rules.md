@@ -1,47 +1,51 @@
 <!-- slate-agent-kit:common -->
-# palette: Product-Intent Outer Loop
+# palette
 
-palette is an outer loop around the execution loop. The execution loop finishes one task and keeps nothing; palette adds a durable backlog of intent, a step that cuts the next thin slice and hands it to the execution loop, and a review step that feeds each completion back into the backlog. It is a loop, not a product-planning suite. Design artifacts (tech spec, UX flow, design brief, project rules) are optional helpers produced by the `palette-*` skills when the user asks, and are not part of the default loop.
-
-The shape of every palette artifact, the RST house style, and the three scoring rubrics live on disk in `_palette/templates/`, scaffolded by `palette-init`. Read the relevant template before writing an artifact, and score slice, story, and triage decisions with `_palette/templates/rubrics.md`. If `_palette/` exists but `templates/` is missing, invoke `palette-init`, which backfills the templates only.
+palette is a project's document system: backlog, phases and deliverables for work; state for decisions not yet recorded, blocking questions and discrepancies; RFCs and ADRs for decisions with their evidence; changesets and staging for accepted contracts not yet implemented; design, spec, principles and glossary for maintained truth. `_palette/layout.rst` records where each family lives in the project.
 
 ## Engagement
 
-The only trigger is whether the project contains `_palette/`. Do not use heuristics.
+The only trigger is whether the project contains `_palette/`.
 
-- **`_palette/` exists: engaged.** On non-trivial work, use the outer loop without being asked: consult `_palette/backlog.rst` as you plan and update it as work completes.
-- **`_palette/` absent: dormant.** Do not read, create, update, or mention `_palette/`, and do not scaffold it yourself. Only the user invoking `palette-init` creates it. For work that is shaped like a project or roadmap (several increments, spanning sessions, framed as "a project", "MVP", "phase", "milestone", or "roadmap") you may offer one line, "Want me to set up palette for this? Invoke the `palette-init` skill.", and nothing more. For a bug fix, a bounded feature, a lone refactor, or failing CI, do not offer. The distinction is several increments, not several files.
+- **`_palette/` exists: engaged.** Resume from state at the start of work on the project and keep the documents current as decisions are made.
+- **`_palette/` absent: dormant.** Do not read, create or mention `_palette/`. Only the user invoking `palette-init` creates it. For work shaped like a project (several increments across sessions) you may offer it in one line; not for a bug fix, a bounded feature or failing CI.
 
-The folder switches on the advisory loop only. It grants no authority to execute: every file change still passes the approval step (INV-AUTH-1).
+palette documents advise wherever they live; only the user's approval authorizes execution (INV-AUTH-1). A document's placement decides who can see it, never what it authorizes.
 
-## Authority: Tier A and Tier B
+## Families
 
-- **Tier A** is everything under `_palette/`: backlog, phase briefs, stories, index, optional artifacts. It proposes. An item becomes executable only after it is promoted into a current story or plan and the user approves it.
-- **Tier B** is the user's approval at the execution loop's approval step. It authorizes.
+Each family holds one kind of fact, and each fact lives in one place.
 
-Precedence is INV-AUTH-1's. A story's "Not this story" ranks with its acceptance criteria, and the backlog is future intent, not current scope.
+- **backlog**: every work item and its status (`proposed`, `approved`, `in-phase-<N>`, `done`, `dropped`); the index of phases and deliverables. Status lives nowhere else.
+- **phase**: goal, reason, assumptions, exit criteria of the active increment.
+- **deliverable**: one approved unit of the phase and its `Done when`.
+- **state**: decisions not yet written into a record, questions that block the active phase, discrepancies between sources; one line each, naming where each will be written.
+- **RFC / ADR**: a decision, why it was made, and the evidence it relies on: the current code or document state, the dependency basis in earlier records when nothing exists yet, and research findings.
+- **changeset / staging**: an accepted record's edits to maintained documents that the source does not implement yet; staging is generated from them.
+- **design / spec / principles / glossary**: the maintained description of the system as the source implements it.
 
-palette does not change delivery scope in either direction. Do not shrink or defer the requested scope through it. Narrowing to a thinner slice needs the user to approve the narrower slice and to acknowledge which named parts move to the backlog: "Approve phase 1?" is not enough, and "approve A now, deferring B and C to the backlog?" is. Do not move approved acceptance criteria, plan items, or required tests, config, or docs into the backlog; that is scope reduction (INV-SCOPE-1). The risk is highest at completion time: during execution or review, do not reclassify an unmet criterion as future work without the user's explicit consent.
+No document records development stages or progress narrative: what was done when, by whom, with which model, in which batch. Version control and session transcripts hold that history. No document instructs a later session; an earlier session's view is a dated `Proposal`.
 
-## What each gate means under palette
+## Writing the documents
 
-- **Approval step (Tier A to Tier B).** The execution loop's approval step is the palette hand-off. Nothing is edited before it.
-- **GATE-SCOPE-CONFIRM.** Proposing a phase or story scope is a checkpoint for the user: report the proposed slice, get explicit approval, hand off.
-- **GATE-DEVIATION.** Once a story passes hand-off, its `Done when` and `Not this story` are the approved spec. Moving unmet criteria into the backlog is not a way around the gate. Plain ambiguity follows the clarification heuristic in `{{PRIMARY_MANUAL_FILE}}`.
-- **Delegation gates.** A delegate, native or dispatch, receives the approved scope and not the raw `story-*.rst`.
-- **Thin slicing.** Choosing a thinner slice is a planning-time decision that belongs to the user and happens before approval. After approval, INV-SCOPE-1 applies to that slice.
-- **Git.** `_palette/` is the developer's personal planning record. Do not commit it on your own. `palette-init` offers a self-contained `_palette/.gitignore`; sharing the folder is the developer's choice.
+- When the palette MCP server is available, write every palette document through its tools: they allocate identifiers, keep status in the backlog, move decisions into records, apply changesets, regenerate staging and indexes, and change every affected file or none. Pre-approved read tools (`palette_status`, `palette_lint`, `palette_layout`, `palette_template`) need no ceremony.
+- Without the server, edit by hand from the templates (`palette_template`, or `{{HARNESS_SKILLS_DIR}}/palette-init/templates/`) in the RST house style; the next resume's lint reports what drifted.
+- Update state when a decision is made or a fact is verified, not at the end of a session: a session can end at any moment.
+- Record links point only to older records; `Depends` lists the records whose contract this one uses directly; incoming links, the full closure and supersession are computed, never written.
+- An accepted record's body is frozen: a later change of contract is a new record. A maintained document states only what the source implements; the accepted remainder lives in the record's changeset until its implementation lands, when the edits are promoted.
 
 ## The loop
 
-1. **Backlog** (`_palette/backlog.rst`): the cross-session ledger of product intent.
-2. **Slice into a phase.** With the user, cut the next thin increment into `_palette/phase-<N>/phase-brief.rst`. Rank candidates first with the next-slice rubric (`templates/rubrics.md` §a). The user owns this decision.
-3. **Stories.** Decompose the phase into `_palette/phase-<N>/stories/story-<n>-<slug>.rst` plus `index.rst`, with acceptance criteria. Recommend boundaries with rubric §b.
-4. **Hand off** at the approval step. The approved story's criteria go into the execution loop.
-5. **Review and re-plan.** When a story or phase completes, record what shipped and what was learned (`_palette/reviews.rst` at phase close), and triage new or deferred items into the backlog with the user's explicit consent, scoring each with rubric §c. Then slice the next increment.
+1. **Resume** (`palette-resume`): read state within its budget, report the lint result, where things stand, the open questions and a proposal, then wait for the user's direction (INV-DIR-2).
+2. **Plan a phase** with the user. Recommend candidates with the judgment criteria (`palette-init/templates/rubrics.rst`); the user chooses. Opening the phase moves its items to `in-phase-<N>`.
+3. **Deliverables.** Recommend boundaries; the user approves each. Approval is the step that makes a deliverable authorized work; its `Done when` and `Not this deliverable` are then the spec.
+4. **Execute** each deliverable through the execution loop. Record decisions and verified facts in state as they happen (`palette-state`), and write decisions into RFCs and ADRs (`palette-record`).
+5. **Close the phase.** Mark each item `done` with an outcome pointer or `dropped`, add new problems as proposed items with the user's consent, propose rules that lessons suggest, record broken assumptions as discrepancies or items, then delete the phase's files.
 
-The two loops meet at two points: the hand-off, where story criteria enter the execution loop, and the completion harvest, where the verified result returns to review and backlog. Story state lives in the status field of `index.rst` (`pending` or `done`). Select the next pending story from it and record `done` there on completion.
+## Gates under palette
 
-## Backlog or native memory
-
-Both persist, so keep them distinct. Evolving intent, scope, and deferrals go to `_palette/backlog.rst`. Stable facts about the user, the project, or settled decisions go to the harness's native memory. Do not record the same thing in both.
+- **GATE-SCOPE-CONFIRM.** Proposing a phase or a deliverable is a checkpoint: report, propose, wait for approval.
+- **GATE-DEVIATION.** After approval, moving an unmet `Done when` into the backlog, reordering deliverables, or changing a design needs the user's approval like any deviation.
+- **Scope.** palette never shrinks or defers approved scope. A narrower phase needs the user to approve it and to name what moves to the backlog.
+- **Delegation.** A delegate receives the approved scope and `Done when`, not the raw palette documents.
+- **Git.** Internal families are the user's personal record; never commit them. Families under a project path are committed with the change they describe.

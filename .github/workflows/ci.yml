@@ -2,13 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, next]
   pull_request:
     branches: [main]
 
 jobs:
   build-and-test:
-    name: Build + test (aside, dispatch, harness-log)
+    name: Build + test (Rust workspace)
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +45,14 @@ jobs:
         with:
           submodules: recursive
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # validate.sh runs `palette check` on this repository when the binary exists.
+      - name: Build palette
+        run: cargo build --release -p palette
+
       - name: Run validate.sh
         run: sh tooling/validate.sh
 
@@ -61,5 +69,5 @@ jobs:
         run: shellcheck -s sh tooling/render-kit.sh || true
       - name: Check validate.sh
         run: shellcheck -s sh tooling/validate.sh || true
-      - name: Check configure-prefs.sh
-        run: shellcheck -s sh tooling/kit-scripts/configure-prefs.sh || true
+      - name: Check entry point template
+        run: shellcheck -s sh tooling/kit-scripts/entry/install.sh.tmpl || true

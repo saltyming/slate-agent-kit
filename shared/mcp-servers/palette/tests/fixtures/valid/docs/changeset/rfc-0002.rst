@@ -1,0 +1,21 @@
+Changeset: RFC-0002
+===================
+
+spec/thing.rst
+--------------
+
+Replace: Contract
+~~~~~~~~~~~~~~~~~
+
+Contract
+^^^^^^^^
+
+The thing has two operations: ``open`` and ``close``.
+
+Insert into: Contract
+~~~~~~~~~~~~~~~~~~~~~
+
+Rules
+^^^^^
+
+The beta rules apply to every operation.

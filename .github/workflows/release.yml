@@ -57,35 +57,35 @@ jobs:
 
       - name: Build (Linux via zigbuild)
         if: runner.os == 'Linux'
-        run: cargo zigbuild --release --target ${{ matrix.target }} -p aside -p dispatch
+        run: cargo zigbuild --release --target ${{ matrix.target }} -p aside -p dispatch -p palette -p slate-setup
 
       - name: Build (macOS / Windows)
         if: runner.os != 'Linux'
-        run: cargo build --release --target ${{ matrix.target }} -p aside -p dispatch
+        run: cargo build --release --target ${{ matrix.target }} -p aside -p dispatch -p palette -p slate-setup
 
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../aside-${{ matrix.platform }}.tar.gz aside
-          tar czf ../../../dispatch-${{ matrix.platform }}.tar.gz dispatch
+          for name in aside dispatch palette slate-setup; do
+            tar czf "../../../$name-${{ matrix.platform }}.tar.gz" "$name"
+          done
           cd ../../..
 
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path "target/${{ matrix.target }}/release/aside.exe" -DestinationPath "aside-${{ matrix.platform }}.zip"
-          Compress-Archive -Path "target/${{ matrix.target }}/release/dispatch.exe" -DestinationPath "dispatch-${{ matrix.platform }}.zip"
+          foreach ($name in @("aside", "dispatch", "palette", "slate-setup")) {
+            Compress-Archive -Path "target/${{ matrix.target }}/release/$name.exe" -DestinationPath "$name-${{ matrix.platform }}.zip"
+          }
 
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.platform }}
           path: |
-            aside-${{ matrix.platform }}.tar.gz
-            aside-${{ matrix.platform }}.zip
-            dispatch-${{ matrix.platform }}.tar.gz
-            dispatch-${{ matrix.platform }}.zip
+            *-${{ matrix.platform }}.tar.gz
+            *-${{ matrix.platform }}.zip
           if-no-files-found: ignore
 
   release:

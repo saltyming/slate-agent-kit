@@ -1,63 +1,43 @@
 <!-- slate-agent-kit:common -->
-# The Delegation Loop
+# Work Leaving the Session
 
-When work fans out to delegates: gate, select the mechanism, integrate, verify. This file holds GATE-DELEGATE and the procedures behind INV-GATE-1, INV-GATE-2, and INV-GATE-3 (defined in `{{PRIMARY_MANUAL_FILE}}`).
+How work leaves the session: subagents, consultation (`{{ASIDE_RULE_FILE}}`) and dispatch (`{{DISPATCH_RULE_FILE}}`). Each is used at its level (INV-AUTO-2) after judging its value (INV-AUTO-1); both invariants are in `{{PRIMARY_MANUAL_FILE}}`.
 
-## Kinds of delegate
+## What each surface is for
 
-- **Read-only delegates** inspect, search, plan, review, or summarize, and return results without changing files or external state.
-- **Write-capable delegates** can edit files, run write-capable tools, or change state. Treat a delegate of unknown or ambiguous type as write-capable.
-- **Fan-out helpers** run one role or prompt over many inputs and aggregate the results.
-- Skills, commands, and workflows are helper surfaces. They do not bypass scope, approval, or verification rules.
-
-Two MCP-backed surfaces sit beside the harness-native ones. `aside` (`{{ASIDE_RULE_FILE}}`) is consultation: a read-only second opinion from another model family, and you stay in charge. `dispatch` (`{{DISPATCH_RULE_FILE}}`) is delegation: it hands a write-capable execution step to an external coding agent and tracks it asynchronously, under its own gate (GATE-DISPATCH) and server-enforced guards.
+- **Subagents** are the harness's own delegates. A read-only one inspects, searches or summarizes; a write-capable one edits. Treat a subagent of unknown kind as write-capable.
+- **Consultation** asks another model for an opinion; you stay in charge and nothing is written.
+- **Dispatch** hands a self-contained, write-capable execution step to an external coding agent that runs asynchronously.
+- Skills, commands and workflows are helper surfaces; they do not bypass scope, approval or verification.
 
 If the harness lacks a mechanism that safe delegation needs, tell the user. Do not improvise a substitute.
 
-## Read-only delegates
+## Judging whether to delegate
 
-Use them without asking (INV-GATE-1). For a read-only lookup larger than about three search queries, prefer a delegate to searching inline: your own context is the bottleneck, and the delegate returns the result without the evidence.
+A delegate saves your context but costs the user models, quota and time, and you see its result, not its reasoning. Delegation helps when the work splits into independent parts with a stable shared contract, or when one bounded lookup would flood your context. Do the work in-session when it is sequential or tightly coupled, when it is a few files, when the user is discussing with you and waiting for your own answer, or when a document assigns the work to the leader. A slower in-session edit is better than a fast delegated one that is wrong without anyone noticing.
 
-## GATE-DELEGATE: write-capable delegation
+At `auto`, state in one line before starting: how many delegates, which model, what each does, and which files each writes. At `suggest`, say the same and wait. The model is the one the prefs name unless the user names another for the turn; a read-only delegate does not need the session's top model.
 
-**GATE-DELEGATE — the procedure for INV-GATE-1.** You see a delegate's result, not its reasoning, and what it writes stays on disk. The user carries that cost, so before spawning any write-capable delegate, tell the user:
+## Splitting the work
 
-- the mechanism (a worker subagent, a fan-out job, a dispatch execution step);
-- the rough cost and scale ("single subagent, about 5 files touched");
-- the files it will write (`src/auth/login.ts`, `src/auth/session.ts`, ...).
+- Find the shared contracts first (public types, schemas, migration order, shared tests, invariants) and write them yourself before delegating. Files that look independent often share a contract.
+- Give each file one writer; you are the merge owner of any file several delegates need (INV-DELEG-1).
+- One prompt over many inputs needs a tight prompt template; a coarse prompt over twelve items returns twelve low-value summaries.
+- A subtask that needs a different role (research, design) gets a read-only delegate for that one slot.
 
-Spawn after the user agrees to that proposal. A generic "just go" in reply to an earlier ambiguous phrasing is not agreement; propose again.
+## Delegates and the invariants
 
-Do not get around the gate by wording. A write-capable delegate given a read-only prompt can still edit, so the gate still applies. Use a read-only delegate for read-only work.
+A delegate that is forced off its approved spec stops and reports to you, and you ask the user (INV-DELEG-2, GATE-DEVIATION in `{{TASK_EXECUTION_RULE_FILE}}`). When you delegate a palette deliverable, give the delegate the approved scope and its `Done when`, not the raw palette documents.
 
-## Choosing the mechanism
-
-After the user agrees, choose by the shape of the work:
-
-- Independent subtasks that do not overlap and share a stable contract: parallel write-capable delegates.
-- One prompt over many inputs (review N files, classify N items): a fan-out helper, once the prompt template is tight. A coarse prompt over 12 items returns 12 low-value summaries.
-- Sequential or tightly coupled work: do it in-session. Do not fan out subtasks that have to happen in order.
-- A subtask that needs a different role (research, design): a read-only or advisory delegate for that one slot.
-- An isolated, self-contained execution step (mechanical edits, a long verification loop, a well-scoped sweep): `dispatch`, under its own policy.
-
-Before calling a split independent, find the shared contracts (public types, schemas, migration order, shared tests, invariants) and keep them leader-owned. Files that look independent often share a contract. If two delegates would touch the same file, assign it to one of them, or to yourself as merge owner (INV-GATE-2).
-
-When you are unsure, do the work in-session. A slower in-session edit is better than a fast delegated one that is wrong without anyone noticing, and for a task of a few files the coordination overhead exceeds the gain. If parallelism would help, propose it ("this splits into N independent edits; want me to fan out subagents, at roughly this cost?") and proceed on agreement.
-
-## Children and the invariants (INV-GATE-3)
-
-A delegate that is forced off its approved spec or plan stops and reports to you, and you ask the user (GATE-DEVIATION in `{{TASK_EXECUTION_RULE_FILE}}`). When you delegate a palette story, give the delegate the approved scope, not the raw Tier-A artifact (`{{PALETTE_RULE_FILE}}`).
-
-A delegate may call the harness's native advisor. It does not call aside or dispatch unless the user explicitly approved that for this delegation: both spend the user's third-party quota, and dispatch starts a write-capable run of its own. When the user has approved it, say so in the delegate's prompt.
+A delegate may call the harness's native advisor. It does not consult aside or start dispatch unless the user approved that for this delegation, and then its prompt says so.
 
 ## Writing a delegate's prompt
 
-- Make it self-contained. A delegate does not inherit your conversation history.
-- Name the files, the expected outputs, and what success looks like.
-- State what the delegate should not do. Naming what is out of scope stops it reopening settled decisions.
-- Name the operating envelope (INV-QUALITY-1): the platforms, harnesses, input classes, and callers the change has to hold under, and that the cause is to be fixed, not the symptom. A delegate works to make the immediate step pass and sees only its prompt.
-- Pass a settled decision as a constraint ("do A; use B only if X; do not introduce a third pattern"), not as an open question ("figure out how to handle Y"). An open question reopens design space you already closed and lets sibling delegates diverge.
-- A delegate cannot watch the live output of a backgrounded, long-running, or streaming process. Design such a command around one of these and name it in the prompt: redirect output to a log file and read it back; write a structured results file or expose a status endpoint the delegate queries; or produce an artifact or exit-code file that decides success without a stream.
-- Do not assign implementation work to a read-only delegate. It cannot edit files, and the failure is quiet.
+- Make it self-contained: a delegate does not inherit your conversation.
+- Name the files it owns, the expected output, and what success looks like.
+- State what it must not do and which decisions are settled; pass a settled decision as a constraint, not as an open question, or sibling delegates diverge.
+- Name the operating envelope (INV-QUALITY-1): platforms, harnesses, input classes and callers, and that the cause is fixed, not the symptom.
+- A delegate cannot watch a long-running or streaming process; have it write a log, a results file or an exit-code file that decides success.
+- Do not give implementation work to a read-only delegate: it cannot edit, and the failure is quiet.
 
 {{@INSERT delegation-surfaces}}

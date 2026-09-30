@@ -1,0 +1,97 @@
+Prefs files
+===========
+
+:Status: Contract
+
+Files
+-----
+
+Each installed kit has five prefs files in ``<home>/rules/``:
+``<kit>--aside-prefs.md``, ``<kit>--dispatch-prefs.md``,
+``<kit>--subagent-prefs.md``, ``<kit>--git-prefs.md`` and
+``<kit>--comment-prefs.md``. Each starts with ``<!-- <kit>-custom:<name>-prefs -->``
+and belongs to the user. Claude Code loads them with the other rule files; the
+Codex and Kimi rules name them to be read when needed.
+
+Format
+------
+
+A setting is a heading ``## <Setting>`` followed by one value line
+``**<value>**``. Every other line is free text that the installer never
+changes. The installer edits a setting by replacing its value line; a file
+written on Windows keeps its line endings.
+
+Settings
+--------
+
+Keys for ``--set`` are ``<file>.<key>``. Each key is stored under the heading
+named after it below; a template that lacks a heading makes install fail with
+a message naming the file and the heading. A blank value is written ``****``.
+
+- aside: ``level`` Level; ``backend`` Backend; ``<backend>.model``
+  "<Backend> model"; ``<backend>.effort`` "<Backend> reasoning effort";
+  ``<backend>.fallback`` "<Backend> model fallback", for Codex, Copilot and
+  Claude.
+- dispatch: ``level`` Level; ``backend`` Backend; ``model`` Model; ``effort``
+  Reasoning effort; ``fallback`` Model fallback.
+- subagent: ``level`` Level; ``model`` Default model; ``effort`` Reasoning
+  effort.
+- git: ``signing`` Commit signing; ``attribution`` Model attribution;
+  ``commit-format`` Commit message format; ``pr-body`` PR body format;
+  ``branch-naming`` Branch naming.
+- comment: ``headers`` File headers; ``language`` Comment language;
+  ``doc-comments`` Doc comments.
+
+The allowed values:
+
+aside
+  ``level`` (``on-request``, ``suggest``, ``auto``; default ``suggest``);
+  ``backend`` (``codex``, ``copilot``, ``claude``); per backend ``model``,
+  ``effort`` (``low``, ``medium``, ``high``, ``xhigh``, ``max``, or blank) and
+  ``fallback`` (a comma-separated model list, or blank), as
+  ``aside.codex.model`` and so on. Only the chosen backend's values are asked.
+
+dispatch
+  ``level`` (default ``suggest``); ``backend`` (``codex``, ``opencode``,
+  ``claude``); ``model``; ``effort`` (``low``, ``medium``, ``high``, ``xhigh``,
+  or blank); ``fallback``.
+
+subagent
+  ``level`` (default ``suggest``); ``model`` (blank: the harness default;
+  validated per spec/installer.rst *Native configuration*); ``effort`` (Codex
+  and Kimi only).
+
+git
+  ``signing`` (``default``, ``no-gpg-sign``, ``unset``); ``attribution``
+  (``on``, ``off``, ``unset``); ``commit-format`` (``conventional``,
+  ``repository``, free text, ``unset``); ``pr-body`` (``summary-test-plan``,
+  ``repository``, free text, ``unset``); ``branch-naming`` (``descriptive``,
+  ``repository``, free text, ``unset``). ``unset`` means the agent asks the
+  user when it first needs the value and records the answer.
+
+comment
+  ``headers`` (``repository``, ``structured``, free text); ``language``
+  (``repository``, ``english``, ``korean``, free text); ``doc-comments``
+  (``repository``, ``public-api``, free text).
+
+Migration
+---------
+
+Prefs written by claude-agent-kit 12.x or codex and kimi kits 0.7.x are
+migrated when install or configure finds them, after the user confirms each
+file (without a terminal: migrated). The old file is copied to
+``<file>.bak-<UTC timestamp>``; the new file starts from the current template,
+takes every value that has a new setting, and keeps the old file's ``Notes`` and
+``Repository overrides`` sections verbatim, appending a section at the end when
+the template has no heading for it.
+
+- aside ``Auto-call policy``: ``conservative`` or ``preference-only`` becomes
+  ``level`` ``on-request``; ``proactive`` becomes ``auto``. ``Preferred
+  third-party advisor`` becomes ``backend`` (``none`` becomes ``codex`` with
+  ``level`` ``on-request``).
+- dispatch ``Execution policy`` and ``Approval mode``: ``conservative`` or
+  ``preference-only`` becomes ``on-request``; ``proactive`` with ``ask`` becomes
+  ``suggest``; ``proactive`` with ``auto`` becomes ``auto``. ``Default
+  granularity`` is dropped.
+- git and comment: every value carries over unchanged.
+- subagent: new; created from the template.

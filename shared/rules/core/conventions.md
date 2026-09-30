@@ -21,21 +21,11 @@ These are the project's language- and framework-specific conventions. Stack choi
 
 ## Rust
 
-**Naming:**
-- Types/Structs: PascalCase
-- Functions/Variables: snake_case
-- Constants: SCREAMING_SNAKE_CASE
-
 **Error Handling:**
-- Use `Result<T, E>` for fallible operations
-- Use `Option<T>` for nullable values
 - Never use `.unwrap()` in production code
-- Provide meaningful error context
 
 ## Python
 
 **Style:**
-- Follow PEP 8
 - Type hints required
 - Docstrings for public APIs
-- `f-strings` for string formatting

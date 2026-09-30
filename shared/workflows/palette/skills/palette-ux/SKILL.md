@@ -1,60 +1,30 @@
 ---
 name: palette-ux
-description: Pull-only palette helper. Produce a UX flow (_palette/ux-flow.rst) — screens, navigation, flow sequence — for the current phase when the user wants that depth. Not part of the default palette loop; invoke only when explicitly asked, or when a phase's screens and navigation need defining before stories.
+description: Pull-only palette helper. Writes the screens, navigation and flow sequence of the product as a design document. Use only when the user asks, or when a phase's screens and navigation need defining before its deliverables can be written.
 ---
 
 <!-- slate-agent-kit:common -->
-# palette-ux — UX flow (optional, pull-only)
+# palette-ux
 
-This is an **optional, pull-only** palette helper. It is not part of the default loop (backlog → slice → stories → hand off → review), and must never run unprompted as part of slicing or story generation. Produce `_palette/ux-flow.rst` only when the user asks, or when the current phase's screens and navigation need defining before stories can be written. Follow the RST house style (robust subset — no tables) in the always-loaded palette rule (`{{PALETTE_RULE_FILE}}`).
-
-Prefix messages with `[palette-ux]:`.
-
-## When to use
-
-The phase has non-trivial screens, navigation, or an interaction sequence the stories will depend on, and the user wants that mapped first.
+Maps the product's screens and how a person moves between them.
 
 ## What it produces
 
-`_palette/ux-flow.rst` — project-wide screen and flow map. Written once, extended (not rewritten) on later phases with only new or changed screens.
+`design/ux-flow.rst`, following the design template:
 
-## Schema
+- *Purpose and scope*: which part of the product the flow covers.
+- *Architecture*: the screen list; navigation per screen in plain language (how it is reached — tab, full screen, modal, sheet — and how the person gets back); the flow sequence as numbered steps.
+- *Ownership and state*: per screen, what it shows and what the person can do, with the result of each action.
+- *Failure and recovery*: empty, error and offline states.
+- The remaining sections state `None.` when they do not apply.
 
-```rst
-UX Flow — <Project>
-===================
+Later phases extend it with new or changed screens only.
 
-Screen List
------------
+## Where it goes
 
-1. <screen>
+The document lives where `layout.rst` places its family and follows that family's template (`palette-init/templates/`) in the RST house style; subsections under the template's sections carry the specifics. A maintained document states only what the source implements. Content the source does not implement yet is written as the changeset of the record that decides it (`palette-record`), and the staging copy shows it until the implementation lands.
 
-Navigation
-----------
+## Boundaries
 
-<plain language, per screen: how it is reached (tab / full screen / modal /
-bottom sheet) and how the user gets back. e.g. "Tapping a goal on Today opens
-Goal Detail full screen; back returns to Today.">
-
-Flow Sequence
--------------
-
-1. <step>
-
-Screen Specs
-------------
-
-<Screen Name>
-~~~~~~~~~~~~~
-
-:Shows: <what is on screen>
-:User can: <actions>
-:On action: <result>
-:Constraints: <constraints>
-```
-
-## Forbidden
-
-- Not part of the default loop — do not run unprompted during slicing or story generation.
-- Do not write or fix source code; this skill only writes `_palette/ux-flow.rst`.
-- Do not use tables or nested RST directives — follow the robust subset.
+- Not part of the default loop: run it only when the user asks, or when a phase needs it before its deliverables can be written, and say so.
+- It writes documents, not source code.

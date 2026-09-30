@@ -9,17 +9,17 @@ differs in Codex: how the rules load, goals, editing, and the Slate MCP servers.
 
 - User-scope instructions live at `$CODEX_HOME/AGENTS.md`; when `CODEX_HOME` is
   unset, `$HOME/.codex/AGENTS.md`.
-- The installer concatenates `AGENTS.md` and every `codex-rules/*.md` file into
-  that user-scope `AGENTS.md`, which is the loaded instruction surface. Codex
-  does not auto-load `$CODEX_HOME/rules/*.md`; that directory is reference
+- The installer writes that `AGENTS.md` as this manual followed by every kit
+  rule file and the user's custom rules; it is the loaded instruction surface.
+  Codex does not auto-load `$CODEX_HOME/rules/*.md`; that directory is reference
   material.
 - The preference files (`{{ASIDE_PREFS_FILE}}`, `{{DISPATCH_PREFS_FILE}}`,
-  `{{GIT_PREFS_FILE}}`, `{{COMMENT_PREFS_FILE}}`) live in `$CODEX_HOME/rules/` and
-  are read on demand: before an aside or dispatch call, before the first commit
-  or PR of a session, and before the first file, comment, doc comment, or
-  header you write in a session, including in a file you are only editing.
-  They are not part of the concat, so the user can edit them without
-  reinstalling.
+  `{{SUBAGENT_PREFS_FILE}}`, `{{GIT_PREFS_FILE}}`, `{{COMMENT_PREFS_FILE}}`) live in
+  `$CODEX_HOME/rules/` and are not part of the concatenated file, so the user can
+  edit them without reinstalling. Read each one the first time a session needs
+  it: before consulting aside, dispatching or starting a subagent, before the
+  first commit or PR, and before the first file, comment, doc comment or header
+  you write.
 - Skills live under `$CODEX_HOME/skills`. Read a selected skill's `SKILL.md`
   completely before acting on it.
 
@@ -53,11 +53,12 @@ clarification heuristic in `{{PRIMARY_MANUAL_FILE}}`).
 
 ## Slate MCP In Codex
 
-- `aside` and `dispatch` are registered as Codex MCP servers in
-  `$CODEX_HOME/config.toml` by slate's `tooling/install-mcp.sh --configure-codex`.
-- If `dispatch_submit` returns `no_project_root`, Codex spawned the MCP server
-  outside your project. Tell the user to re-run the installer with
-  `--roots <workspace-root>`.
-- If the MCP servers are not installed, follow the policy documents as the
-  intended behavior and report that the tool surface is missing. Do not pretend
-  a call was made.
+- `aside`, `dispatch` and `palette` are registered as Codex MCP servers in
+  `$CODEX_HOME/config.toml` by the kit installer.
+- If `dispatch_submit` or a palette tool reports `no_project_root`, Codex started
+  the server outside your project. Tell the user to run the kit installer's
+  configure step (`make configure` in the kit, or `install.sh configure`) and
+  give the workspace root when it asks.
+- If the servers are not installed, follow the policy documents as the intended
+  behavior and report that the tool surface is missing. Do not pretend a call
+  was made.

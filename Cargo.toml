@@ -4,5 +4,7 @@ members = [
     "shared/mcp-servers/aside",
     "shared/mcp-servers/dispatch",
     "shared/mcp-servers/harness-log",
+    "shared/setup",
+    "shared/mcp-servers/palette",
 ]
 

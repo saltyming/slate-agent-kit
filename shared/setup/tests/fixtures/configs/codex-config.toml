@@ -1,0 +1,12 @@
+# My Codex configuration
+model = "model-x"  # main model
+approval_policy = "on-request"
+
+[tui]
+theme = "dark" # keep this comment
+
+[agents]
+max_threads = 4
+
+[features.code_mode]
+excluded_tool_namespaces = ["mcp__other"] # another server

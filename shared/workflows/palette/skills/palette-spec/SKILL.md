@@ -1,77 +1,26 @@
 ---
 name: palette-spec
-description: Pull-only palette helper. Produce a technical spec (_palette/tech-spec.rst) for the current phase when the user wants that depth. Not part of the default palette loop; invoke only when explicitly asked, or when a phase clearly needs stack / data-model / API decisions settled before stories.
+description: Pull-only palette helper. Writes the project's technical contracts — data model, APIs, storage, platform constraints — as spec and design documents, and records the technical choices behind them as ADRs or RFCs. Use only when the user asks, or when a phase needs technical decisions settled before its deliverables can be written.
 ---
 
 <!-- slate-agent-kit:common -->
-# palette-spec — tech spec (optional, pull-only)
+# palette-spec
 
-This is an **optional, pull-only** palette helper. It is not part of the default loop (backlog → slice → stories → hand off → review), and must never run unprompted as part of slicing or story generation. Produce `_palette/tech-spec.rst` only when the user asks, or when the current phase clearly needs technical decisions settled before stories can be written. Follow the RST house style (robust subset — no tables) in the always-loaded palette rule (`{{PALETTE_RULE_FILE}}`).
-
-Prefix messages with `[palette-spec]:`.
-
-## When to use
-
-The phase introduces new data, new APIs, new external dependencies, or overturns an earlier technical decision — and the user wants that pinned down before stories.
+Settles and writes down the technical ground a phase builds on.
 
 ## What it produces
 
-`_palette/tech-spec.rst` — project-wide technical decisions. Written once, extended (not rewritten) on later phases.
+- Technical choices (stack, libraries with the reason for each, storage strategy) as ADRs, or an RFC when the choice sets a module boundary or public contract (`palette-record`).
+- Contracts (data model entities and fields, APIs, on-disk formats, platform constraints) in `spec/<topic>.rst`.
+- How the parts fit (components, ownership, cross-environment boundaries such as app and widget or web and native) in `design/<topic>.rst`.
 
-## Schema
+An exact library version is written only when it comes from a real manifest or lockfile.
 
-```rst
-Tech Spec — <Project>
-=====================
+## Where it goes
 
-Tech Stack
-----------
+The document lives where `layout.rst` places its family and follows that family's template (`palette-init/templates/`) in the RST house style; subsections under the template's sections carry the specifics. A maintained document states only what the source implements. Content the source does not implement yet is written as the changeset of the record that decides it (`palette-record`), and the staging copy shows it until the implementation lands.
 
-<specific — e.g. "React Native with Expo (managed), TypeScript", not just "RN">
+## Boundaries
 
-Libraries & Dependencies
-------------------------
-
-<library>
-~~~~~~~~~
-
-:Decision: <choice; exact version only when synced from a real manifest/lockfile>
-:Why: <reason>
-:Install: <command>
-
-Data Model
-----------
-
-<Entity>
-~~~~~~~~
-
-:Fields: <field: type, field: type, ...>
-:Notes: <notes>
-
-Storage Strategy
-----------------
-
-<library, location, offline behaviour; schema if SQL>
-
-Key Technical Decisions
------------------------
-
-- <decision>
-
-Platform Constraints
---------------------
-
-- <constraint>
-
-Cross-Environment Boundaries
-----------------------------
-
-<Only if features span app + widget, web + native, etc. Per boundary: what is
-shared, what is not, and the implication. Omit the section otherwise.>
-```
-
-## Forbidden
-
-- Not part of the default loop — do not run unprompted during slicing or story generation.
-- Do not write or fix source code; this skill only writes `_palette/tech-spec.rst`.
-- Do not use tables or nested RST directives — follow the robust subset.
+- Not part of the default loop: run it only when the user asks, or when a phase needs it before its deliverables can be written, and say so.
+- It writes documents, not source code.
