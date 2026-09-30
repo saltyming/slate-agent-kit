@@ -1,4 +1,4 @@
-//! One failing fixture per lint rule P001 to P016, made by mutating the valid fixture,
+//! One failing fixture per lint rule P001 to P017, made by mutating the valid fixture,
 //! plus positive variants for the rules that have an exception.
 
 mod common;
@@ -130,6 +130,150 @@ fn p001_invalid_utf8() {
     b.push(0xff);
     std::fs::write(p.path("docs/principles.rst"), b).expect("write");
     assert!(has(&p.lint(), "P001", "principles.rst", "not valid UTF-8"));
+}
+
+// ── P001 / P017: list-table and code-block ──────────────────────────────
+
+const TABLE: &str = ".. list-table:: Operations
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Operation
+     - Effect
+   * - ``open``
+     - Opens the thing, as `the overview <design/overview.rst>`_ says;
+       *emphasis* may open a continuation line.
+   * - ``close``
+     -
+";
+
+const CODE: &str = ".. code-block:: rust
+
+   fn close(t: Thing) -> Option<u8> { t.map(|x| x) }
+";
+
+#[test]
+fn p001_list_table_and_code_block_pass_where_admitted() {
+    for rel in [
+        "docs/principles.rst",
+        "docs/design/overview.rst",
+        "docs/spec/thing.rst",
+        "docs/rfc/rfc-0001-alpha.rst",
+    ] {
+        let p = Proj::valid();
+        let (table, code) = if rel == "docs/principles.rst" {
+            (TABLE.to_string(), CODE.to_string())
+        } else {
+            (
+                TABLE.replace("design/overview.rst", "../design/overview.rst"),
+                CODE.to_string(),
+            )
+        };
+        p.mutate(rel, |s| format!("{s}\n{table}\n{code}"));
+        // Editing the spec by hand leaves its staging copy stale (P008); nothing else.
+        let f: Vec<_> = p.lint().into_iter().filter(|x| x.rule != "P008").collect();
+        assert!(f.is_empty(), "{rel}:\n{}", show(&f));
+    }
+}
+
+#[test]
+fn p001_list_table_and_code_block_in_work_documents() {
+    failing("P001", "state.rst", "directive `list-table::`", |p| {
+        p.mutate("_palette/state.rst", |s| format!("{s}\n{TABLE}"));
+    });
+    failing("P001", "state.rst", "directive `code-block::`", |p| {
+        p.mutate("_palette/state.rst", |s| format!("{s}\n{CODE}"));
+    });
+}
+
+#[test]
+fn p001_other_directives_where_tables_are_admitted() {
+    failing(
+        "P001",
+        "thing.rst",
+        "only `list-table`, `code-block`",
+        |p| {
+            p.mutate("docs/spec/thing.rst", |s| {
+                format!("{s}\n.. csv-table::\n\n   a, b\n")
+            });
+        },
+    );
+    // A directive inside a table cell is seen too.
+    failing("P001", "principles.rst", "directive `note::`", |p| {
+        p.mutate("docs/principles.rst", |s| {
+            format!("{s}\n.. list-table::\n\n   * - a\n\n       .. note:: inside\n")
+        });
+    });
+}
+
+#[test]
+fn p001_references_inside_table_cells() {
+    failing("P001", "principles.rst", "substitution references", |p| {
+        p.mutate("docs/principles.rst", |s| {
+            format!("{s}\n.. list-table::\n\n   * - Use |name| here.\n")
+        });
+    });
+}
+
+#[test]
+fn p004_links_inside_table_cells() {
+    failing("P004", "principles.rst", "does not exist", |p| {
+        p.mutate("docs/principles.rst", |s| {
+            format!("{s}\n.. list-table::\n\n   * - a\n     - See `gone <design/gone.rst>`_.\n")
+        });
+    });
+    failing(
+        "P004",
+        "principles.rst",
+        "must not link into `_palette/`",
+        |p| {
+            p.mutate("docs/principles.rst", |s| {
+                format!("{s}\n.. list-table::\n\n   * - `state <../_palette/state.rst>`_\n")
+            });
+        },
+    );
+}
+
+#[test]
+fn p017_directive_structure() {
+    failing(
+        "P017",
+        "thing.rst",
+        "this row has 1 cells; the first row has 2",
+        |p| {
+            p.mutate("docs/spec/thing.rst", |s| {
+                format!("{s}\n.. list-table::\n\n   * - a\n     - b\n   * - c\n")
+            });
+        },
+    );
+    failing("P017", "thing.rst", "leaves no body row", |p| {
+        p.mutate("docs/spec/thing.rst", |s| {
+            format!("{s}\n.. list-table::\n   :header-rows: 1\n\n   * - a\n")
+        });
+    });
+    failing("P017", "thing.rst", "blank line must separate", |p| {
+        p.mutate("docs/spec/thing.rst", |s| {
+            format!("{s}\n.. list-table::\n   * - a\n")
+        });
+    });
+    failing("P017", "thing.rst", "names its language", |p| {
+        p.mutate("docs/spec/thing.rst", |s| {
+            format!("{s}\n.. code-block::\n\n   x\n")
+        });
+    });
+    // A code block inside a cell is checked like any other.
+    failing("P017", "thing.rst", "names its language", |p| {
+        p.mutate("docs/spec/thing.rst", |s| {
+            format!("{s}\n.. list-table::\n\n   * - a\n\n       .. code-block::\n\n          x\n")
+        });
+    });
+    passing("P017", |p| {
+        p.mutate("docs/spec/thing.rst", |s| {
+            format!(
+                "{s}\n.. list-table::\n\n   * - a\n\n       .. code-block:: text\n\n          x\n"
+            )
+        });
+    });
 }
 
 // ── P002 ────────────────────────────────────────────────────────────────

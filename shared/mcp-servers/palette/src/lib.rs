@@ -7,6 +7,7 @@
 pub mod backlog;
 pub mod changeset;
 pub mod cli;
+pub mod directives;
 pub mod docs;
 pub mod edit;
 pub mod errors;

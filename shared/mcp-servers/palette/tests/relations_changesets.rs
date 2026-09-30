@@ -345,6 +345,124 @@ fn promotion_sets_the_time_varying_fields_and_creates_documents() {
     assert!(p.errors().is_empty(), "{}", show(&p.errors()));
 }
 
+const CELL_TABLE: &str = ".. list-table:: Operations
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Operation
+     - Effect
+   * - ``open``
+     - Opens the thing, as `the contract <#contract>`_ says;
+       *emphasis* may open a continuation line.
+   * - ``close``
+     -";
+
+const RUST_BLOCK: &str = ".. code-block:: rust
+
+   fn close(t: Thing) -> Option<u8> {
+       t.map(|x| x)
+   }";
+
+/// Edits RFC-0002's changeset through the tool so that a replace, an insert-after and
+/// a create each carry a list-table and a code block, then checks that staging and
+/// promote keep those lines unchanged, with the project's line endings.
+fn tables_survive_staging_and_promote(p: &Proj, crlf: bool) {
+    let eol = if crlf { "\r\n" } else { "\n" };
+    let holds = |rel: &str, block: &str| {
+        let text = p.read(rel);
+        assert!(
+            text.contains(&block.replace('\n', eol)),
+            "{rel} lost the block {block:?}:\n{text}"
+        );
+    };
+    let blocks = format!("{CELL_TABLE}\n\n{RUST_BLOCK}");
+    p.replace(
+        "docs/rfc/rfc-0002-beta.rst",
+        ":Changes: spec/thing.rst (Contract; Rules)",
+        ":Changes: spec/thing.rst (Contract; Rules; Limits); spec/extra.rst (created)",
+    );
+    records::changeset_edit(&p.ctx, params(p, json!({
+        "record": "RFC-0002", "action": "replace", "kind": "replace", "document": "spec/thing.rst",
+        "target": "Contract", "body": format!("Contract\n^^^^^^^^\n\nThe thing has two operations.\n\n{blocks}\n")
+    }))).expect("replace");
+    records::changeset_edit(&p.ctx, params(p, json!({
+        "record": "RFC-0002", "action": "add", "kind": "insert_after", "document": "spec/thing.rst",
+        "target": "Rules", "body": format!("Limits\n^^^^^^\n\n{blocks}\n")
+    }))).expect("insert after");
+    let sections = [
+        "Scope and authority",
+        "Definitions and model",
+        "Contract",
+        "Errors and edge cases",
+        "Ownership and ordering",
+        "Compatibility",
+        "Conformance",
+        "References",
+    ];
+    let body: String = sections
+        .iter()
+        .map(|t| {
+            let text = if *t == "Contract" {
+                blocks.as_str()
+            } else {
+                "Text."
+            };
+            format!("{t}\n{}\n\n{text}\n\n", "^".repeat(t.len()))
+        })
+        .collect();
+    records::changeset_edit(&p.ctx, params(p, json!({
+        "record": "RFC-0002", "action": "add", "kind": "create", "document": "spec/extra.rst",
+        "target": "Extra", "body": format!(":Status: Contract\n\n{body}")
+    }))).expect("create");
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+    for rel in [
+        "docs/changeset/rfc-0002.rst",
+        "docs/staging/spec/thing.rst",
+        "docs/staging/spec/extra.rst",
+    ] {
+        holds(rel, CELL_TABLE);
+        holds(rel, RUST_BLOCK);
+    }
+    let staged = p.read("docs/staging/spec/thing.rst");
+    assert_eq!(
+        staged.matches(".. list-table:: Operations").count(),
+        2,
+        "{staged}"
+    );
+
+    records::changeset_promote(&p.ctx, params(p, json!({
+        "record": "RFC-0002", "implementation": "complete", "implementers": "Sample Implementer",
+        "verification": "runtime", "verification_note": "unit tests only"
+    }))).expect("promote");
+    for rel in ["docs/spec/thing.rst", "docs/spec/extra.rst"] {
+        holds(rel, CELL_TABLE);
+        holds(rel, RUST_BLOCK);
+        if crlf {
+            assert!(
+                !p.read(rel).replace("\r\n", "").contains('\n'),
+                "{rel} mixes line endings"
+            );
+        }
+    }
+    assert_eq!(
+        p.read("docs/spec/thing.rst")
+            .matches(".. list-table:: Operations")
+            .count(),
+        2
+    );
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+}
+
+#[test]
+fn tables_and_code_blocks_survive_staging_and_promote() {
+    tables_survive_staging_and_promote(&Proj::valid(), false);
+}
+
+#[test]
+fn tables_and_code_blocks_survive_staging_and_promote_with_crlf() {
+    tables_survive_staging_and_promote(&Proj::valid_crlf(), true);
+}
+
 #[test]
 fn records_module_reports_relations_for_status() {
     let p = Proj::valid();

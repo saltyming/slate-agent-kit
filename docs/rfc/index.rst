@@ -21,13 +21,13 @@ Records
 `RFC-0003 <rfc-0003-palette-document-system.rst>`_ palette document system
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: RFC-0004 (Depends), RFC-0007 (Related), RFC-0009 (Depends), RFC-0009 (link).
+  Linked from: RFC-0004 (Depends), RFC-0007 (Related), RFC-0009 (Depends), RFC-0009 (link), RFC-0012 (Related), RFC-0012 (link).
   Superseded by: none.
 
 `RFC-0004 <rfc-0004-palette-server.rst>`_ palette MCP server
   Status: Accepted. Implementation: complete.
   Depends: RFC-0003.
-  Linked from: RFC-0007 (Depends), RFC-0007 (link), RFC-0009 (Depends), RFC-0009 (link).
+  Linked from: RFC-0007 (Depends), RFC-0007 (link), RFC-0009 (Depends), RFC-0009 (link), RFC-0012 (Depends), RFC-0012 (link).
   Superseded by: none.
 
 `RFC-0005 <rfc-0005-memory-discipline.rst>`_ Memory discipline
@@ -69,5 +69,11 @@ Records
 `RFC-0011 <rfc-0011-measurement.rst>`_ Measurement — bench server and benchmark suite
   Status: Draft. Implementation: not-started.
   Depends: RFC-0008, RFC-0002.
+  Linked from: none.
+  Superseded by: none.
+
+`RFC-0012 <rfc-0012-tables-and-code-blocks.rst>`_ Tables and code blocks in maintained documents and records
+  Status: Draft. Implementation: not-started.
+  Depends: RFC-0004.
   Linked from: none.
   Superseded by: none.

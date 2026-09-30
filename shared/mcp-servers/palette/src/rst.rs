@@ -1,8 +1,9 @@
 //! Line-oriented scanner for the house-style RST subset.
 //!
-//! Owns classifying each line (blank, text, literal block, explicit markup),
-//! finding section headings with their extents, field lists, hyperlinks and the
-//! docutils-compatible anchor normalization. Does not check house-style rules
+//! Owns classifying each line (blank, text, literal block, explicit markup, with
+//! list-table cells classified as the text they hold), finding section headings with
+//! their extents, field lists, hyperlinks and the docutils-compatible anchor
+//! normalization. Does not check house-style rules
 //! (that is `lint`) and does not know any document family.
 //! Entry point: [`Doc::parse`].
 
@@ -10,7 +11,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::text::Source;
+use crate::directives::{Directive, masked_cells};
+use crate::text::{Eol, Source};
 use crate::util::re;
 
 /// Adornment characters in depth order: level 1 is `=`, level 5 is `"`.
@@ -40,7 +42,8 @@ pub enum Kind {
     NoteDef,
     /// A hyperlink target (`.. _name:`).
     Target,
-    /// An indented continuation of explicit markup.
+    /// An indented continuation of explicit markup. The cell content of a
+    /// `list-table` is not: it is classified as the text it is.
     ExplicitBody,
     /// A section title text line.
     Title,
@@ -248,6 +251,28 @@ impl Doc {
             kinds[i] = Kind::Text;
             if text.trim_end().ends_with("::") {
                 literal_pending = Some(ind);
+            }
+            i += 1;
+        }
+
+        // A list-table's rows are explicit markup to the scan above; its cell content
+        // is scanned again as text, so links, references and nested blocks are seen.
+        let mut i = 0;
+        while i < n {
+            if kinds[i] == Kind::Directive
+                && let Some(d) = Directive::read(&src, i)
+                && d.name == "list-table"
+                && !d.body.is_empty()
+            {
+                // Each cell on its own: a block left open in one cell ends at the next.
+                for (start, lines) in masked_cells(&src, &d) {
+                    let cell = Doc::parse(Source::from_lines(&lines, Eol::Lf));
+                    for (k, kind) in cell.kinds.into_iter().enumerate() {
+                        kinds[start + k] = kind;
+                    }
+                }
+                i = d.body.end;
+                continue;
             }
             i += 1;
         }
@@ -552,6 +577,18 @@ mod tests {
         assert_eq!(f.len(), 2);
         assert_eq!(f[0].value, "not-started — one two");
         assert_eq!((f[0].start, f[0].end), (3, 5));
+    }
+
+    #[test]
+    fn list_table_cells_are_scanned_one_by_one() {
+        // The second cell's text sits deeper than the code block that closes the first
+        // cell; it is still the second cell's prose, not the block's content.
+        let d = doc(
+            ".. list-table::\n\n   * - .. code-block:: text\n\n          x\n     -  `gone <missing.rst>`_\n",
+        );
+        assert_eq!(d.kinds[4], Kind::ExplicitBody);
+        assert_eq!(d.kinds[5], Kind::Text);
+        assert_eq!(d.links().len(), 1);
     }
 
     #[test]

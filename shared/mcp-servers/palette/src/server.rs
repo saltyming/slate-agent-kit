@@ -68,7 +68,7 @@ where
 #[tool_router]
 impl PaletteServer {
     #[tool(
-        description = "Checks the palette documents of one project against the house style and the templates and returns the findings, errors first. Input: `project` (absolute path of the project folder; without _palette/layout.rst the families are found from the documents themselves), optional `paths` (project-relative files or folders; only findings inside them are returned, but every rule still runs on the whole project so cross-file rules stay correct). Output: JSON with `errors`, `warnings` and `findings`, each finding having `rule` (P001 to P015), `severity` (error or warning), `file`, `line` and `message`. Changes nothing. Refuses a project outside the server's roots and a project without _palette/layout.rst.",
+        description = "Checks the palette documents of one project against the house style and the templates and returns the findings, errors first. Input: `project` (absolute path of the project folder; without _palette/layout.rst the families are found from the documents themselves), optional `paths` (project-relative files or folders; only findings inside them are returned, but every rule still runs on the whole project so cross-file rules stay correct). Output: JSON with `errors`, `warnings` and `findings`, each finding having `rule` (P001 to P017), `severity` (error or warning), `file`, `line` and `message`. Changes nothing. Refuses a project outside the server's roots and a project without _palette/layout.rst.",
         annotations(read_only_hint = true)
     )]
     async fn palette_lint(

@@ -1,14 +1,17 @@
 //! P001: the RST subset of the house style.
 //!
-//! Flags tables, directives, overlined titles, short underlines, heading levels out of
-//! order, substitutions, footnotes and citations. Checks lines lexically; literal
-//! blocks, inline literals and comments are skipped.
+//! Flags tables, directives (except `list-table` and `code-block` where the family
+//! admits them, which P017 checks), overlined titles, short underlines, heading levels
+//! out of order, substitutions, footnotes and citations. Checks lines lexically;
+//! literal blocks, code-block content, inline literals and comments are skipped;
+//! list-table cells are checked as the text they hold.
 
 use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::{Cx, Finding};
+use super::{Cx, Finding, directive};
+use crate::directives::name_at;
 use crate::rst::{Kind, mask_inline_literals};
 use crate::util::re;
 
@@ -20,7 +23,6 @@ static SUBST_REF: LazyLock<Regex> = LazyLock::new(|| {
     re(r"(?:^|[\s(\[])\|[A-Za-z0-9][^|\s]*(?: [^|\s]+)*\|_{0,2}(?:$|[\s.,;:)\]])")
 });
 static NOTE_REF: LazyLock<Regex> = LazyLock::new(|| re(r"\[(?:\d+|#[\w-]*|\*|[A-Za-z][\w.-]*)\]_"));
-static DIRECTIVE_NAME: LazyLock<Regex> = LazyLock::new(|| re(r"^\.\.\s+([A-Za-z0-9][\w+:.-]*)::"));
 
 pub(super) fn check(cx: &Cx, out: &mut Vec<Finding>) {
     for f in &cx.snap.files {
@@ -91,11 +93,20 @@ pub(super) fn check(cx: &Cx, out: &mut Vec<Finding>) {
             let text = doc.src.text(i);
             match doc.kinds[i] {
                 Kind::Directive => {
-                    let name = DIRECTIVE_NAME
-                        .captures(text.trim_start())
-                        .map(|c| c[1].to_string())
-                        .unwrap_or_default();
-                    out.push(Finding::error("P001", f, i, format!("directive `{name}::` is not allowed; only comment lines may start with `..`")));
+                    if directive::is_admitted(f.role, text) {
+                        continue;
+                    }
+                    let name = name_at(text).map(|(_, n, _)| n).unwrap_or_default();
+                    let message = if directive::admits(f.role) {
+                        format!(
+                            "directive `{name}::` is not allowed; only `list-table`, `code-block` and comment lines may start with `..`"
+                        )
+                    } else {
+                        format!(
+                            "directive `{name}::` is not allowed; only comment lines may start with `..`"
+                        )
+                    };
+                    out.push(Finding::error("P001", f, i, message));
                 }
                 Kind::SubstDef => out.push(Finding::error(
                     "P001",
