@@ -2,13 +2,15 @@ RFC-0002: Installer and kit layout
 ==================================
 
 :Status: Accepted
-:Implementation: not-started — the Rust installer, the kit payload layout, the
+:Implementation: complete — the Rust installer, the kit payload layout, the
   prefs levels and their migration, native subagent configuration
-:Verification: documentation — 2026-09-29; decision record only
+:Verification: build — 2026-09-30; cargo test on macOS and
+  scratch-HOME installs, reinstalls and uninstalls of the three kits, Linux and
+  Windows through slate CI on next, not yet green
 :Areas: installer; kit layout; prefs; MCP registration
 :Authors: Claude Opus 5.5
 :Reviewers: none yet
-:Implementers: none yet
+:Implementers: Claude Opus 5.5 (2026-09-29 to 2026-09-30)
 :Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)
 :Date: 2026-09-29
 :Revised: none

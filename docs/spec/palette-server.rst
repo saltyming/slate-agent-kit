@@ -2,6 +2,7 @@ palette server
 ==============
 
 :Status: Contract
+:Date: 2026-09-30
 
 Scope and authority
 -------------------
@@ -19,8 +20,10 @@ Definitions and model
 Project
 ~~~~~~~
 
-A folder containing ``_palette/layout.rst``. Every tool takes the project's
-absolute path as ``project``. The path is canonicalized and accepted only
+A folder containing ``_palette/layout.rst``, or, for the check and generate
+commands and the lint tool, any folder whose documents identify their families
+(see Families and locations). Every tool takes the project's absolute path as
+``project``. The path is canonicalized and accepted only
 inside the server's project root or one of its extra roots:
 
 - project root: ``SLATE_PROJECT_DIR``, else ``AGENT_KIT_PROJECT_DIR``, else
@@ -38,6 +41,20 @@ Families and locations
 ``layout.rst`` places each family (backlog, phase, deliverable, state, rfc,
 adr, changeset, staging, design, spec, principles, glossary) ``internal`` or at
 a path relative to the project. ``internal`` resolves to:
+
+Without a layout, the families are inferred from the documents: every ``.rst``
+file outside ``_palette/``, ``.git``, ``target``, ``node_modules``, ``fixtures``
+and hidden folders is classified by its title and ``:Status:`` field (``RFC-NNNN:``,
+``ADR-NNNN:``, ``Changeset:``, ``Glossary —``, ``Principles —``, ``Backlog —``,
+``State —``, ``Phase N —`` in a ``phase-N`` folder, ``Deliverable N:`` in a
+``deliverables`` folder, ``:Status: Contract`` for a specification, ``:Status:
+Maintained`` with a title ending in ``design`` for a design document); a
+document whose title carries a template placeholder is skipped; the staging
+family is the folder named ``staging`` whose ``spec`` and ``design`` subfolders
+hold the mirrors. Each family is placed where its documents were found; a
+family found in two places keeps the first and reports the second (P012); a
+family with no documents is internal. This is how a checkout without
+``_palette/`` is checked.
 
 - ``_palette/backlog.rst``, ``_palette/state.rst``;
 - ``_palette/phase-<N>/phase.rst`` and
@@ -288,11 +305,13 @@ Command line
 
 - ``palette`` with no arguments serves MCP over stdio.
 - ``palette check <project>`` prints the lint findings and exits 1 when there
-  is an error, 0 otherwise; it resolves the project without the root rules.
+  is an error, 0 otherwise; it resolves the project without the root rules and
+  needs no ``_palette/``.
 - ``palette generate <project>`` regenerates every index and staging document
-  of the project under the same lock and transaction as the write tools, prints
-  the paths it wrote, and exits 1 on an error; it is how a repository without an
-  MCP session produces its generated files.
+  of the project under the same lock and transaction as the write tools (without
+  the lock when ``_palette/`` does not exist), prints the paths it wrote, and
+  exits 1 on an error; it is how a repository without an MCP session, or a CI
+  checkout, produces its generated files.
 - ``palette --read-only-tools`` prints the read tool names.
 - ``palette --version``.
 
@@ -327,3 +346,10 @@ failures that motivated the document system (an oversized state, a status
 recorded in two files, a dependency cycle) reproduced at small scale; every write tool's
 success, dry run, and failure partway (every file unchanged); CRLF files; and
 the project resolution rules. The tests pass on Linux, macOS and Windows.
+
+References
+----------
+
+- ``RFC-0003`` for the families, placement and relation rules.
+- ``shared/workflows/palette/templates/`` for the document structure the
+  server derives its checks from.

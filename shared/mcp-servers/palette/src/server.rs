@@ -68,7 +68,7 @@ where
 #[tool_router]
 impl PaletteServer {
     #[tool(
-        description = "Checks the palette documents of one project against the house style and the templates and returns the findings, errors first. Input: `project` (absolute path of the folder that contains _palette/), optional `paths` (project-relative files or folders; only findings inside them are returned, but every rule still runs on the whole project so cross-file rules stay correct). Output: JSON with `errors`, `warnings` and `findings`, each finding having `rule` (P001 to P014), `severity` (error or warning), `file`, `line` and `message`. Changes nothing. Refuses a project outside the server's roots and a project without _palette/layout.rst.",
+        description = "Checks the palette documents of one project against the house style and the templates and returns the findings, errors first. Input: `project` (absolute path of the project folder; without _palette/layout.rst the families are found from the documents themselves), optional `paths` (project-relative files or folders; only findings inside them are returned, but every rule still runs on the whole project so cross-file rules stay correct). Output: JSON with `errors`, `warnings` and `findings`, each finding having `rule` (P001 to P014), `severity` (error or warning), `file`, `line` and `message`. Changes nothing. Refuses a project outside the server's roots and a project without _palette/layout.rst.",
         annotations(read_only_hint = true)
     )]
     async fn palette_lint(
@@ -286,7 +286,7 @@ impl PaletteServer {
 impl ServerHandler for PaletteServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Reads, checks and writes the palette documents of one project. Every tool takes `project`, the absolute path of a folder that contains _palette/layout.rst; it must lie inside the server's project root or an extra root (PALETTE_EXTRA_ROOTS). \
+            "Reads, checks and writes the palette documents of one project. Every tool takes `project`, the absolute path of the project folder (the write tools and palette_status need its _palette/layout.rst; palette_lint also works on a checkout without _palette/, finding the families from the documents themselves); it must lie inside the server's project root or an extra root (PALETTE_EXTRA_ROOTS). \
              Read tools (palette_lint, palette_status, palette_layout, palette_template) change nothing and are safe to pre-approve. Write tools change several files as one transaction: all files change or none, only the lines the operation concerns are touched, line endings are kept, and the result is linted first; use dry_run to see the diff. \
              The server owns identifiers, item status, links, sections, budgets, record relations, changesets, staging and indexes; you supply the prose through typed fields. Only this server writes the Implementation, Verification, Implementers and Revised fields, the generated indexes and the staging documents. Hand edits to other text are allowed; the next palette_lint reports what drifted. \
              Errors carry a stable `error.code`: invalid_params, no_project_root, outside_roots, no_layout, already_initialized, not_found, parse_error, locked, invariant_violation, conflict, io_error. A document under a project path never links into _palette/, and only the user's approval authorizes execution, wherever a document lives.",

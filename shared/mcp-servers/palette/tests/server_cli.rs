@@ -125,7 +125,7 @@ fn check_exit_codes() {
             .code(),
         Some(0)
     );
-    // No such project, and a folder without a layout, exit 2.
+    // No such project: exit 2.
     assert_eq!(
         bin()
             .arg("check")
@@ -136,16 +136,30 @@ fn check_exit_codes() {
             .code(),
         Some(2)
     );
+    // A checkout without `_palette/` (the shared families only, as CI sees them) is
+    // checked from the documents themselves: exit 0 when they are clean.
+    let shared = common::Proj::valid();
+    std::fs::remove_dir_all(shared.path("_palette")).expect("rm");
+    let out = bin().arg("check").arg(&shared.root).output().expect("run");
     assert_eq!(
-        bin()
-            .arg("check")
-            .arg(p.path("docs"))
-            .output()
-            .expect("run")
-            .status
-            .code(),
-        Some(2)
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
     );
+    // `generate` works there too and needs no lock folder.
+    let out = bin()
+        .arg("generate")
+        .arg(&shared.root)
+        .output()
+        .expect("run");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!shared.path("_palette").exists());
 }
 
 #[test]

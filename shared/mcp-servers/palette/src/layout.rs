@@ -1,15 +1,21 @@
 //! `layout.rst`: the twelve document families and where each one lives.
 //!
-//! Owns parsing the layout document, validating placements and resolving every
-//! family (and the documents inside it) to an absolute path. Does not read other
-//! files and does not report findings; `lint` turns [`LayoutProblem`]s into P012.
-//! Entry points: [`Layout::parse`], [`Locations`].
+//! Owns parsing the layout document, inferring a layout from the documents
+//! themselves when the project has none, validating placements and resolving every
+//! family (and the documents inside it) to an absolute path. Does not report
+//! findings; `lint` turns [`LayoutProblem`]s into P012.
+//! Entry points: [`Layout::parse`], [`Layout::infer`], [`Locations`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::rst::Doc;
 use crate::text::Source;
+use crate::util::rel_slash;
+use crate::vfs::FileSource;
+
+/// Folders the inference walk never enters.
+const SKIPPED_DIRS: [&str; 5] = [PALETTE_DIR, ".git", "target", "node_modules", "fixtures"];
 
 /// The name of the folder that holds internal documents.
 pub const PALETTE_DIR: &str = "_palette";
@@ -120,13 +126,16 @@ pub struct Placed {
     pub line: usize,
 }
 
-/// A problem found while reading `layout.rst`; reported as P012.
+/// A problem found while reading `layout.rst` or inferring a layout; reported as P012.
 #[derive(Clone, Debug)]
 pub struct LayoutProblem {
-    /// 0-based line.
+    /// 0-based line (in `layout.rst`, or in the document named by `rel`).
     pub line: usize,
     /// Message.
     pub message: String,
+    /// The project-relative document an inferred problem is reported on; `None` for
+    /// a problem in `layout.rst`.
+    pub rel: Option<String>,
 }
 
 /// The parsed layout.
@@ -214,6 +223,7 @@ impl Layout {
                         "`{name}` is not a document family; families are: {}",
                         Family::ALL.map(Family::key).join(", ")
                     ),
+                    rel: None,
                 });
                 continue;
             };
@@ -221,6 +231,7 @@ impl Layout {
                 problems.push(LayoutProblem {
                     line: f.start,
                     message: format!("family `{name}` is placed more than once"),
+                    rel: None,
                 });
                 continue;
             }
@@ -243,6 +254,7 @@ impl Layout {
                                     "`{name}` and `{}` are both placed at `{p}`; each family needs its own location",
                                     other.key()
                                 ),
+                                rel: None,
                             });
                             continue;
                         }
@@ -253,6 +265,7 @@ impl Layout {
                         problems.push(LayoutProblem {
                             line: f.start,
                             message: format!("family `{name}`: {msg}"),
+                            rel: None,
                         });
                         continue;
                     }
@@ -279,6 +292,7 @@ impl Layout {
                         fam.key(),
                         fam.key()
                     ),
+                    rel: None,
                 });
             }
         }
@@ -287,6 +301,69 @@ impl Layout {
             checker,
             problems,
         }
+    }
+
+    /// Infers a layout from the documents under `root` when the project has no
+    /// `layout.rst`: every `.rst` file outside `_palette/`, `.git`, `target` and
+    /// `node_modules` is classified by its title and `:Status:` field, and each family
+    /// is placed where its documents were found. The staging family is the folder
+    /// named `staging` whose `spec/` and `design/` subfolders hold the mirrors. A
+    /// family found in two places keeps the first and reports the second as a
+    /// problem; a family with no documents is internal. The checker is `none`. A
+    /// template (a document whose title still carries a `<...>` placeholder) and
+    /// anything under a `fixtures` folder are not project documents and are skipped.
+    pub fn infer(src: &dyn FileSource, root: &Path) -> std::io::Result<Layout> {
+        let mut found: BTreeMap<Family, (String, String)> = BTreeMap::new();
+        let mut problems = Vec::new();
+        let mut files: Vec<PathBuf> = Vec::new();
+        walk(src, root, &mut files)?;
+        for path in files {
+            let Some(bytes) = src.read(&path)? else {
+                continue;
+            };
+            let Ok(doc) = Doc::parse_bytes(&bytes) else {
+                continue;
+            };
+            if is_template(&doc) {
+                continue;
+            }
+            let Some((fam, placed)) = classify(&doc, root, &path) else {
+                continue;
+            };
+            let rel = rel_slash(root, &path);
+            match found.get(&fam) {
+                None => {
+                    found.insert(fam, (placed, rel));
+                }
+                Some((first, first_rel)) if *first != placed => {
+                    problems.push(LayoutProblem {
+                        line: 0,
+                        message: format!(
+                            "{} looks like a {} document, but that family was already found at `{first}` (`{first_rel}`); with no layout.rst each family lives in one place",
+                            rel,
+                            fam.key()
+                        ),
+                        rel: Some(rel.clone()),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        let placements = Family::ALL
+            .into_iter()
+            .map(|f| {
+                let placement = found
+                    .get(&f)
+                    .map(|(p, _)| Placement::Path(p.clone()))
+                    .unwrap_or(Placement::Internal);
+                (f, Placed { placement, line: 0 })
+            })
+            .collect();
+        Ok(Layout {
+            placements,
+            checker: None,
+            problems,
+        })
     }
 
     /// The placement of `fam`; a family missing from the layout reads as internal.
@@ -432,6 +509,92 @@ pub fn split_logical(logical: &str) -> Option<(Family, &str)> {
         return None;
     }
     Some((fam, name))
+}
+
+fn walk(src: &dyn FileSource, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for e in src.list(dir)? {
+        let p = dir.join(&e.name);
+        if e.is_dir {
+            if SKIPPED_DIRS.contains(&e.name.as_str()) || e.name.starts_with('.') {
+                continue;
+            }
+            walk(src, &p, out)?;
+        } else if e.name.ends_with(".rst") {
+            out.push(p);
+        }
+    }
+    Ok(())
+}
+
+/// Whether `doc` is a template rather than a document: its title carries a placeholder.
+fn is_template(doc: &Doc) -> bool {
+    doc.title()
+        .is_some_and(|h| h.title.contains('<') && h.title.contains('>'))
+}
+
+fn record_number(title: &str, prefix: &str) -> bool {
+    title
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.split_once(':'))
+        .is_some_and(|(n, _)| n.len() == 4 && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The family of `doc` and the project-relative placement it implies, when the
+/// document's title and status identify one.
+fn classify(doc: &Doc, root: &Path, path: &Path) -> Option<(Family, String)> {
+    let title = doc.title()?.title.clone();
+    let status = doc
+        .fields(0, doc.src.len())
+        .into_iter()
+        .find(|f| f.name.trim() == "Status")
+        .map(|f| f.value.trim().to_string());
+    let parent = path.parent()?;
+    let dir_name = |p: &Path| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let up = |n: usize| {
+        let mut p = parent;
+        for _ in 0..n {
+            p = p.parent()?;
+        }
+        Some(rel_slash(root, p))
+    };
+    let file = rel_slash(root, path);
+    let fam = if record_number(&title, "RFC-") {
+        Family::Rfc
+    } else if record_number(&title, "ADR-") {
+        Family::Adr
+    } else if title.starts_with("Changeset: ") {
+        Family::Changeset
+    } else if title.starts_with("Glossary — ") {
+        return Some((Family::Glossary, file));
+    } else if title.starts_with("Principles — ") {
+        return Some((Family::Principles, file));
+    } else if title.starts_with("Backlog — ") {
+        return Some((Family::Backlog, file));
+    } else if title.starts_with("State — ") {
+        return Some((Family::State, file));
+    } else if title.starts_with("Phase ") && dir_name(parent).starts_with("phase-") {
+        return Some((Family::Phase, up(1)?));
+    } else if title.starts_with("Deliverable ") && dir_name(parent) == "deliverables" {
+        return Some((Family::Deliverable, up(2)?));
+    } else if status.as_deref() == Some("Contract") {
+        Family::Spec
+    } else if status.as_deref() == Some("Maintained") && title.ends_with(" design") {
+        Family::Design
+    } else {
+        return None;
+    };
+    // `<staging>/spec/x.rst` and `<staging>/design/x.rst` mirror maintained documents.
+    let mirrored = matches!(fam, Family::Spec | Family::Design)
+        && dir_name(parent) == fam.key()
+        && parent.parent().is_some_and(|g| dir_name(g) == "staging");
+    if mirrored {
+        return Some((Family::Staging, up(1)?));
+    }
+    Some((fam, up(0)?))
 }
 
 #[cfg(test)]

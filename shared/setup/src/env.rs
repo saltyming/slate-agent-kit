@@ -274,7 +274,17 @@ mod tests {
         std::fs::write(&exe, "").unwrap();
         let mut env = Env::for_home("/h");
         env.set_var("PATH", dir.path().to_string_lossy());
-        assert_eq!(env.which("tool"), Some(exe));
+        // Windows resolves `tool` through PATHEXT, whose entries are upper-case, so the
+        // found path may differ from `exe` in the extension's case only.
+        let found = env.which("tool").expect("found on PATH");
+        assert_eq!(found.parent(), exe.parent());
+        assert!(
+            found
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&exe.file_name().unwrap().to_string_lossy())
+        );
         assert_eq!(env.which("absent"), None);
     }
 }

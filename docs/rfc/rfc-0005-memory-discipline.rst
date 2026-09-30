@@ -2,13 +2,14 @@ RFC-0005: Memory discipline
 ===========================
 
 :Status: Accepted
-:Implementation: not-started — the memory invariant, its harness bindings and
+:Implementation: complete — the memory invariant, its harness bindings and
   the memory-triage skill
-:Verification: documentation — 2026-09-29; decision record only
+:Verification: static — 2026-09-30; render and ``validate.sh``; this repository's
+  memory triaged to zero files on 2026-09-30
 :Areas: rule kernel; native memory
 :Authors: Claude Opus 5.5
 :Reviewers: none yet
-:Implementers: none yet
+:Implementers: Claude Opus 5.5 (2026-09-29), Claude Fable 5.1 (2026-09-30, triage)
 :Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)
 :Date: 2026-09-29
 :Revised: none

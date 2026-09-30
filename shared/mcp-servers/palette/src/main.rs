@@ -42,7 +42,9 @@ fn main() {
 
 fn usage() -> i32 {
     eprintln!("usage: palette                  serve MCP over stdio");
-    eprintln!("       palette check <project>  print lint findings; exit 1 on an error");
+    eprintln!(
+        "       palette check <project>  print lint findings; exit 1 on an error (needs no _palette/)"
+    );
     eprintln!("       palette generate <project>  write the indexes and staging documents");
     eprintln!("       palette --read-only-tools");
     eprintln!("       palette --version");

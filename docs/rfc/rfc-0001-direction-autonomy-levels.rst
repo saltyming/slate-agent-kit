@@ -2,14 +2,14 @@ RFC-0001: Direction, autonomy and action levels
 ===============================================
 
 :Status: Accepted
-:Implementation: not-started — the kernel's decision rights, judgment-based
+:Implementation: complete — the kernel's decision rights, judgment-based
   consultation, dispatch and delegation rules, and the three action levels
-:Verification: documentation — 2026-09-29; decision record only, no render,
-  validate or install evidence
+:Verification: static — 2026-09-30; render and ``validate.sh`` (retired-term and
+  article checks); no session evidence yet
 :Areas: rule kernel; delegation; consultation; dispatch
 :Authors: Claude Opus 5.5
 :Reviewers: none yet
-:Implementers: none yet
+:Implementers: Claude Opus 5.5 (2026-09-29), Claude Fable 5.1 (2026-09-30, articles)
 :Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)
 :Date: 2026-09-29
 :Revised: none

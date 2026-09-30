@@ -243,7 +243,8 @@ mod tests {
         fs::create_dir_all(home.join("projects").join("-w-proj").join("workslate")).unwrap();
         fs::create_dir_all(home.join("projects").join("-w-other").join("workslate")).unwrap();
         fs::write(home.join("settings.json"), SETTINGS).unwrap();
-        fs::write(bin.join("workslate"), "x").unwrap();
+        let binary = bin.join(exe_name(&Env::for_home(dir.path()).platform(), "workslate"));
+        fs::write(&binary, "x").unwrap();
         for f in ["workslate.db", "workslate.db-wal", "workslate.db-shm"] {
             fs::write(home.join("projects/-w-proj/workslate").join(f), "db").unwrap();
         }
@@ -255,7 +256,7 @@ mod tests {
         let mut manifest = Manifest::new("k");
         let mut ui = Ui::captured(new_sink());
         workslate_cleanup(&env, &mut ui, &home, &bin, &mut manifest).unwrap();
-        assert!(!bin.join("workslate").exists());
+        assert!(!binary.exists());
         assert!(
             !home.join("projects/-w-proj/workslate").exists(),
             "emptied folder is removed"

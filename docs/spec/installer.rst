@@ -2,10 +2,10 @@ Installer
 =========
 
 :Status: Contract
+:Date: 2026-09-30
 
-Scope
------
-
+Scope and authority
+-------------------
 The installer installs one kit into one harness home: the kit's instruction
 files, rules and skills; the aside, dispatch and palette MCP servers; the prefs
 files; and the harness's native configuration. It also reconfigures and
@@ -14,9 +14,13 @@ workspace crate ``shared/setup`` and shipped prebuilt for the same eight targets
 as aside and dispatch. Every harness and every operating system runs the same
 code; no step uses node, python, jq, awk or PowerShell logic of its own.
 
-Components
-----------
+This document is the contract; ``shared/setup`` implements it, and each kit's
+``dist/kit.toml`` descriptor is authoritative for what that kit installs.
 
+Definitions and model
+---------------------
+Components
+~~~~~~~~~~
 ``slate-setup``
   The installer. It reads a kit payload and its descriptor and does every step
   below.
@@ -39,8 +43,7 @@ Release assets
   and dispatch archives, listed in the release's ``checksums.txt``.
 
 Kit payload
------------
-
+~~~~~~~~~~~
 ::
 
    dist/
@@ -54,8 +57,7 @@ A kit's root keeps ``AGENTS.md`` with the instructions for maintaining that
 repository; it is never installed.
 
 Descriptor
-----------
-
+~~~~~~~~~~
 ``dist/kit.toml``::
 
    kit = "claude-agent-kit"          # file prefix and manifest name
@@ -77,8 +79,7 @@ file, so the installer writes the primary file followed by every rule file in
 ``---`` with blank lines around it (Codex, Kimi Code).
 
 Harness homes
--------------
-
+~~~~~~~~~~~~~
 ``claude``
   ``--home``, else ``$CLAUDE_CONFIG_DIR``, else ``~/.claude``. Primary file
   ``CLAUDE.md``; rules in ``rules/``; skills in ``skills/``; settings in
@@ -97,9 +98,10 @@ Harness homes
 The binary folder is ``--bin-dir``, else ``~/.local/bin`` on every operating
 system (``%USERPROFILE%\.local\bin`` on Windows).
 
-Commands
+Contract
 --------
-
+Commands
+~~~~~~~~
 ``slate-setup install``
   Full install or reinstall.
 
@@ -126,8 +128,7 @@ environment variable ``CUSTOM_RULES_DIR`` seeds ``--custom-rules`` and is never
 required.
 
 Terminal experience
--------------------
-
+~~~~~~~~~~~~~~~~~~~
 - Every run has the same shape in every harness: detect, ask, summarize and
   confirm, apply, report. Nothing is changed before the confirmation.
 - The ask phase shows numbered steps (``[2/6] MCP servers``). Each question
@@ -150,8 +151,7 @@ Terminal experience
 - ``--dry-run`` prints the summary and exits.
 
 Install steps
--------------
-
+~~~~~~~~~~~~~
 1. Detect the harness home, the installed kit version from the manifest, the
    prefs files, the harness CLI (``claude``, ``codex``), and legacy leftovers.
 2. Ask: binaries mode; workspace roots; each prefs file (spec/prefs.rst); the
@@ -167,8 +167,7 @@ Install steps
 9. Report.
 
 Binaries
---------
-
+~~~~~~~~
 - ``prebuilt`` downloads ``<name>-<target>.tar.gz`` (``.zip`` on Windows) from
   the slate release ``v<slate_version>``; when that release does not exist it
   uses the latest release and says so. Every archive is checked against the
@@ -181,8 +180,7 @@ Binaries
   signed ad hoc.
 
 Payload files and signatures
-----------------------------
-
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 - A kit-managed Markdown file starts with ``<!-- slate-agent-kit:common -->``
   or ``<!-- <kit> -->``. A user-owned file starts with ``<!-- <kit>-custom:``.
 - Install overwrites kit-managed files and never overwrites a user-owned one.
@@ -198,8 +196,7 @@ Payload files and signatures
   configure, so a custom rule appears exactly once.
 
 Server registration
--------------------
-
+~~~~~~~~~~~~~~~~~~~
 Environment per server:
 
 - aside: ``ASIDE_HARNESS=<harness>``; for Kimi with a non-default home also
@@ -245,8 +242,7 @@ warning that dispatch and palette will reject every project.
   up before it is rebuilt.
 
 Native configuration
---------------------
-
+~~~~~~~~~~~~~~~~~~~~
 The subagent default model and effort from ``subagent-prefs.md`` are written
 only when set, and only after validation:
 
@@ -271,16 +267,14 @@ Every configuration edit keeps all keys, comments and formatting it does not
 change, and records the key's previous value (or its absence) in the manifest.
 
 Manifest
---------
-
+~~~~~~~~
 ``<home>/.<kit>-manifest.toml`` records: kit and version; every installed file
 and folder; every backup; every configuration key edited with its previous
 value; every registration. An older line-format manifest
 (``<home>/.<kit>-manifest``) is read once for compatibility and replaced.
 
 Uninstall
----------
-
+~~~~~~~~~
 - Removes the kit-managed files and folders the manifest lists after checking
   their signatures; lists the user-owned ones and removes them only if the
   user chooses to (default: keep).
@@ -294,8 +288,7 @@ Uninstall
 - Runs the legacy cleanups.
 
 Legacy cleanup
---------------
-
+~~~~~~~~~~~~~~
 ``workslate`` (claude)
   Removes the hook entries in ``settings.json`` whose command contains
   ``workslate`` and ``--hook=``, or ``[workslate-task-verify]``, after backing
@@ -309,8 +302,7 @@ Earlier installer locations
   Codex installer are removed after the new registration succeeds.
 
 Entry points
-------------
-
+~~~~~~~~~~~~
 ``install.sh``
   POSIX ``sh`` with ``set -eu``. Uses the payload beside it when
   ``dist/kit.toml`` exists there; otherwise downloads the kit repository archive
@@ -333,3 +325,48 @@ Both scripts keep the earlier installers' options as aliases: ``--uninstall``
 (``-Uninstall``) selects the ``uninstall`` command, ``--skip-mcp``
 (``-SkipMcp``) becomes ``--binaries skip``, and ``DISPATCH_ROOTS``
 (``-DispatchRoots``) becomes ``--roots`` when no ``--roots`` is given.
+
+Errors and edge cases
+---------------------
+- A failure names what failed, the state it left and the command that fixes or
+  retries it; the exit code is non-zero.
+- A file whose signature is neither the kit's nor ``-custom:`` is listed as
+  foreign and left in place; a user-owned file is never replaced without the
+  user's choice.
+- A configuration key whose current value is no longer the one the installer
+  wrote is reported and left alone on uninstall.
+- A missing harness CLI turns the registration step into a report of the
+  commands the user runs by hand; the file steps still complete.
+- An unreadable manifest is reported with the path and the run stops before
+  changing anything.
+
+Ownership and ordering
+----------------------
+The installer owns the kit-signed files, the entries it registers and the
+configuration keys it records in the manifest; the user owns everything with a
+``-custom:`` signature and every key the manifest does not list. Steps run in
+the order legacy cleanup, stale files, binaries, payload, prefs, native
+configuration, server registration, manifest; a step that fails leaves the
+earlier steps' results in place and the manifest describing them.
+
+Compatibility
+-------------
+The manifest format, the descriptor fields and the command names are stable
+within a major version of a kit. An older line-format manifest and 12.x or
+0.7.x prefs files are read once and replaced. A new descriptor field is
+compatible; a removed or renamed one is not.
+
+Conformance
+-----------
+``cargo test -p slate-setup`` covers the descriptor, the manifest, the prefs
+parser and migration, the configuration edits for each harness, and the
+install, reinstall, upgrade-from-previous-release and uninstall flows in a
+scratch home with stand-in harness CLIs; the tests pass on Linux, macOS and
+Windows.
+
+References
+----------
+- ``RFC-0001`` for the levels the prefs files hold.
+- ``spec/prefs.rst`` for the prefs files this installer writes.
+- ``shared/setup`` and ``tooling/kit-scripts/`` for the implementation and the
+  kit entry points.

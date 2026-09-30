@@ -1,15 +1,17 @@
 //! A project snapshot: every palette document found through a [`FileSource`], with its
 //! role, parsed once.
 //!
-//! Owns discovery of documents from the layout (which file belongs to which family)
-//! and loading them. Does not interpret document content beyond the RST scan; the
+//! Owns discovery of documents from the layout (which file belongs to which family),
+//! or from the documents themselves when the project has no layout, and loading them. Does not interpret document content beyond the RST scan; the
 //! models in `records`, `backlog`, `state` and `changeset` do that.
 //! Entry point: [`Snapshot::load`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::errors::{ErrCode, PalError, Res};
+use crate::errors::{PalError, Res};
+#[cfg(test)]
+use crate::layout::Placement;
 use crate::layout::{Family, Layout, Locations};
 use crate::rst::Doc;
 use crate::text::Source;
@@ -97,8 +99,10 @@ pub struct DocFile {
 pub struct Snapshot {
     /// Canonical project root.
     pub root: PathBuf,
-    /// The parsed layout.
+    /// The parsed layout, or the one inferred from the documents.
     pub layout: Layout,
+    /// Whether the layout was inferred because `_palette/layout.rst` is absent.
+    pub inferred: bool,
     /// Family locations.
     pub loc: Locations,
     /// Documents in discovery order.
@@ -111,34 +115,38 @@ fn io_err(action: &str, e: &std::io::Error) -> PalError {
 }
 
 impl Snapshot {
-    /// Reads the layout and every document it places.
+    /// Reads the layout and every document it places. Without a layout, the families
+    /// are placed where their documents are found ([`Layout::infer`]); the internal
+    /// families are then empty, which is the shape a checkout without `_palette/` has.
     pub fn load(src: &dyn FileSource, root: &Path) -> Res<Snapshot> {
         let layout_path = root.join(crate::layout::PALETTE_DIR).join("layout.rst");
         let layout_bytes = src
             .read(&layout_path)
-            .map_err(|e| io_err("reading layout.rst", &e))?
-            .ok_or_else(|| {
-                PalError::new(
-                    ErrCode::NoLayout,
-                    format!(
-                        "{} has no _palette/layout.rst. Run palette_init to set the project up.",
-                        root.display()
-                    ),
-                )
-            })?;
-        let layout_src = Source::from_bytes(&layout_bytes).map_err(|line| {
-            PalError::parse("_palette/layout.rst", line, "the file is not valid UTF-8")
-        })?;
-        let layout = Layout::parse(&layout_src);
+            .map_err(|e| io_err("reading layout.rst", &e))?;
+        let (layout, inferred) = match layout_bytes {
+            Some(bytes) => {
+                let layout_src = Source::from_bytes(&bytes).map_err(|line| {
+                    PalError::parse("_palette/layout.rst", line, "the file is not valid UTF-8")
+                })?;
+                (Layout::parse(&layout_src), false)
+            }
+            None => (
+                Layout::infer(src, root).map_err(|e| io_err("scanning for documents", &e))?,
+                true,
+            ),
+        };
         let loc = layout.locations(root);
         let mut snap = Snapshot {
             root: root.to_path_buf(),
             layout,
+            inferred,
             loc,
             files: Vec::new(),
             by_path: BTreeMap::new(),
         };
-        snap.add(src, layout_path, Role::Layout)?;
+        if !inferred {
+            snap.add(src, layout_path, Role::Layout)?;
+        }
         snap.discover(src)?;
         Ok(snap)
     }
@@ -315,10 +323,137 @@ mod tests {
     }
 
     #[test]
-    fn missing_layout_is_no_layout() {
+    fn without_a_layout_the_families_are_inferred_from_the_documents() {
         let t = tempfile::tempdir().expect("tmp");
         let r = t.path().canonicalize().expect("canon");
-        let err = Snapshot::load(&DiskSource, &r).err().expect("no layout");
-        assert_eq!(err.code, ErrCode::NoLayout);
+        for d in [
+            "notes/rfc",
+            "notes/adr",
+            "notes/staging/spec",
+            "notes/spec",
+            "target/x",
+        ] {
+            fs::create_dir_all(r.join(d)).expect("mk");
+        }
+        fs::write(
+            r.join("notes/rfc/rfc-0001-a.rst"),
+            "RFC-0001: A\n===========\n",
+        )
+        .expect("w");
+        fs::write(r.join("notes/rfc/index.rst"), "Index — RFC\n===========\n").expect("w");
+        fs::write(
+            r.join("notes/adr/adr-0002-b.rst"),
+            "ADR-0002: B\n===========\n",
+        )
+        .expect("w");
+        fs::write(
+            r.join("notes/spec/thing.rst"),
+            "Thing\n=====\n\n:Status: Contract\n",
+        )
+        .expect("w");
+        fs::write(
+            r.join("notes/staging/spec/thing.rst"),
+            "Thing\n=====\n\n:Status: Contract\n",
+        )
+        .expect("w");
+        fs::write(r.join("notes/glossary.rst"), "Glossary — X\n============\n").expect("w");
+        fs::write(
+            r.join("target/x/rfc-0009-z.rst"),
+            "RFC-0009: Z\n===========\n",
+        )
+        .expect("w");
+        fs::write(r.join("README.rst"), "Read me\n=======\n").expect("w");
+        let snap = Snapshot::load(&DiskSource, &r).expect("load");
+        assert!(snap.inferred);
+        assert_eq!(
+            snap.layout.placement(Family::Rfc),
+            Placement::Path("notes/rfc".into())
+        );
+        assert_eq!(
+            snap.layout.placement(Family::Adr),
+            Placement::Path("notes/adr".into())
+        );
+        assert_eq!(
+            snap.layout.placement(Family::Spec),
+            Placement::Path("notes/spec".into())
+        );
+        assert_eq!(
+            snap.layout.placement(Family::Staging),
+            Placement::Path("notes/staging".into())
+        );
+        assert_eq!(
+            snap.layout.placement(Family::Glossary),
+            Placement::Path("notes/glossary.rst".into())
+        );
+        assert_eq!(snap.layout.placement(Family::Backlog), Placement::Internal);
+        assert!(
+            snap.layout.problems.is_empty(),
+            "{:?}",
+            snap.layout.problems
+        );
+        let roles: Vec<(String, Role)> =
+            snap.files.iter().map(|f| (f.rel.clone(), f.role)).collect();
+        assert!(roles.contains(&("notes/rfc/rfc-0001-a.rst".to_string(), Role::Rfc)));
+        assert!(roles.contains(&("notes/rfc/index.rst".to_string(), Role::Index(Family::Rfc))));
+        assert!(roles.contains(&(
+            "notes/staging/spec/thing.rst".to_string(),
+            Role::Staging(Family::Spec)
+        )));
+        assert!(
+            !roles
+                .iter()
+                .any(|(p, _)| p.starts_with("target/") || p == "README.rst")
+        );
+        assert!(!roles.iter().any(|(_, r)| *r == Role::Layout));
+    }
+
+    #[test]
+    fn templates_and_fixtures_are_not_documents() {
+        let t = tempfile::tempdir().expect("tmp");
+        let r = t.path().canonicalize().expect("canon");
+        fs::create_dir_all(r.join("templates")).expect("mk");
+        fs::create_dir_all(r.join("tests/fixtures/x")).expect("mk");
+        fs::write(
+            r.join("templates/rfc.rst"),
+            "RFC-<NNNN>: <Title>\n===================\n",
+        )
+        .expect("w");
+        fs::write(
+            r.join("templates/glossary.rst"),
+            "Glossary — <Project>\n====================\n",
+        )
+        .expect("w");
+        fs::write(
+            r.join("tests/fixtures/x/rfc-0001-a.rst"),
+            "RFC-0001: A\n===========\n",
+        )
+        .expect("w");
+        let snap = Snapshot::load(&DiskSource, &r).expect("load");
+        assert!(
+            snap.files.is_empty(),
+            "{:?}",
+            snap.files.iter().map(|f| &f.rel).collect::<Vec<_>>()
+        );
+        assert_eq!(snap.layout.placement(Family::Rfc), Placement::Internal);
+    }
+
+    #[test]
+    fn a_family_found_in_two_places_is_a_layout_problem() {
+        let t = tempfile::tempdir().expect("tmp");
+        let r = t.path().canonicalize().expect("canon");
+        fs::create_dir_all(r.join("a")).expect("mk");
+        fs::create_dir_all(r.join("b")).expect("mk");
+        fs::write(r.join("a/rfc-0001-a.rst"), "RFC-0001: A\n===========\n").expect("w");
+        fs::write(r.join("b/rfc-0002-b.rst"), "RFC-0002: B\n===========\n").expect("w");
+        let snap = Snapshot::load(&DiskSource, &r).expect("load");
+        assert_eq!(
+            snap.layout.placement(Family::Rfc),
+            Placement::Path("a".into())
+        );
+        assert_eq!(snap.layout.problems.len(), 1);
+        assert_eq!(
+            snap.layout.problems[0].rel.as_deref(),
+            Some("b/rfc-0002-b.rst")
+        );
     }
 }

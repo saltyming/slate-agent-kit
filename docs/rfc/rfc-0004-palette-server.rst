@@ -2,16 +2,20 @@ RFC-0004: palette MCP server
 ============================
 
 :Status: Accepted
-:Implementation: not-started — the palette server's read and write tools and its
-  command-line check
-:Verification: documentation — 2026-09-29; decision record only
+:Implementation: complete — the palette server's read and write tools and its
+  command-line check and generate
+:Verification: build — 2026-09-30; cargo test on macOS (156 tests)
+  and palette check on this repository with and without _palette/, Linux and
+  Windows through slate CI on next, not yet green
 :Areas: palette; MCP servers
 :Authors: Claude Opus 5.5
 :Reviewers: none yet
-:Implementers: none yet
+:Implementers: Claude Opus 5.5 (2026-09-29 to 2026-09-30), Claude Fable 5.1
+  (2026-09-30, inference without a layout)
 :Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)
 :Date: 2026-09-29
-:Revised: none
+:Revised: 2026-09-30 — the check and generate commands no longer need
+  ``_palette/layout.rst``
 :Depends: RFC-0003 (the families, placement and relation rules it enforces)
 :Supersedes: none
 :Related: none
@@ -72,6 +76,9 @@ Requirements and invariants
 
 - Writes stay inside the project's ``_palette/`` and the paths its layout names,
   and inside the allowed roots.
+- Checking and regenerating the shared families depends on no file under
+  ``_palette/``: where the layout is absent, the families are found from the
+  documents themselves.
 - A file the server cannot parse is reported, never rewritten.
 - Only the part of a file an operation concerns is changed; everything else,
   including the user's own edits, is kept byte for byte.

@@ -193,12 +193,26 @@ pub fn run_write<F>(ctx: &Ctx, project: &str, dry_run: bool, op: F) -> Res<Write
 where
     F: FnOnce(&mut Session<'_, '_>) -> Res<Vec<String>>,
 {
+    run_transaction(ctx, project, dry_run, true, op)
+}
+
+/// Runs `op` as one transaction. With `need_layout`, a project without
+/// `_palette/layout.rst` is refused; without it (regeneration), the families are
+/// inferred from the documents, and the lock is skipped when `_palette/` does not
+/// exist, since the lock lives there and nothing else writes such a checkout.
+fn run_transaction<F>(
+    ctx: &Ctx,
+    project: &str,
+    dry_run: bool,
+    need_layout: bool,
+    op: F,
+) -> Res<WriteResult>
+where
+    F: FnOnce(&mut Session<'_, '_>) -> Res<Vec<String>>,
+{
     let root = ctx.roots.resolve_project(project)?;
-    if !root
-        .join(crate::layout::PALETTE_DIR)
-        .join("layout.rst")
-        .is_file()
-    {
+    let palette_dir = root.join(crate::layout::PALETTE_DIR);
+    if need_layout && !palette_dir.join("layout.rst").is_file() {
         return Err(PalError::new(
             crate::errors::ErrCode::NoLayout,
             format!(
@@ -207,8 +221,14 @@ where
             ),
         ));
     }
-    let lock_path = root.join(crate::layout::PALETTE_DIR).join(".palette.lock");
-    let _lock = ProjectLock::acquire(&lock_path, ctx.lock_timeout)?;
+    let _lock = if palette_dir.is_dir() {
+        Some(ProjectLock::acquire(
+            &palette_dir.join(".palette.lock"),
+            ctx.lock_timeout,
+        )?)
+    } else {
+        None
+    };
     let disk = DiskSource;
     let mut ov = Overlay::new(&disk);
     let snap = Snapshot::load(&ov, &root)?;
@@ -252,7 +272,7 @@ pub fn project_eol(snap: &Snapshot) -> crate::text::Eol {
 /// Regenerates every index and staging document that is missing or differs from what the
 /// server would generate (the generation every write tool runs), and nothing else.
 pub fn generate(ctx: &Ctx, project: &str) -> Res<WriteResult> {
-    run_write(ctx, project, false, |_| Ok(Vec::new()))
+    run_transaction(ctx, project, false, false, |_| Ok(Vec::new()))
 }
 
 fn regenerate(ov: &mut Overlay<'_>, root: &Path) -> Res<()> {

@@ -18,6 +18,10 @@ sh tooling/render-kit.sh claude   # and/or codex, kimi
 sh tooling/validate.sh            # must print "validate: OK" before committing
 ```
 
+## Rule text
+
+When a tool or behavior is removed or changed, rewrite the rule text so the new behavior is stated (what the agent does instead), not renamed mechanically. Guidance lives in one rule file; tool descriptions, `get_info` and READMEs lose dead references and gain no duplicate guidance. Reviewer suggestions outside the requested scope are left out unless the user asks.
+
 ## Topology
 
 - `shared/rules/core/` — kernel (direction, autonomy, prohibitions, reporting, memory) + execution, delegation, git and convention rules; `shared/rules/mcp/` — consultation (aside) and dispatch.
@@ -47,10 +51,11 @@ sh tooling/validate.sh            # must print "validate: OK" before committing
 - `ci.yml` (push/PR to main): 3-OS build+test+clippy+fmt, `validate.sh` (checkout needs `submodules: recursive`), shellcheck (advisory).
 - `release.yml` (tag `v*`): 8-platform aside/dispatch/palette/slate-setup artifacts (cargo-zigbuild for Linux targets) and `checksums.txt` → GitHub Release. A kit's entry point downloads `slate-setup` from the release named in `tooling/slate-version` (the latest release when that one does not exist yet), and the clone fallback tracks slate **main** — keep main green and consumable.
 - Pushing a tag in the same push that first adds a workflow file does not trigger it; push the tag separately.
+- A script step added to a workflow is checked by running the extracted snippet locally as written, not by running an equivalent check in another form (a PowerShell quoting error once failed kit CI that way).
 
 ## Release train (order matters)
 
-1. Develop a breaking release on a `next` branch in slate and in each kit; ordinary changes go to main directly.
+1. Develop a breaking release on a `next` branch in slate and in each kit; ordinary changes go to main directly. A change that touches only an MCP server binary still goes through every step below: the kits ship the servers, and a kit release is how users receive them.
 2. Change `shared/` (+ `adapters/`, `tooling/`); bump `KIT_VERSION` in each affected kit's `tokens.sed` and, for a slate release, `tooling/slate-version`.
 3. Verify locally: render, `validate.sh`, `cargo test`/`clippy` on the latest stable, and installs into a scratch **`HOME`** (a scratch harness home alone is not enough: harness CLIs edit the real user config under `$HOME`). Review the diff (advisor, and aside at its level) **before** any tag.
 4. Re-render the kits, update each kit's `CHANGELOG.md`, commit, and push each kit's main without a tag.

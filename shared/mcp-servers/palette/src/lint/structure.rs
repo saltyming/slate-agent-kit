@@ -302,11 +302,15 @@ fn check_section_body(
 }
 
 fn layout_problems(cx: &Cx, out: &mut Vec<Finding>) {
-    let Some(f) = cx.snap.file(&cx.snap.loc.layout_file()) else {
-        return;
-    };
+    let layout = cx.snap.file(&cx.snap.loc.layout_file());
     for p in &cx.snap.layout.problems {
-        out.push(Finding::error("P012", f, p.line, p.message.clone()));
+        let on = match &p.rel {
+            Some(rel) => cx.snap.files.iter().find(|f| f.rel == *rel),
+            None => layout,
+        };
+        if let Some(f) = on {
+            out.push(Finding::error("P012", f, p.line, p.message.clone()));
+        }
     }
 }
 
