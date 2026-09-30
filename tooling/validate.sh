@@ -21,7 +21,6 @@ shared/rules/core/kernel.md
 shared/rules/core/loop-execution.md
 shared/rules/core/loop-delegation.md
 shared/rules/core/git-workflow.md
-shared/rules/core/conventions.md
 shared/rules/mcp/aside.md
 shared/rules/mcp/dispatch.md
 shared/workflows/palette/rules.md
@@ -179,7 +178,7 @@ fi
 # purpose and judgment, never a mandatory trigger.
 
 for kit in claude codex kimi; do
-  hits=$(grep -rniE '\b(story|stories|slice|slices|handoff|hand-off)\b|GATE-DELEGATE|GATE-DISPATCH|INV-GATE-[0-9]|INV-SCOPE-[23]|whether or not the user asked|do not reconsider|use them without asking' \
+  hits=$(grep -rniE '\b(story|stories|slice|slices|handoff|hand-off)\b|(INV|GATE)-[A-Z]|whether or not the user asked|do not reconsider|use them without asking' \
       "$ROOT/kits/${kit}-agent-kit/dist/rules" "$ROOT"/kits/${kit}-agent-kit/dist/*.md 2>/dev/null || true)
   if [ -n "$hits" ]; then
     echo "retired term or trigger phrase in $kit render:" >&2
@@ -188,15 +187,15 @@ for kit in claude codex kimi; do
   fi
 done
 
-# ── 6. INV/GATE id integrity ──────────────────────────────
-# Every referenced INV-*/GATE-* id must have exactly one bold definition line
-# somewhere in the shared sources (+ palette).
+# ── 6. article id integrity ───────────────────────────────
+# Every referenced article (§ N, optionally with a letter suffix) must have
+# exactly one bold definition line, in the kernel.
 
 src_all=$(cat "$ROOT"/shared/rules/core/*.md "$ROOT"/shared/rules/mcp/*.md "$ROOT/shared/workflows/palette/rules.md" \
   "$ROOT"/shared/workflows/*/skills/*/SKILL.md "$ROOT"/adapters/*/inserts/*.md "$ROOT"/adapters/*/surface.md 2>/dev/null)
-refs=$(printf '%s' "$src_all" | grep -oE '(INV|GATE)(-[A-Z0-9]+)+' | sort -u)
+refs=$(printf '%s' "$src_all" | grep -oE '§ [0-9]+[a-z]?' | sort -u | sed 's/§ //')
 for id in $refs; do
-  defs=$(printf '%s' "$src_all" | grep -cE "^\*\*$id( |\.| —)" || true)
+  defs=$(printf '%s' "$src_all" | grep -cE "^\*\*§ $id( |\.)" || true)
   if [ "$defs" -ne 1 ]; then
     echo "id $id has $defs definition lines (want exactly 1)" >&2
     fail=1
@@ -257,9 +256,9 @@ budget_check() {
     fail=1
   fi
 }
-budget_check claude "$claude_bytes" 58000
-budget_check codex "$codex_bytes" 57000
-budget_check kimi "$kimi_bytes" 56000
+budget_check claude "$claude_bytes" 26000
+budget_check codex "$codex_bytes" 27000
+budget_check kimi "$kimi_bytes" 26000
 
 # ── 9. rendered titles ────────────────────────────────────
 

@@ -29,6 +29,11 @@ prohibition
   An action that is never taken without an explicit user request, such as a
   destructive git operation. Prohibitions are a short fixed list.
 
+article
+  One numbered rule of the kit (``§ N``): a norm in numbered clauses and the
+  test that shows it was broken. Defined once in the manual, cited by number
+  everywhere else; numbers never move.
+
 approval
   The user's explicit agreement that turns a proposal into authorized work.
 

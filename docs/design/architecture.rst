@@ -21,8 +21,8 @@ Sources
 ~~~~~~~
 
 ``shared/rules/core/``
-  The kernel (direction, autonomy, prohibitions, reporting, memory) and the
-  execution, delegation, git and convention rules.
+  The kernel (the articles, in six parts) and the execution, delegation and
+  git rule files, which hold only what the articles do not imply.
 
 ``shared/rules/mcp/``
   When to consult (aside) and when to dispatch.
@@ -109,7 +109,7 @@ Failure and recovery
 - Render stops on a missing insert or an unreadable source instead of writing a
   truncated file.
 - ``validate.sh`` checks required sources, render completeness, insert
-  integrity, harness leaks, retired terms, invariant identifiers, standing-corpus
+  integrity, harness leaks, retired terms, article identifiers, standing-corpus
   byte budgets, the entry points and descriptors, and this repository's own
   palette documents.
 - Uninstall reverses what the manifest records and restores each configuration

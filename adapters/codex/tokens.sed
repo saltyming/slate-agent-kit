@@ -6,7 +6,6 @@ s#{{TASK_EXECUTION_RULE_FILE}}#codex-agent-kit--task-execution.md#g
 s#{{PALETTE_RULE_FILE}}#codex-agent-kit--palette.md#g
 s#{{DELEGATION_RULE_FILE}}#codex-agent-kit--delegation.md#g
 s#{{GIT_WORKFLOW_RULE_FILE}}#codex-agent-kit--git-workflow.md#g
-s#{{FRAMEWORK_RULE_FILE}}#codex-agent-kit--framework-conventions.md#g
 s#{{ASIDE_RULE_FILE}}#codex-agent-kit--aside.md#g
 s#{{DISPATCH_RULE_FILE}}#codex-agent-kit--dispatch.md#g
 s#{{ASIDE_PREFS_FILE}}#codex-agent-kit--aside-prefs.md#g

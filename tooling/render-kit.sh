@@ -162,7 +162,6 @@ add_rule "$ROOT/shared/rules/core/loop-execution.md" task-execution
 add_rule "$ROOT/shared/workflows/palette/rules.md" palette
 add_rule "$ROOT/shared/rules/core/loop-delegation.md" "$delegation_name"
 add_rule "$ROOT/shared/rules/core/git-workflow.md" git-workflow
-add_rule "$ROOT/shared/rules/core/conventions.md" framework-conventions
 add_rule "$ROOT/shared/rules/mcp/aside.md" aside
 add_rule "$ROOT/shared/rules/mcp/dispatch.md" dispatch
 

@@ -6,7 +6,6 @@ s#{{TASK_EXECUTION_RULE_FILE}}#claude-agent-kit--task-execution.md#g
 s#{{PALETTE_RULE_FILE}}#claude-agent-kit--palette.md#g
 s#{{DELEGATION_RULE_FILE}}#claude-agent-kit--parallel-work.md#g
 s#{{GIT_WORKFLOW_RULE_FILE}}#claude-agent-kit--git-workflow.md#g
-s#{{FRAMEWORK_RULE_FILE}}#claude-agent-kit--framework-conventions.md#g
 s#{{ASIDE_RULE_FILE}}#claude-agent-kit--aside.md#g
 s#{{DISPATCH_RULE_FILE}}#claude-agent-kit--dispatch.md#g
 s#{{ASIDE_PREFS_FILE}}#claude-agent-kit--aside-prefs.md#g

@@ -9,7 +9,7 @@ Records
 `RFC-0001 <rfc-0001-direction-autonomy-levels.rst>`_ Direction, autonomy and action levels
   Status: Accepted. Implementation: not-started.
   Depends: none.
-  Linked from: RFC-0002 (Depends), RFC-0003 (Depends), RFC-0005 (Depends).
+  Linked from: RFC-0002 (Depends), RFC-0003 (Depends), RFC-0005 (Depends), RFC-0006 (Depends), RFC-0006 (link).
   Superseded by: none.
 
 `RFC-0002 <rfc-0002-installer-and-kit-layout.rst>`_ Installer and kit layout
@@ -32,6 +32,12 @@ Records
 
 `RFC-0005 <rfc-0005-memory-discipline.rst>`_ Memory discipline
   Status: Accepted. Implementation: not-started.
+  Depends: RFC-0001.
+  Linked from: RFC-0006 (Related), RFC-0006 (link).
+  Superseded by: none.
+
+`RFC-0006 <rfc-0006-rules-in-articles.rst>`_ Rules in articles
+  Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
   Linked from: none.
   Superseded by: none.

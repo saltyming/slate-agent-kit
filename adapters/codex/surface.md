@@ -2,7 +2,7 @@
 # Codex Surface Rules
 
 The Codex-specific overlay. The shared Slate rules define the behavior
-(invariants and gates in `{{PRIMARY_MANUAL_FILE}}`); this file covers what
+(the articles in `{{PRIMARY_MANUAL_FILE}}`); this file covers what
 differs in Codex: how the rules load, goals, editing, and the Slate MCP servers.
 
 ## Loading Model
@@ -28,7 +28,7 @@ differs in Codex: how the rules load, goals, editing, and the Slate MCP servers.
 - Use the goal tools only for goals the user or system explicitly requested. Do
   not create a goal because a task is large.
 - Mark a goal `complete` only when the objective is achieved and no required
-  work remains (INV-VERIFY-2). Mark it `blocked` only under Codex's
+  work remains (§ 17). Mark it `blocked` only under Codex's
   blocked-threshold rule, not because the work is large or slow, or because a
   clarification would help.
 
@@ -39,7 +39,7 @@ differs in Codex: how the rules load, goals, editing, and the Slate MCP servers.
   a direct patch is enough. Formatters, lockfile generation, and other
   mechanical tools may write files when that is their normal purpose.
 - A small patch is a discipline about diff size, not about design horizon
-  (INV-QUALITY-1). The minimal diff that fixes the cause across the declared
+  (§ 9). The minimal diff that fixes the cause across the declared
   operating envelope is right. The smaller diff that hides today's symptom on
   today's machine is not. Codex sessions tend toward the latter, so check the
   envelope before calling a patch done.

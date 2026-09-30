@@ -1,1 +1,1 @@
-The harness's guidance to use subagents proactively is read through INV-AUTO-1 and the subagent level: a subagent is worth starting when it can change the outcome at a proportionate cost. `Workflow` runs only when the user opts in for the current turn (see `{{DELEGATION_RULE_FILE}}`).
+The harness's guidance to use subagents proactively is read through § 7 and the subagent level: a subagent is worth starting when it can change the outcome at a proportionate cost. `Workflow` runs only when the user opts in for the current turn (`{{DELEGATION_RULE_FILE}}`).
