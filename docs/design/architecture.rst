@@ -43,10 +43,18 @@ Sources
   Codex and Kimi, ``surface.md`` (how that harness loads the rules and reaches
   the servers).
 
+``shared/crates/``
+  The Rust libraries the servers share: agent-exec (one headless backend
+  process invocation, from binary lookup to a run record with normalized
+  token usage) and harness-log (session location and usage parsing for each
+  backend's own output).
+
 ``shared/mcp-servers/``
-  The Rust MCP servers: aside (consultation), dispatch (external execution),
-  palette (document reads, checks and writes), and the harness-log library
-  shared by aside and dispatch.
+  The Rust MCP servers: aside (consultation, on codex and claude), dispatch
+  (external execution, on codex, claude and opencode) and palette (document
+  reads, checks and writes). aside and dispatch run codex and claude through
+  agent-exec and differ in the parameters they pass; dispatch's opencode
+  runner is its own and reports through agent-exec's event types.
 
 ``shared/setup/``
   The Rust installer, ``slate-setup``.
@@ -119,10 +127,13 @@ Interfaces and dependencies
 ---------------------------
 
 - The installer's contract is ``spec/installer.rst`` and ``spec/prefs.rst``; the
-  palette server's is ``spec/palette-server.rst``; what each harness supports is
+  palette server's is ``spec/palette-server.rst``; the backend execution
+  layer's is ``spec/agent-exec.rst``; what each harness supports is
   `spec/support-matrix.rst <../spec/support-matrix.rst>`_.
-- The Rust crates use ``rmcp`` for MCP over stdio and pure-Rust dependencies
-  only, so every Linux target cross-builds with cargo-zigbuild.
+- The Rust crates use ``rmcp`` for MCP over stdio and cross-build for every
+  Linux target with cargo-zigbuild; the shared crates carry no C dependency,
+  while dispatch alone carries the bundled SQLite and the TLS stack of its
+  opencode client.
 
 References
 ----------

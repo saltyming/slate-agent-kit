@@ -2,13 +2,17 @@ RFC-0014: The parent-death guard is its own executable
 ======================================================
 
 :Status: Accepted
-:Implementation: not-started — the agent-guard executable in the agent-exec
+:Implementation: complete — the agent-guard executable in the agent-exec
   crate, its lookup and modes, the installer and release entries for it
-:Verification: none — 2026-09-30; not verified yet
+:Verification: runtime — 2026-09-30; guard tests on Linux and macOS and the
+  Job Object on Windows through slate CI run 36723126301, aside and dispatch
+  run on macOS with and without the executable; the release workflow's guard
+  steps ran locally for two targets only
 :Areas: MCP servers; aside; dispatch; installer
 :Authors: Claude Fable 5.1
 :Reviewers: Hamin Sung
-:Implementers: none yet
+:Implementers: Claude Fable 5.1 with Claude Sonnet and Claude Opus subagents
+  (2026-09-30)
 :Accepted: Hamin Sung (2026-09-30T10:58Z)
 :Date: 2026-09-30
 :Revised: none
