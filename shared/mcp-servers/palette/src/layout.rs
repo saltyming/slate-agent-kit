@@ -1,4 +1,4 @@
-//! `layout.rst`: the twelve document families and where each one lives.
+//! `layout.rst`: the thirteen document families and where each one lives.
 //!
 //! Owns parsing the layout document, inferring a layout from the documents
 //! themselves when the project has none, validating placements and resolving every
@@ -47,11 +47,13 @@ pub enum Family {
     Principles,
     /// Glossary.
     Glossary,
+    /// How to contribute: branches, commits, pull requests, verification.
+    Contributing,
 }
 
 impl Family {
     /// Every family in layout order.
-    pub const ALL: [Family; 12] = [
+    pub const ALL: [Family; 13] = [
         Family::Backlog,
         Family::Phase,
         Family::Deliverable,
@@ -64,6 +66,7 @@ impl Family {
         Family::Spec,
         Family::Principles,
         Family::Glossary,
+        Family::Contributing,
     ];
 
     /// The field name used in `layout.rst`.
@@ -81,6 +84,7 @@ impl Family {
             Family::Spec => "spec",
             Family::Principles => "principles",
             Family::Glossary => "glossary",
+            Family::Contributing => "contributing",
         }
     }
 
@@ -93,7 +97,11 @@ impl Family {
     pub fn is_single_file(self) -> bool {
         matches!(
             self,
-            Family::Backlog | Family::State | Family::Principles | Family::Glossary
+            Family::Backlog
+                | Family::State
+                | Family::Principles
+                | Family::Glossary
+                | Family::Contributing
         )
     }
 }
@@ -582,6 +590,8 @@ fn classify(doc: &Doc, root: &Path, path: &Path) -> Option<(Family, String)> {
         return Some((Family::Glossary, file));
     } else if title.starts_with("Principles — ") {
         return Some((Family::Principles, file));
+    } else if title.starts_with("Contributing — ") {
+        return Some((Family::Contributing, file));
     } else if title.starts_with("Backlog — ") {
         return Some((Family::Backlog, file));
     } else if title.starts_with("State — ") {
@@ -617,13 +627,13 @@ mod tests {
         )))
     }
 
-    const ALL_INTERNAL: &str = ":backlog: internal\n:phase: internal\n:deliverable: internal\n:state: internal\n:rfc: internal\n:adr: internal\n:changeset: internal\n:staging: internal\n:design: internal\n:spec: internal\n:principles: internal\n:glossary: internal\n:checker: none\n";
+    const ALL_INTERNAL: &str = ":backlog: internal\n:phase: internal\n:deliverable: internal\n:state: internal\n:rfc: internal\n:adr: internal\n:changeset: internal\n:staging: internal\n:design: internal\n:spec: internal\n:principles: internal\n:glossary: internal\n:contributing: internal\n:checker: none\n";
 
     #[test]
     fn complete_layout_has_no_problems() {
         let l = layout(ALL_INTERNAL);
         assert!(l.problems.is_empty(), "{:?}", l.problems);
-        assert_eq!(l.placements.len(), 12);
+        assert_eq!(l.placements.len(), 13);
         assert_eq!(l.checker.as_ref().map(|c| c.0.as_str()), Some("none"));
     }
 

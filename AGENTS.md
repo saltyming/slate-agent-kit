@@ -52,11 +52,10 @@ user's configuration. Run `sh tooling/validate.sh` whenever `shared/`,
 
 ## Commit & Pull Request Guidelines
 
-History follows Conventional Commits, for example `feat(rules): ...`,
-`fix(tooling): ...`, and `chore(release): ...`. Keep commits scoped to the
-source change plus any required render output. Use `--no-gpg-sign` for commits.
-PRs should summarize source files changed, list verification commands, and note
-whether kit submodule pins or release artifacts are affected.
+`docs/contributing.rst` is the contract for branches, commit messages, pull
+request bodies and the verification a change runs; it is the palette
+`contributing` family, so the palette lint checks it and the kit's git rule
+follows it.
 
 ## Security & Configuration Tips
 

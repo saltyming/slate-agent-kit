@@ -171,6 +171,7 @@ fn family_of(role: Role) -> Option<Family> {
         Role::Spec => Family::Spec,
         Role::Principles => Family::Principles,
         Role::Glossary => Family::Glossary,
+        Role::Contributing => Family::Contributing,
         Role::Staging(_) => Family::Staging,
         Role::Layout | Role::Index(_) => return None,
     })
@@ -226,9 +227,11 @@ fn move_family(s: &mut Session<'_, '_>, fam: Family, placement: Placement) -> Re
             continue;
         }
         let new = match fam {
-            Family::Backlog | Family::State | Family::Principles | Family::Glossary => {
-                Some(new_loc.file_of(fam))
-            }
+            Family::Backlog
+            | Family::State
+            | Family::Principles
+            | Family::Glossary
+            | Family::Contributing => Some(new_loc.file_of(fam)),
             Family::Phase => re_root(&f.path, &old_loc.phase_root(), &new_loc.phase_root()),
             Family::Deliverable => re_root(
                 &f.path,

@@ -72,9 +72,11 @@ pub fn layout(ctx: &Ctx, p: LayoutParams) -> Res<String> {
     let mut families = serde_json::Map::new();
     for fam in Family::ALL {
         let path = match fam {
-            Family::Backlog | Family::State | Family::Principles | Family::Glossary => {
-                loc.file_of(fam)
-            }
+            Family::Backlog
+            | Family::State
+            | Family::Principles
+            | Family::Glossary
+            | Family::Contributing => loc.file_of(fam),
             Family::Phase => loc.phase_root().join("phase-<N>").join("phase.rst"),
             Family::Deliverable => loc
                 .deliverable_root()

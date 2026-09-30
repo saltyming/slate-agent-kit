@@ -45,6 +45,8 @@ pub enum Role {
     Principles,
     /// The glossary.
     Glossary,
+    /// The contributing document.
+    Contributing,
     /// A generated staging document mirroring a design or spec document.
     Staging(Family),
     /// A generated `index.rst` of a record or changeset folder.
@@ -66,6 +68,7 @@ impl Role {
             Role::Spec => "spec",
             Role::Principles => "principles",
             Role::Glossary => "glossary",
+            Role::Contributing => "contributing",
             Role::Changeset | Role::Staging(_) | Role::Index(_) => return None,
         })
     }
@@ -85,6 +88,7 @@ impl Role {
             Family::Spec => Role::Spec,
             Family::Principles => Role::Principles,
             Family::Glossary => Role::Glossary,
+            Family::Contributing => Role::Contributing,
         }
     }
 
@@ -229,6 +233,7 @@ impl Snapshot {
             (Family::State, Role::State),
             (Family::Principles, Role::Principles),
             (Family::Glossary, Role::Glossary),
+            (Family::Contributing, Role::Contributing),
         ] {
             let p = self.loc.file_of(fam);
             self.add(src, p, role)?;
@@ -311,7 +316,7 @@ mod tests {
     use crate::vfs::DiskSource;
     use std::fs;
 
-    const LAYOUT: &str = "Layout — X\n==========\n\nFamilies\n--------\n\n:backlog: internal\n:phase: internal\n:deliverable: internal\n:state: internal\n:rfc: docs/rfc\n:adr: internal\n:changeset: internal\n:staging: internal\n:design: internal\n:spec: internal\n:principles: internal\n:glossary: internal\n:checker: none\n";
+    const LAYOUT: &str = "Layout — X\n==========\n\nFamilies\n--------\n\n:backlog: internal\n:phase: internal\n:deliverable: internal\n:state: internal\n:rfc: docs/rfc\n:adr: internal\n:changeset: internal\n:staging: internal\n:design: internal\n:spec: internal\n:principles: internal\n:glossary: internal\n:contributing: internal\n:checker: none\n";
 
     #[test]
     fn discovers_documents_by_family() {

@@ -121,6 +121,12 @@ state
   questions blocking the active phase, and discrepancies. It records no
   progress and gives no instructions to a later session.
 
+contributing
+  The maintained document that tells a person or an agent how to contribute to
+  the project: branches, commit format, pull request format, and the
+  verification a change runs. The kit's git rule follows it where the prefs
+  say ``repository``.
+
 RFC
   A record of a consequential decision (module boundaries, public contracts,
   project-wide policy) together with the evidence it relies on.

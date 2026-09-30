@@ -16,4 +16,5 @@ Families
 :spec: docs/spec
 :principles: docs/principles.rst
 :glossary: docs/glossary.rst
+:contributing: docs/contributing.rst
 :checker: none

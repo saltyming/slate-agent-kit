@@ -12,7 +12,8 @@ RFC-0003: palette document system
 :Implementers: Claude Opus 5.5 (2026-09-29 to 2026-09-30)
 :Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)
 :Date: 2026-09-29
-:Revised: none
+:Revised: 2026-09-30 — a thirteenth family, contributing, for how people and
+  agents contribute
 :Depends: RFC-0001 (turn mode; a document's next action is a proposal)
 :Supersedes: none
 :Related: none
@@ -27,7 +28,9 @@ Summary
 palette grows from a planning folder into a documentation system: backlog,
 phase, deliverable and state for work; RFC and ADR for decisions with their
 evidence; changesets and staging for accepted but unimplemented contracts;
-design, spec, principles and glossary for maintained truth. Each family holds
+design, spec, principles and glossary for maintained truth, and contributing
+for how people and agents contribute (branches, commits, pull requests,
+verification). Each family holds
 one kind of fact, each project chooses where each family lives, and no family
 records development stages.
 

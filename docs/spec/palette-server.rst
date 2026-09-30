@@ -39,7 +39,8 @@ Families and locations
 ~~~~~~~~~~~~~~~~~~~~~~
 
 ``layout.rst`` places each family (backlog, phase, deliverable, state, rfc,
-adr, changeset, staging, design, spec, principles, glossary) ``internal`` or at
+adr, changeset, staging, design, spec, principles, glossary, contributing)
+``internal`` or at
 a path relative to the project. ``internal`` resolves to:
 
 Without a layout, the families are inferred from the documents: every ``.rst``
@@ -64,8 +65,8 @@ family with no documents is internal. This is how a checkout without
 A project path is used as given: ``<path>/rfc-0001-<slug>.rst``,
 ``<path>/adr-0001-<slug>.rst``, ``<path>/rfc-0001.rst`` (changeset),
 ``<path>/design/<topic>.rst`` and ``<path>/spec/<topic>.rst`` (staging),
-``<path>/<topic>.rst`` (design, spec), and a single file for principles and
-glossary. Every file name is lowercase ASCII kebab-case. Each record and
+``<path>/<topic>.rst`` (design, spec), and a single file for principles,
+glossary and contributing. Every file name is lowercase ASCII kebab-case. Each record and
 changeset folder has a generated ``index.rst``.
 
 Templates as schema

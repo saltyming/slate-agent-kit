@@ -92,7 +92,7 @@ impl PaletteServer {
     }
 
     #[tool(
-        description = "Returns where each of the twelve document families lives in one project: its placement (`internal` or a project path) and its resolved absolute path, plus the `checker` setting and any problems in layout.rst. Input: `project`. Changes nothing. Refuses a project without _palette/layout.rst (`no_layout`).",
+        description = "Returns where each of the thirteen document families lives in one project: its placement (`internal` or a project path) and its resolved absolute path, plus the `checker` setting and any problems in layout.rst. Input: `project`. Changes nothing. Refuses a project without _palette/layout.rst (`no_layout`).",
         annotations(read_only_hint = true)
     )]
     async fn palette_layout(

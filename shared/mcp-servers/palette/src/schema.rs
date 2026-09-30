@@ -29,6 +29,10 @@ pub const TEMPLATES: &[(&str, &str)] = &[
         include_str!("../../../workflows/palette/templates/changeset.rst"),
     ),
     (
+        "contributing",
+        include_str!("../../../workflows/palette/templates/contributing.rst"),
+    ),
+    (
         "deliverable",
         include_str!("../../../workflows/palette/templates/deliverable.rst"),
     ),
@@ -524,6 +528,7 @@ mod tests {
         for name in [
             "adr",
             "backlog",
+            "contributing",
             "deliverable",
             "design",
             "glossary",
@@ -625,9 +630,9 @@ mod tests {
     }
 
     #[test]
-    fn layout_lists_twelve_families_and_checker() {
+    fn layout_lists_thirteen_families_and_checker() {
         let s = schemas().get("layout").expect("layout");
-        assert_eq!(s.sections[0].fields.len(), 13);
+        assert_eq!(s.sections[0].fields.len(), 14);
     }
 
     #[test]
