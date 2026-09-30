@@ -92,7 +92,9 @@ Cost
 1-hour rate when the table states them (an OpenAI cache write without an
 explicit rate is priced as input), ``output`` at the output rate. Reasoning
 tokens are inside ``output`` and are not priced again. A ``None`` bucket
-contributes nothing and marks the record ``cost_partial: true``.
+that the run's usage source reports contributes nothing and marks the record
+``cost_partial: true``; a bucket the source never reports (for the codex
+sources, the 1-hour cache write) counts as zero and marks nothing.
 
 Contract
 --------
@@ -105,10 +107,14 @@ Tools
   ``documents``, or both; default both where available), ``repeats``
   (default 3), ``output`` (``scratchpad``, ``harness`` or a project path,
   D-25), ``kit`` (the kit version and checkout to install for ``kit`` cells),
-  optional ``tasks`` (a subset by name), ``dry_run``. Starts the grid in the
-  background and returns its identifier and the JSONL path. A grid whose
-  JSONL already exists resumes: a run whose (cell, task, variant, repeat) is
-  present is skipped.
+  optional ``tasks`` (a subset by name), optional ``grid_id``, ``dry_run``.
+  Starts the grid in the background and returns its identifier and the JSONL
+  path. Without ``grid_id`` the identifier is the task set's directory name
+  and a hash of the cells, task set, variants, task subset, kit and output;
+  ``repeats`` is outside the hash, so raising it extends the same grid. A
+  grid whose JSONL already exists resumes: a run whose (cell, task, variant,
+  repeat) is present is skipped, a timed-out run included; a run recorded
+  as cancelled is run again.
 
 ``bench_status``
   Input: ``grid``. Output: runs done, running, skipped and remaining per
