@@ -6,7 +6,7 @@ RFC-0008: Shared backend execution layer
   with usage parsers, aside and dispatch rebuilt on both, copilot removed from
   servers, installer, prefs and rules
 :Verification: runtime — 2026-09-30; cargo test --workspace on Linux, macOS and
-  Windows (slate CI run 36723126301), aside and dispatch run end to end on macOS
+  Windows (slate CI run 36726523883), aside and dispatch run end to end on macOS
   against a stub backend, with and without agent-guard, real codex, claude and
   opencode CLIs not run
 :Areas: MCP servers; aside; dispatch; installer; rules; prefs

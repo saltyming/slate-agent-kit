@@ -5,7 +5,7 @@ RFC-0014: The parent-death guard is its own executable
 :Implementation: complete — the agent-guard executable in the agent-exec
   crate, its lookup and modes, the installer and release entries for it
 :Verification: runtime — 2026-09-30; guard tests on Linux and macOS and the
-  Job Object on Windows through slate CI run 36723126301, aside and dispatch
+  Job Object on Windows through slate CI run 36726523883, aside and dispatch
   run on macOS with and without the executable; the release workflow's guard
   steps ran locally for two targets only
 :Areas: MCP servers; aside; dispatch; installer
