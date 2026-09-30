@@ -116,7 +116,7 @@ fn check_fields(
         let Some(name) = spec.literal_name() else {
             continue;
         };
-        if role == Role::Layout && !matches!(name, "checker" | "amends-until") {
+        if role == Role::Layout && name != "checker" {
             continue;
         }
         let Some(pos) = actual.iter().position(|a| a.name == name) else {

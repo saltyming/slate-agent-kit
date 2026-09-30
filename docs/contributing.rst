@@ -51,3 +51,11 @@ Before a change is proposed::
 
 CI repeats the Rust steps on Linux, macOS and Windows; a change is not
 complete until that run is green.
+
+Records
+-------
+
+:Amends: none
+
+A record that changes an accepted contract supersedes the older record in
+``Supersedes``, wholly or ``in part``; no record amends another.

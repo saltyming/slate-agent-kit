@@ -114,9 +114,12 @@ Records and relations
   ``Related``, under the same age rule as every other relation. An RFC may
   amend an RFC or an ADR; an ADR may amend only an ADR, since an ADR decides
   within an RFC's contract and cannot change it. No template lists the field
-  and no tool writes it. The layout setting ``:amends-until: none |
-  <YYYY-MM-DD>`` bounds it: a record may carry ``Amends`` only when its
-  ``Date`` is on or before that date; ``none`` admits no record.
+  and no tool writes it. The contributing document bounds it: its
+  ``Records`` section states ``:Amends: none`` or ``:Amends: until
+  <YYYY-MM-DD>``, and a record may carry ``Amends`` only when its ``Date`` is
+  on or before that date; ``none``, a missing section or no contributing
+  document admits no record. Being a document, the cutoff is checked the same
+  way with and without a layout.
 - ``Accepted`` is ``none``, ``<who>`` or ``<who> (<YYYY-MM-DDTHH:MMZ>)``: the
   person who accepted the record and, expected, when, in UTC. The form
   without the parenthetical is a warning.
@@ -175,8 +178,8 @@ line and a message.
   ``Related`` (warning); a record named in a whole ``Supersedes`` entry whose
   status is not ``Superseded``, or a record whose status is ``Superseded``
   while no newer record names it in a whole ``Supersedes`` entry (error);
-  ``Amends`` on a record whose ``Date`` is later than the layout's
-  ``amends-until``, or when that setting is ``none`` (error).
+  ``Amends`` on a record whose ``Date`` is later than the contributing
+  document's cutoff, or when that document admits none (error).
 
 ``P006`` Changes (error)
   A ``Changes`` target document or section that neither exists nor is created
@@ -208,9 +211,8 @@ line and a message.
 
 ``P012`` Layout (error)
   A family missing from ``layout.rst``, an unknown family, a path outside the
-  project, or a project path inside ``_palette/``; a missing setting, or
-  ``amends-until`` that is neither ``none`` nor an ISO date. ``checker`` and
-  ``amends-until`` are settings, not families.
+  project, or a project path inside ``_palette/``; a missing ``checker``.
+  ``checker`` is a setting, not a family.
 
 ``P013`` Backlog (error)
   A duplicate item id; ``in-phase-<N>`` without a phase ``<N>`` file; a
@@ -280,8 +282,8 @@ Tools:
 
 ``palette_init``
   Creates ``_palette/``, ``_palette/.gitignore`` (``*``), ``layout.rst`` from the
-  given placements with ``amends-until`` set to ``none``, and empty backlog and
-  state documents. Fails with ``already_initialized`` when a layout exists.
+  given placements, and empty backlog and state documents. Fails with
+  ``already_initialized`` when a layout exists.
 
 ``palette_layout_set``
   Moves one family to a new placement, moving its files and rewriting every

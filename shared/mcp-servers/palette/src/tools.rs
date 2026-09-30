@@ -103,7 +103,6 @@ pub fn layout(ctx: &Ctx, p: LayoutParams) -> Res<String> {
         "project": snap.root.display().to_string(),
         "families": families,
         "checker": snap.layout.checker.as_ref().map(|c| c.0.clone()),
-        "amends_until": snap.layout.amends_until.as_ref().map(|c| c.0.clone()),
         "problems": problems,
     }))
     .map_err(|e| PalError::invalid(e.to_string()))

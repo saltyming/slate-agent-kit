@@ -23,3 +23,11 @@ Verification
 ------------
 
 ``make check`` passes.
+
+Records
+-------
+
+:Amends: none
+
+A record names an older record it replaces in ``Supersedes``, wholly or
+``in part``; no record amends another.

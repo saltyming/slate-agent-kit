@@ -36,7 +36,7 @@ fn init_creates_a_lint_clean_project() {
     assert!(
         layout.contains(":rfc: docs/rfc\n")
             && layout.contains(":glossary: docs/glossary.rst\n")
-            && layout.ends_with(":checker: make check\n:amends-until: none\n")
+            && layout.ends_with(":checker: make check\n")
     );
     assert_eq!(
         p.read("_palette/backlog.rst"),
@@ -678,9 +678,9 @@ fn record_create_with_a_partial_supersession() {
 fn amended_by_is_computed_for_a_legacy_amends_field() {
     let p = Proj::valid();
     p.replace(
-        "_palette/layout.rst",
-        ":amends-until: none",
-        ":amends-until: 2026-12-31",
+        "docs/contributing.rst",
+        ":Amends: none",
+        ":Amends: until 2026-12-31",
     );
     p.replace(
         "docs/rfc/rfc-0003-gamma.rst",

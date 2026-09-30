@@ -2,7 +2,7 @@
 //!
 //! P005: links to newer records, cycles, redundant `Depends` entries, a target in both
 //! `Depends` and `Related`, whole `Supersedes` targets that are not `Superseded`, and
-//! `Amends` outside what the layout admits.
+//! `Amends` outside what the contributing document admits.
 //! P006: `Changes` targets that neither exist nor are created by the record's changeset.
 
 use std::collections::BTreeSet;
@@ -11,7 +11,7 @@ use super::patterns::DIRECT_USE_KEYWORD;
 use super::{Cx, Finding};
 use crate::changeset::{Changeset, EditKind, resolve_section};
 use crate::layout::split_logical;
-use crate::records::{RecId, RecordKind, Records};
+use crate::records::{AmendsCutoff, RecId, RecordKind, Records};
 use crate::util::is_iso_date;
 
 pub(super) fn check(cx: &Cx, out: &mut Vec<Finding>) {
@@ -166,8 +166,9 @@ fn relations(cx: &Cx, out: &mut Vec<Finding>) {
     }
 }
 
-/// `Amends` is admitted only up to the layout's `amends-until`, and an ADR amends
-/// only an ADR (it decides within an RFC's contract and cannot change it).
+/// `Amends` is admitted only up to the cutoff the contributing document states, and
+/// an ADR amends only an ADR (it decides within an RFC's contract and cannot change
+/// it).
 fn amends(cx: &Cx, r: &crate::records::Record, out: &mut Vec<Finding>) {
     if r.amends.is_empty() {
         return;
@@ -188,25 +189,25 @@ fn amends(cx: &Cx, r: &crate::records::Record, out: &mut Vec<Finding>) {
             ));
         }
     }
-    match cx.snap.layout.amends_until.as_ref().map(|(v, _)| v.as_str()) {
-        Some(until) if is_iso_date(until) => {
+    match crate::records::amends_cutoff(cx.snap) {
+        AmendsCutoff::Until(until) => {
             if let Some(date) = r.date.as_deref()
                 && is_iso_date(date)
-                && date > until
+                && date > until.as_str()
             {
                 out.push(Finding::error(
                     "P005",
                     f,
                     line,
-                    format!("Amends is admitted on records dated up to {until} (layout `amends-until`); this record is dated {date}. Write the relation as Supersedes or Related"),
+                    format!("Amends is admitted on records dated up to {until} (the contributing document's Records section); this record is dated {date}. Write the relation as Supersedes or Related"),
                 ));
             }
         }
-        _ => out.push(Finding::error(
+        AmendsCutoff::None => out.push(Finding::error(
             "P005",
             f,
             line,
-            "Amends is a relation of older records; the layout's `amends-until` admits none. Write the relation as Supersedes or Related, or set `amends-until` to the last date that may carry it",
+            "Amends is a relation of older records and the contributing document admits none (its Records section says `:Amends: none` or is absent). Write the relation as Supersedes or Related, or set `:Amends: until <date>` there",
         )),
     }
 }

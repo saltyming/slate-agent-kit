@@ -45,7 +45,7 @@ Records
 `RFC-0007 <rfc-0007-checking-without-the-layout.rst>`_ Checking shared documents without the layout
   Status: Accepted. Implementation: complete.
   Depends: RFC-0004.
-  Linked from: none.
+  Linked from: RFC-0010 (Depends), RFC-0010 (link).
   Superseded by: none.
 
 `RFC-0008 <rfc-0008-shared-backend-execution.rst>`_ Shared backend execution layer
@@ -57,5 +57,11 @@ Records
 `RFC-0009 <rfc-0009-record-header-rules.rst>`_ Record header rules and several active phases
   Status: Accepted. Implementation: complete.
   Depends: RFC-0003, RFC-0004.
+  Linked from: RFC-0010 (Depends), RFC-0010 (Supersedes), RFC-0010 (link).
+  Superseded by: RFC-0010 (in part: the layout setting ``amends-until``).
+
+`RFC-0010 <rfc-0010-amends-cutoff-in-contributing.rst>`_ Amends cutoff in the contributing document
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0009, RFC-0007.
   Linked from: none.
   Superseded by: none.

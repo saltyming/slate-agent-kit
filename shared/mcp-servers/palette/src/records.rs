@@ -209,6 +209,46 @@ pub struct Records {
     by_id: BTreeMap<RecId, usize>,
 }
 
+/// Until when a record may carry `Amends`, read from the contributing document's
+/// `Records` section (`:Amends: none | until <YYYY-MM-DD>`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AmendsCutoff {
+    /// No contributing document, no `Records` section, or `none`: no record may
+    /// carry `Amends`.
+    None,
+    /// Records dated on or before this date may carry it.
+    Until(String),
+}
+
+/// Reads the cutoff from the contributing document of `snap`.
+pub fn amends_cutoff(snap: &Snapshot) -> AmendsCutoff {
+    let Some(doc) = snap
+        .single(Family::Contributing)
+        .and_then(|f| f.doc.as_ref())
+    else {
+        return AmendsCutoff::None;
+    };
+    let Some((idx, _)) = doc
+        .headings_at(2)
+        .find(|(_, h)| h.title.trim() == "Records")
+    else {
+        return AmendsCutoff::None;
+    };
+    let Some(field) = doc
+        .body_fields(idx)
+        .into_iter()
+        .find(|f| f.name == "Amends")
+    else {
+        return AmendsCutoff::None;
+    };
+    match field.value.trim().strip_prefix("until ") {
+        Some(date) if crate::util::is_iso_date(date.trim()) => {
+            AmendsCutoff::Until(date.trim().to_string())
+        }
+        _ => AmendsCutoff::None,
+    }
+}
+
 /// The marker that makes a `Supersedes` entry partial: `RFC-0104 (in part: ...)`.
 pub const PARTIAL_MARKER: &str = "in part:";
 

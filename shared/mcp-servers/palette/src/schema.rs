@@ -677,9 +677,9 @@ mod tests {
     }
 
     #[test]
-    fn layout_lists_thirteen_families_and_two_settings() {
+    fn layout_lists_thirteen_families_and_checker() {
         let s = schemas().get("layout").expect("layout");
-        assert_eq!(s.sections[0].fields.len(), 15);
+        assert_eq!(s.sections[0].fields.len(), 14);
     }
 
     #[test]

@@ -995,7 +995,7 @@ fn p015_stray_files() {
     passing("P015", |_| {});
 }
 
-// ── RFC-0009: partial supersession, Amends, Accepted, amends-until ────────
+// ── RFC-0009 and RFC-0010: partial supersession, Amends, Accepted ────────
 
 #[test]
 fn p005_partial_supersession_leaves_the_older_record_accepted() {
@@ -1048,9 +1048,9 @@ fn p005_partial_supersession_leaves_the_older_record_accepted() {
 fn with_amends(p: &Proj, until: &str) {
     if until != "none" {
         p.replace(
-            "_palette/layout.rst",
-            ":amends-until: none",
-            &format!(":amends-until: {until}"),
+            "docs/contributing.rst",
+            ":Amends: none",
+            &format!(":Amends: until {until}"),
         );
     }
     p.replace(
@@ -1071,14 +1071,17 @@ fn p005_amends_is_admitted_up_to_the_layout_date() {
         "admitted on records dated up to 2026-03-09",
         |p| with_amends(p, "2026-03-09"),
     );
-    failing("P005", "rfc-0003", "`amends-until` admits none", |p| {
-        with_amends(p, "none")
-    });
+    failing(
+        "P005",
+        "rfc-0003",
+        "the contributing document admits none",
+        |p| with_amends(p, "none"),
+    );
     failing("P005", "adr-0001", "an ADR amends only an ADR", |p| {
         p.replace(
-            "_palette/layout.rst",
-            ":amends-until: none",
-            ":amends-until: 2026-12-31",
+            "docs/contributing.rst",
+            ":Amends: none",
+            ":Amends: until 2026-12-31",
         );
         p.replace(
             "docs/adr/adr-0001-naming.rst",
@@ -1089,9 +1092,9 @@ fn p005_amends_is_admitted_up_to_the_layout_date() {
     // Amends follows the age rule like every relation.
     failing("P005", "rfc-0001", "created later", |p| {
         p.replace(
-            "_palette/layout.rst",
-            ":amends-until: none",
-            ":amends-until: 2026-12-31",
+            "docs/contributing.rst",
+            ":Amends: none",
+            ":Amends: until 2026-12-31",
         );
         p.replace(
             "docs/rfc/rfc-0001-alpha.rst",
@@ -1105,9 +1108,9 @@ fn p005_amends_is_admitted_up_to_the_layout_date() {
 fn p002_amends_sits_after_related_with_a_relation_value() {
     failing("P002", "rfc-0003", "belongs right after `:Related:`", |p| {
         p.replace(
-            "_palette/layout.rst",
-            ":amends-until: none",
-            ":amends-until: 2026-12-31",
+            "docs/contributing.rst",
+            ":Amends: none",
+            ":Amends: until 2026-12-31",
         );
         p.replace(
             "docs/rfc/rfc-0003-gamma.rst",
@@ -1117,9 +1120,9 @@ fn p002_amends_sits_after_related_with_a_relation_value() {
     });
     failing("P002", "rfc-0003", "`:Amends:` has a value outside", |p| {
         p.replace(
-            "_palette/layout.rst",
-            ":amends-until: none",
-            ":amends-until: 2026-12-31",
+            "docs/contributing.rst",
+            ":Amends: none",
+            ":Amends: until 2026-12-31",
         );
         p.replace(
             "docs/rfc/rfc-0003-gamma.rst",
@@ -1133,9 +1136,9 @@ fn p002_amends_sits_after_related_with_a_relation_value() {
 fn p002_amends_needs_at_least_one_entry() {
     failing("P002", "rfc-0003", "has no entry", |p| {
         p.replace(
-            "_palette/layout.rst",
-            ":amends-until: none",
-            ":amends-until: 2026-12-31",
+            "docs/contributing.rst",
+            ":Amends: none",
+            ":Amends: until 2026-12-31",
         );
         p.replace(
             "docs/rfc/rfc-0003-gamma.rst",
@@ -1163,17 +1166,68 @@ fn p005_repeated_supersedes_targets_are_all_seen() {
 }
 
 #[test]
-fn p012_amends_until_is_required_and_a_date_or_none() {
-    failing("P012", "layout.rst", "`amends-until` is missing", |p| {
-        p.replace("_palette/layout.rst", ":amends-until: none\n", "");
-    });
-    failing("P012", "layout.rst", "`none` or a date", |p| {
+fn p002_contributing_records_section_and_amends_value() {
+    failing(
+        "P002",
+        "contributing.rst",
+        "missing required section `Records`",
+        |p| {
+            p.mutate("docs/contributing.rst", |s| {
+                s[..s.find("\nRecords\n").expect("section")].to_string() + "\n"
+            });
+        },
+    );
+    failing(
+        "P002",
+        "contributing.rst",
+        "`:Amends:` has a value outside",
+        |p| {
+            p.replace("docs/contributing.rst", ":Amends: none", ":Amends: soon");
+        },
+    );
+    failing("P002", "contributing.rst", "is not a calendar date", |p| {
         p.replace(
-            "_palette/layout.rst",
-            ":amends-until: none",
-            ":amends-until: soon",
+            "docs/contributing.rst",
+            ":Amends: none",
+            ":Amends: until 2026-02-30",
         );
     });
+}
+
+#[test]
+fn amends_cutoff_is_read_without_a_layout() {
+    // The cutoff lives in the committed contributing document, so a checkout
+    // without `_palette/` checks it the same way.
+    let p = Proj::valid();
+    p.replace(
+        "docs/contributing.rst",
+        ":Amends: none",
+        ":Amends: until 2026-03-10",
+    );
+    p.replace(
+        "docs/rfc/rfc-0003-gamma.rst",
+        ":Related: none\n",
+        ":Related: none\n:Amends: RFC-0001 (the open operation)\n",
+    );
+    std::fs::remove_dir_all(p.path("_palette")).expect("drop the layout");
+    let f = p.lint();
+    assert!(f.iter().all(|x| x.rule != "P005"), "{}", show(&f));
+    p.replace(
+        "docs/contributing.rst",
+        ":Amends: until 2026-03-10",
+        ":Amends: until 2026-03-09",
+    );
+    let f = p.lint();
+    assert!(
+        has(
+            &f,
+            "P005",
+            "rfc-0003",
+            "admitted on records dated up to 2026-03-09"
+        ),
+        "{}",
+        show(&f)
+    );
 }
 
 #[test]

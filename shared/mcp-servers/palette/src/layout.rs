@@ -155,10 +155,6 @@ pub struct Layout {
     pub placements: BTreeMap<Family, Placed>,
     /// The `checker` setting: a project command or `none`.
     pub checker: Option<(String, usize)>,
-    /// The `amends-until` setting: `none` or the last `Date` on which a record may
-    /// carry `Amends`. `None` when the layout lacks the line (a P012 problem) or is
-    /// inferred.
-    pub amends_until: Option<(String, usize)>,
     /// Problems for P012.
     pub problems: Vec<LayoutProblem>,
 }
@@ -221,7 +217,6 @@ impl Layout {
         let doc = Doc::parse(src.clone());
         let mut placements: BTreeMap<Family, Placed> = BTreeMap::new();
         let mut checker = None;
-        let mut amends_until = None;
         let mut problems = Vec::new();
         let mut seen_paths: BTreeMap<String, Family> = BTreeMap::new();
         for f in doc.fields(0, doc.src.len()) {
@@ -229,20 +224,6 @@ impl Layout {
             let value = f.value.trim().trim_matches('`').trim();
             if name == "checker" {
                 checker = Some((value.to_string(), f.start));
-                continue;
-            }
-            if name == "amends-until" {
-                if value != "none" && !crate::util::is_iso_date(value) {
-                    problems.push(LayoutProblem {
-                        line: f.start,
-                        message: format!(
-                            "`amends-until` is `{value}`; it is `none` or a date `YYYY-MM-DD`"
-                        ),
-                        rel: None,
-                        family: None,
-                    });
-                }
-                amends_until = Some((value.to_string(), f.start));
                 continue;
             }
             let Some(fam) = Family::from_key(name) else {
@@ -338,18 +319,9 @@ impl Layout {
                 family: None,
             });
         }
-        if amends_until.is_none() {
-            problems.push(LayoutProblem {
-                line: 0,
-                message: "setting `amends-until` is missing; add `:amends-until: none` (no record may carry Amends) or the last date a record may carry it".to_string(),
-                rel: None,
-                family: None,
-            });
-        }
         Layout {
             placements,
             checker,
-            amends_until,
             problems,
         }
     }
@@ -414,7 +386,6 @@ impl Layout {
         Ok(Layout {
             placements,
             checker: None,
-            amends_until: None,
             problems,
         })
     }
@@ -664,7 +635,7 @@ mod tests {
         )))
     }
 
-    const ALL_INTERNAL: &str = ":backlog: internal\n:phase: internal\n:deliverable: internal\n:state: internal\n:rfc: internal\n:adr: internal\n:changeset: internal\n:staging: internal\n:design: internal\n:spec: internal\n:principles: internal\n:glossary: internal\n:contributing: internal\n:checker: none\n:amends-until: none\n";
+    const ALL_INTERNAL: &str = ":backlog: internal\n:phase: internal\n:deliverable: internal\n:state: internal\n:rfc: internal\n:adr: internal\n:changeset: internal\n:staging: internal\n:design: internal\n:spec: internal\n:principles: internal\n:glossary: internal\n:contributing: internal\n:checker: none\n";
 
     #[test]
     fn complete_layout_has_no_problems() {
