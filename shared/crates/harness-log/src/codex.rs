@@ -1,5 +1,11 @@
 //! Codex rollout discovery.
 //!
+//! Entry points: [`codex_home`] and [`collect`] list rollouts;
+//! [`read_session_meta`] identifies one; [`newest_interactive_rollout`] finds
+//! the user's own session for a directory; [`locate_by_session_id`] and
+//! [`locate_by_marker`] find the rollout of a known or marked headless run;
+//! [`message_text`] reads a conversational message in either schema.
+//!
 //! Codex writes one JSONL "rollout" per session at
 //! `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<session-uuid>.jsonl`,
 //! appended live while the session runs. The first line is a `session_meta`
@@ -38,6 +44,17 @@ use serde_json::Value;
 /// outnumber interactive sessions, so this is much larger than the fresh-run
 /// scan caps used by dispatch.
 const INTERACTIVE_SCAN_CAP: usize = 500;
+
+/// How many newest rollouts `locate_by_marker` opens before giving up: a
+/// marked run is looked up right after its own spawn, so it is among the
+/// newest files.
+const MARKER_SCAN_CAP: usize = 60;
+
+/// How many opening lines of a rollout `rollout_has_marker` scans — the prompt
+/// is recorded as a user message among the first events (observed at lines
+/// 4–10 across codex 0.142–0.153; harness-injected context precedes it as a
+/// handful of single-line records).
+const MARKER_SCAN_LINES: usize = 64;
 
 /// Identity fields from a rollout's opening `session_meta` event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +232,91 @@ pub fn newest_interactive_rollout(root: &Path, cwd: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Locate a rollout by its codex session id. The session id is the trailing
+/// UUID of the rollout filename (`rollout-<ts>-<sid>.jsonl`), so this is a
+/// cheap, exact filename match with no scan cap — used to resume a session
+/// whose id is already known and as a deterministic re-locate.
+pub fn locate_by_session_id(sid: &str) -> Option<PathBuf> {
+    locate_by_session_id_in(&codex_home().join("sessions"), sid)
+}
+
+fn locate_by_session_id_in(root: &Path, sid: &str) -> Option<PathBuf> {
+    if sid.is_empty() {
+        return None;
+    }
+    let mut files = Vec::new();
+    collect(root, &mut files, 0);
+    let suffix = format!("-{sid}.jsonl");
+    files.into_iter().map(|(p, _)| p).find(|p| {
+        p.file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n.ends_with(&suffix))
+            .unwrap_or(false)
+    })
+}
+
+/// Find the rollout a headless run produced by the marker its caller embedded
+/// in the prompt: the newest rollout matching `working_dir` whose opening
+/// events include a user message containing `marker`. Positive identity —
+/// survives a concurrent same-cwd codex run that a snapshot or time gate alone
+/// could not distinguish. Returns the path and the session id.
+pub fn locate_by_marker(working_dir: &Path, marker: &str) -> Option<(PathBuf, String)> {
+    locate_by_marker_in(&codex_home().join("sessions"), working_dir, marker)
+}
+
+fn locate_by_marker_in(root: &Path, working_dir: &Path, marker: &str) -> Option<(PathBuf, String)> {
+    if marker.is_empty() {
+        return None;
+    }
+    let mut files = Vec::new();
+    collect(root, &mut files, 0);
+    files.sort_by_key(|f| std::cmp::Reverse(f.1)); // newest first
+    let want = working_dir.to_string_lossy().to_string();
+    let want_canon = working_dir.canonicalize().ok();
+    for (path, _) in files.into_iter().take(MARKER_SCAN_CAP) {
+        if let Some(meta) = read_session_meta(&path)
+            && cwd_matches(&meta.cwd, &want, want_canon.as_deref())
+            && rollout_has_marker(&path, marker)
+        {
+            return Some((path, meta.session_id));
+        }
+    }
+    None
+}
+
+/// Scan the opening lines of a rollout for `marker` inside a user message —
+/// either schema (legacy `user_message` event or `item_completed`
+/// `UserMessage` item). Reads at most `MARKER_SCAN_LINES` lines: the prompt is
+/// recorded among the first events. `marker` is the caller's full marker
+/// text, delimiters included, so a successor run whose marker extends this one
+/// (`<base>-retry1`) is not claimed for `<base>`.
+pub fn rollout_has_marker(path: &Path, marker: &str) -> bool {
+    use std::io::{BufRead, BufReader};
+    if marker.is_empty() {
+        return false;
+    }
+    let f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    for line in BufReader::new(f)
+        .lines()
+        .map_while(Result::ok)
+        .take(MARKER_SCAN_LINES)
+    {
+        let o: Value = match serde_json::from_str(line.trim()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some((MessageRole::User, text)) = message_text(&o)
+            && text.contains(marker)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +485,76 @@ mod tests {
             let o: Value = serde_json::from_str(raw).unwrap();
             assert_eq!(message_text(&o), None, "{raw}");
         }
+    }
+
+    fn write_marked(dir: &Path, sid: &str, cwd: &str, user_msg: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(format!("rollout-2026-06-27T00-00-00-{sid}.jsonl"));
+        let meta = json!({"type":"session_meta","payload":{"session_id":sid,"cwd":cwd}});
+        let um = json!({"type":"event_msg","payload":{"type":"user_message","message":user_msg}});
+        std::fs::write(&path, format!("{meta}\n{um}\n")).unwrap();
+        path
+    }
+
+    /// A codex >= 0.153 rollout: the prompt appears only as a `response_item`
+    /// mirror and an `item_completed` `UserMessage` item — no `user_message`.
+    fn write_marked_v2(dir: &Path, sid: &str, cwd: &str, user_msg: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(format!("rollout-2026-09-05T00-00-00-{sid}.jsonl"));
+        let meta = json!({"type":"session_meta","payload":{"session_id":sid,"cwd":cwd}});
+        let injected = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<plugins>x</plugins>"}]}});
+        let mirror = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":user_msg}]}});
+        let item = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":user_msg}]}}});
+        std::fs::write(&path, format!("{meta}\n{injected}\n{mirror}\n{item}\n")).unwrap();
+        path
+    }
+
+    #[test]
+    fn locate_by_session_id_matches_filename_suffix() {
+        let root = test_root("by-sid");
+        let day = root.join("2026/06/27");
+        write_marked(&day, "aaa-111", "/w", "x");
+        let target = write_marked(&day, "bbb-222", "/w", "y");
+        assert_eq!(locate_by_session_id_in(&root, "bbb-222"), Some(target));
+        assert_eq!(locate_by_session_id_in(&root, "no-such-sid"), None);
+        assert_eq!(locate_by_session_id_in(&root, ""), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn locate_by_marker_picks_the_marked_rollout_in_both_schemas() {
+        let root = test_root("by-marker");
+        let day = root.join("2026/06/27");
+        // identical cwd on every file — only the marker disambiguates
+        write_marked(&day, "aaa", "/w", "an unrelated codex run");
+        let marked = write_marked(&day, "bbb", "/w", "do it [task: d-7:N42]");
+        assert_eq!(
+            locate_by_marker_in(&root, Path::new("/w"), "[task: d-7:N42]"),
+            Some((marked, "bbb".to_string()))
+        );
+        let marked_v2 = write_marked_v2(&day, "ccc", "/w", "do it [task: d-9:N9]");
+        assert_eq!(
+            locate_by_marker_in(&root, Path::new("/w"), "[task: d-9:N9]"),
+            Some((marked_v2, "ccc".to_string()))
+        );
+        assert!(locate_by_marker_in(&root, Path::new("/w"), "[task: absent]").is_none());
+        assert!(locate_by_marker_in(&root, Path::new("/x"), "[task: d-7:N42]").is_none());
+        assert!(locate_by_marker_in(&root, Path::new("/w"), "").is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rollout_has_marker_requires_the_full_marker() {
+        let root = test_root("marker-exact");
+        let day = root.join("2026/06/27");
+        let successor = write_marked(&day, "ccc", "/w", "do it [task: d-3:N3-restart]");
+        assert!(rollout_has_marker(&successor, "[task: d-3:N3-restart]"));
+        assert!(!rollout_has_marker(&successor, "[task: d-3:N3]"));
+        assert!(!rollout_has_marker(&successor, ""));
+        // the marker only in the response_item mirror of a v2 rollout is not
+        // enough on its own; here the item carries a different text
+        let bare = write_marked_v2(&day, "ddd", "/w", "mentions d-3:N3 in passing");
+        assert!(!rollout_has_marker(&bare, "[task: d-3:N3]"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

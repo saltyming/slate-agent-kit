@@ -26,7 +26,7 @@ When a tool or behavior is removed or changed, rewrite the rule text so the new 
 
 - `shared/rules/core/` — kernel (the articles, § 1 to § 21, in six parts) + the execution, delegation and git rule files, which hold only what the articles do not imply; `shared/rules/mcp/` — consultation (aside) and dispatch.
 - `shared/workflows/palette/` — palette rule, skills, and `templates/` (also the palette server's schema); `shared/workflows/memory/` — the memory-triage skill; `shared/prefs/` — prefs templates.
-- `shared/mcp-servers/{aside,dispatch,harness-log,palette}` and `shared/setup` (the `slate-setup` installer) — the Rust workspace (repo-root `Cargo.toml`). The kits ship no binaries of their own.
+- `shared/mcp-servers/{aside,dispatch,palette}`, `shared/crates/{agent-exec,harness-log}` (the backend execution library with its `agent-guard` executable, and the session-log and usage parsers) and `shared/setup` (the `slate-setup` installer) — the Rust workspace (repo-root `Cargo.toml`). The kits ship no binaries of their own.
 - `adapters/<harness>/` — `tokens.sed` (render-time `{{TOKEN}}` values, including `KIT_VERSION`), `inserts/*.md` (per-marker fragments); codex and kimi also have `surface.md` (harness surface rules).
 - `tooling/` — `render-kit.sh`, `validate.sh`, `install-mcp.sh` (build the servers and register them through `slate-setup`), `slate-version` (the slate release a kit's binaries come from), `kit-scripts/` (entry-point and maintainer templates).
 - `docs/` — this repo's own records and maintained documents (RST): `rfc/`, `adr/`, `changeset/`, `staging/`, `design/`, `spec/`, `principles.rst`, `glossary.rst`. `_palette/` holds the internal work documents (git-ignored). Indexes and `staging/` are generated: after changing `docs/` outside the palette server's tools, run `palette generate .` and commit the result; CI only checks them.
@@ -40,7 +40,7 @@ When a tool or behavior is removed or changed, rewrite the rule text so the new 
 
 ## Rust workspace
 
-- `cargo build/test/clippy --workspace` at repo root covers aside, dispatch, harness-log, palette and slate-setup.
+- `cargo build/test/clippy --workspace` at repo root covers aside, dispatch, palette, agent-exec, harness-log and slate-setup.
 - CI runs ubuntu/macos/**windows** with `clippy -D warnings` on the **latest stable** — run `rustup update stable` locally before trusting a local clippy pass; an older local toolchain misses new lints.
 - Code and tests must hold on Windows: slugs flatten `\` and `:` alongside `/`; tests assert path components, never separator-dependent rendered strings.
 - Release builds Linux targets with cargo-zigbuild: pure-Rust dependencies only.

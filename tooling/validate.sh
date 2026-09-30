@@ -34,7 +34,8 @@ shared/prefs/git-prefs.md.tmpl
 shared/prefs/comment-prefs.md.tmpl
 shared/mcp-servers/aside/Cargo.toml
 shared/mcp-servers/dispatch/Cargo.toml
-shared/mcp-servers/harness-log/Cargo.toml
+shared/crates/agent-exec/Cargo.toml
+shared/crates/harness-log/Cargo.toml
 shared/mcp-servers/palette/Cargo.toml
 shared/setup/Cargo.toml
 tooling/render-kit.sh

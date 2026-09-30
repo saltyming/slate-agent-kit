@@ -51,8 +51,8 @@ Records
 `RFC-0008 <rfc-0008-shared-backend-execution.rst>`_ Shared backend execution layer
   Status: Accepted. Implementation: partial.
   Depends: RFC-0002.
-  Linked from: RFC-0011 (Depends), RFC-0011 (link).
-  Superseded by: none.
+  Linked from: RFC-0011 (Depends), RFC-0011 (link), RFC-0014 (Depends), RFC-0014 (Supersedes), RFC-0014 (link).
+  Superseded by: RFC-0014 (in part: the guard as a re-invocation of the server binary that every ``main`` intercepts).
 
 `RFC-0009 <rfc-0009-record-header-rules.rst>`_ Record header rules and several active phases
   Status: Accepted. Implementation: complete.
@@ -81,5 +81,11 @@ Records
 `RFC-0013 <rfc-0013-changes-names-any-project-document.rst>`_ Changes names any project document
   Status: Accepted. Implementation: complete.
   Depends: RFC-0003, RFC-0004.
+  Linked from: none.
+  Superseded by: none.
+
+`RFC-0014 <rfc-0014-guard-executable.rst>`_ The parent-death guard is its own executable
+  Status: Accepted. Implementation: not-started.
+  Depends: RFC-0008.
   Linked from: none.
   Superseded by: none.

@@ -100,8 +100,8 @@ process directory and, for Codex, ``-C``), ``sandbox``, ``isolation``,
 ``reasoning_effort``, ``resume_session``, ``pin_session`` (Claude
 ``--session-id``; with ``resume_session`` it adds ``--fork-session``),
 ``skip_git_repo_check`` (Codex), ``env`` (extra variables), ``reentry`` (the
-marker name and ceiling) and ``guard`` (whether the process runs under the
-parent-death guard).
+marker name and ceiling) and ``guard`` (``Required``, ``Preferred`` or
+``Off``; see Guard).
 
 RunEvent
 """"""""
@@ -122,9 +122,13 @@ Outcome and RunRecord
 
 ``Outcome`` is ``Record(RunRecord)`` when the process was spawned and awaited
 (success or failure), ``NotFound { binary, hint }`` when ``which`` finds
-nothing, ``Spawn(message)`` when the process could not be started or its stdin
-written, ``WaitFailed(message)`` when awaiting its exit failed, ``Cancelled``
-when the token fired.
+nothing, ``Spawn(message)`` when the process could not be started or writing
+its stdin failed for a reason other than a broken pipe, ``WaitFailed(message)``
+when awaiting its exit failed, ``Cancelled`` when the token fired. A broken
+pipe on stdin (the child exited before reading the prompt) is not a failure of
+its own: the exit status and the captured output decide the outcome, so the
+child's own error text reaches the classifier. The prompt is written while
+stdout and stderr are read, so neither side can block the other.
 
 ``RunRecord`` is the serializable result of one attempt: ``backend``,
 ``argv``, ``model``, ``reasoning_effort``, ``started_at``, ``wall_ms``,
@@ -161,12 +165,26 @@ malformed or non-Unicode value is past every ceiling.
 Guard
 """""
 
-On Linux and macOS a guarded process is started through a hidden
-re-invocation of the server binary that leads the process group and kills the
-group when the server dies, mirroring the backend's exit status; on Windows
-the process is placed in a Job Object that kills on close. The server calls
-``guard::maybe_run_guard()`` before anything else in ``main`` so that the
-re-invocation never starts a runtime or opens a store.
+A guarded backend dies with the server that started it, together with
+everything it spawned. On Linux and macOS the backend is started through
+``agent-guard``, a small executable of its own built from this crate:
+``agent-guard <parent pid> -- <program> <args...>`` leads a new process
+group, starts the program in it, kills the group when the parent dies and
+otherwise exits with the program's status. The crate finds ``agent-guard``
+beside the running executable, else on ``PATH``. No server re-invokes itself
+and no server's ``main`` takes part: an executable that links the crate needs
+no code for the guard. On Windows the backend is placed in a Job Object that
+kills on close, inside the server process.
+
+``RunSpec.guard`` is ``Required`` (without ``agent-guard`` the attempt is
+``Spawn`` with a message saying how to install it), ``Preferred`` (without it
+the backend runs unguarded and the ``Started`` event says so) or ``Off``.
+dispatch and bench use ``Required``; aside uses ``Preferred``.
+
+The crate sets ``AGENT_EXEC_GUARD`` on the guard process, and ``agent-guard``
+removes it from the program's environment. ``run`` refuses with ``Spawn`` when
+it finds the variable in its own environment: a process that was started as a
+guard and is not one must not start backends.
 
 Contract
 ^^^^^^^^
@@ -177,8 +195,9 @@ Functions
 - ``which(binary)`` returns the first file named ``binary``, or ``binary.exe``
   on Windows, on ``PATH``; it does not test executability or find ``.cmd``
   shims.
-- ``version(backend)`` runs ``<binary> --version`` with the re-entry marker
-  stamped and returns its first non-empty output, else ``None``.
+- ``version(backend, reentry)`` runs ``<binary> --version`` with the given
+  re-entry marker stamped and returns its first non-empty output, else
+  ``None``.
 - ``install_hint(backend)`` returns one line telling how to install the CLI.
 - ``run(spec, events, ct)`` performs one attempt and returns its ``Outcome``,
   after sending ``Started`` and ``Finished``.
@@ -197,7 +216,8 @@ Functions
   outcome is classified like a failed exit; ``NotFound`` is never retried.
 - ``reentry::depth(name)``, ``reentry::stamp(command, name)`` and
   ``reentry::refused(name, ceiling)`` implement Re-entry.
-- ``guard::maybe_run_guard()`` and ``guard::wrap(command)`` implement Guard.
+- ``guard::locate()`` returns the path of ``agent-guard`` or ``None``;
+  ``guard::wrap(command, guard_path)`` returns the guarded form of a command.
 
 Argv
 """"
@@ -285,7 +305,8 @@ Ownership and ordering
   gets back.
 - The server owns everything written to disk or a store; the crate reports
   through ``RunEvent`` and its return value only.
-- ``guard::maybe_run_guard()`` runs first in every server ``main``.
+- ``agent-guard`` is installed beside the servers on Linux and macOS and is
+  the only executable that runs the guard.
 - Fallback attempts are built and run in chain order; each attempt sends its
   own ``Started`` and ``Finished``.
 

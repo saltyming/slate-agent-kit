@@ -1,0 +1,52 @@
+[package]
+name = "agent-exec"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+harness-log = { path = "../harness-log" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+tracing = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+# The parent-death guard: installed beside the servers on Linux and macOS.
+[[bin]]
+name = "agent-guard"
+path = "src/bin/agent-guard/main.rs"
+doc = false
+
+# Test support for this crate's integration tests only; never installed.
+# `stub-backend` stands in for the codex and claude CLIs (copied onto a
+# temporary PATH under those names); `stub-parent` is a killable parent for
+# the guard tests and a process that runs one attempt in a controlled
+# environment.
+[[bin]]
+name = "stub-backend"
+path = "src/bin/stub-backend.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "stub-parent"
+path = "src/bin/stub-parent.rs"
+test = false
+doc = false
+
+[[test]]
+name = "run"
+path = "tests/run.rs"
+harness = false

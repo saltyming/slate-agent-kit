@@ -6,7 +6,8 @@
 sources live in `shared/rules/core/` and `shared/rules/mcp/`; the palette rule,
 skills and document templates live in `shared/workflows/palette/`, and the
 memory-triage skill in `shared/workflows/memory/`. The Rust crates are the MCP
-servers in `shared/mcp-servers/{aside,dispatch,harness-log,palette}` and the
+servers in `shared/mcp-servers/{aside,dispatch,palette}`, the libraries they
+share in `shared/crates/{agent-exec,harness-log}` and the
 installer in `shared/setup`. Harness render mappings are under
 `adapters/{claude,codex,kimi}/`, and `kits/*-agent-kit/` are git submodules
 whose `dist/`, entry points (`install.sh`, `install.ps1`, `Makefile`) and root
