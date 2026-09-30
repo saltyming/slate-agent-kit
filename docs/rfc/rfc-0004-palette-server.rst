@@ -6,7 +6,7 @@ RFC-0004: palette MCP server
   command-line check and generate
 :Verification: build — 2026-09-30; cargo test on macOS (156 tests)
   and palette check on this repository with and without _palette/, Linux and
-  Windows through slate CI on next, not yet green
+  Windows through slate CI on next (run 36659672290, green)
 :Areas: palette; MCP servers
 :Authors: Claude Opus 5.5
 :Reviewers: none yet

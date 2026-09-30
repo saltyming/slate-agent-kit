@@ -6,7 +6,7 @@ RFC-0007: Checking shared documents without the layout
   and generate commands, the lint tool
 :Verification: build — 2026-09-30; ``cargo test`` on macOS (156 tests) and
   ``palette check`` on a checkout of this repository without ``_palette/``, 0
-  findings; slate CI on ``next`` pending
+  findings; slate CI on ``next`` green (run 36659672290)
 :Areas: palette; MCP servers; CI
 :Authors: Claude Fable 5.1
 :Reviewers: none yet
