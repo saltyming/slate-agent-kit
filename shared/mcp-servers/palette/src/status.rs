@@ -11,7 +11,7 @@ use crate::backlog::Backlog;
 use crate::docs::Snapshot;
 use crate::layout::Family;
 use crate::lint::{Analysis, Finding, Severity};
-use crate::records::{RecId, Records};
+use crate::records::{PARTIAL_MARKER, RecId, Records};
 use crate::state::{EntryKind, State};
 
 /// Hard limit on the length of the output, in characters.
@@ -221,15 +221,15 @@ fn record_summary(o: &mut Out, snap: &Snapshot, an: &Analysis, id: RecId, errors
         format!("Dependency closure: {}", list(&closure)),
         "closure line",
     );
-    let sup: Vec<String> = recs
-        .superseded_by(id)
-        .iter()
-        .map(|r| r.to_string())
-        .collect();
+    let sup = Records::labels(&recs.superseded_by(id), Some(PARTIAL_MARKER));
     o.line(
         format!("Superseded by: {}", list(&sup)),
         "supersession line",
     );
+    let amended = Records::labels(&recs.amended_by(id), None);
+    if !amended.is_empty() {
+        o.line(format!("Amended by: {}", list(&amended)), "amendment line");
+    }
     match an.sets.get(&id) {
         None => o.line(
             "Pending changeset edits: none".to_string(),

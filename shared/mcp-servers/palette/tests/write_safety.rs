@@ -518,18 +518,6 @@ fn documented_refusals() {
     );
     refuses(
         &p,
-        ErrCode::InvariantViolation,
-        "still active",
-        backlog::phase_open(
-            c,
-            params(
-                &p,
-                json!({"title": "T", "goal": "G", "reason": "R", "exit_criteria": ["x"]}),
-            ),
-        ),
-    );
-    refuses(
-        &p,
         ErrCode::InvalidParams,
         "still holds B-1",
         backlog::phase_close(c, params(&p, json!({"phase": 1, "items": []}))),

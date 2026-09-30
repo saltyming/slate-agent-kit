@@ -80,13 +80,16 @@ For each family the server reads its template and derives:
   value written ``a | b | c`` allows exactly those tokens; ``<...>`` allows free
   text; a value followed by `` — <...>`` requires the token and then free text;
   a field whose value may repeat (``Depends``, ``Supersedes``, ``Related``,
-  ``Changes``, ``Revised``) takes entries separated by ``;`` or continuation
-  lines, and ``<x>; <x>`` in a template means one or more;
+  ``Changes``, ``Revised``, and ``Amends`` where present) takes entries
+  separated by ``;`` or continuation lines, and ``<x>; <x>`` in a template
+  means one or more;
 - when every alternative before `` — <...>`` is a plain token, the suffix
   belongs to each of them; when an alternative carries a placeholder, a suffix
   belongs to that alternative alone and a plain token such as ``none`` stands
   bare; alternatives may also follow the dash (``<link> — active | closed``);
-- ``<YYYY-MM-DD>`` is checked as an ISO date; any other ``<...>`` is free text;
+- ``<YYYY-MM-DD>`` is checked as an ISO date and ``<YYYY-MM-DDTHH:MMZ>`` as an
+  ISO date and 24-hour time in UTC with the ``Z`` suffix; any other ``<...>``
+  is free text;
 - a field name containing ``<N>`` (``:phase-<N>:``) stands for zero or more
   fields of that shape;
 - the required sections at the second level, in order. A document may add
@@ -100,9 +103,32 @@ Records and relations
   kind, a lower number; of the other kind, an earlier or equal ``Date``. A
   cycle is rejected in every case.
 - ``Depends`` lists direct uses; the parenthetical says what is used.
-- ``Supersedes`` is stored only on the newer record; the older record's status
-  is ``Superseded``.
-- Incoming links, the dependency closure and "superseded by" are computed.
+- ``Supersedes`` is stored only on the newer record. A whole entry
+  ``RFC-<N> (<what is replaced>)`` replaces the record, whose status is then
+  ``Superseded``; a partial entry ``RFC-<N> (in part: <what is replaced>)``
+  replaces the part named and neither sets nor forbids the older record's
+  status. A record is ``Superseded`` exactly when at least one whole entry
+  names it.
+- ``Amends`` is a relation of older records: ``RFC-<N> (<what changed>)`` or
+  ``ADR-<N> (<what changed>)``, one or more entries, placed after
+  ``Related``, under the same age rule as every other relation. An RFC may
+  amend an RFC or an ADR; an ADR may amend only an ADR, since an ADR decides
+  within an RFC's contract and cannot change it. No template lists the field
+  and no tool writes it. The layout setting ``:amends-until: none |
+  <YYYY-MM-DD>`` bounds it: a record may carry ``Amends`` only when its
+  ``Date`` is on or before that date; ``none`` admits no record.
+- ``Accepted`` is ``none``, ``<who>`` or ``<who> (<YYYY-MM-DDTHH:MMZ>)``: the
+  person who accepted the record and, expected, when, in UTC. The form
+  without the parenthetical is a warning.
+- ``Implementation`` is one of ``not-started``, ``in-progress`` (work under
+  way), ``partial`` (a part implemented, no work under way), ``complete``,
+  ``abandoned``, ``unassessed`` (an inherited claim that has not been
+  re-verified) or ``not-applicable``, followed by `` — <scope>``. Only
+  ``complete`` is complete: a record whose changeset still holds edits cannot
+  be ``complete`` (P007), and promote sets it only when every edit has
+  landed.
+- Incoming links, the dependency closure, "superseded by" (with the part when
+  the supersession is partial) and "amended by" are computed.
 
 Changesets and staging
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -131,7 +157,8 @@ line and a message.
 
 ``P002`` Structure (error)
   A missing, extra or out-of-order required section; a missing or out-of-order
-  required field; a value outside the field's allowed values.
+  required field; a value outside the field's allowed values. ``Amends`` is
+  the one optional field: absent or in its place after ``Related``.
 
 ``P003`` Identity (error)
   File name, number and title disagree; a file name that is not lowercase
@@ -145,9 +172,11 @@ line and a message.
   A link to a record created later (error); a relation cycle (error); a
   ``Depends`` entry reachable through another listed entry whose parenthetical
   does not state a direct use (warning); the same target in ``Depends`` and
-  ``Related`` (warning); a record named in a ``Supersedes`` whose status is not
-  ``Superseded``, or a record whose status is ``Superseded`` while no newer
-  record names it in ``Supersedes`` (error).
+  ``Related`` (warning); a record named in a whole ``Supersedes`` entry whose
+  status is not ``Superseded``, or a record whose status is ``Superseded``
+  while no newer record names it in a whole ``Supersedes`` entry (error);
+  ``Amends`` on a record whose ``Date`` is later than the layout's
+  ``amends-until``, or when that setting is ``none`` (error).
 
 ``P006`` Changes (error)
   A ``Changes`` target document or section that neither exists nor is created
@@ -179,8 +208,9 @@ line and a message.
 
 ``P012`` Layout (error)
   A family missing from ``layout.rst``, an unknown family, a path outside the
-  project, or a project path inside ``_palette/``. ``checker`` is a setting,
-  not a family.
+  project, or a project path inside ``_palette/``; a missing setting, or
+  ``amends-until`` that is neither ``none`` nor an ISO date. ``checker`` and
+  ``amends-until`` are settings, not families.
 
 ``P013`` Backlog (error)
   A duplicate item id; ``in-phase-<N>`` without a phase ``<N>`` file; a
@@ -198,6 +228,10 @@ line and a message.
   and evidence belong inside the record that relies on them; a decision or
   question in state; anything else outside the palette folders.
 
+``P016`` Acceptance (warning)
+  An ``Accepted`` value that names who accepted the record but not the date
+  and time.
+
 Read tools
 ~~~~~~~~~~
 
@@ -208,15 +242,17 @@ Read tools change nothing and carry the MCP read-only annotation.
   Input: ``project``; optional ``paths``. Output: the findings, errors first.
 
 ``palette_status``
-  Input: ``project``; optional ``record``. Without ``record``: phases and their
-  status, item counts by status, open questions, discrepancies, decisions not
-  yet graduated, lint error count. With ``record``: its header, incoming links,
-  dependency closure, what supersedes it, its pending changeset edits and the
-  staging documents they affect. The output stays under 4,000 characters and
-  says what it omitted.
+  Input: ``project``; optional ``record``. Without ``record``: every phase
+  with its status, item counts by status, open questions, discrepancies,
+  decisions not yet graduated, lint error count. With ``record``: its header,
+  incoming links, dependency closure, what supersedes it (with the part when
+  the supersession is partial), what amends it, its pending changeset edits
+  and the staging documents they affect. The output stays under 4,000
+  characters and says what it omitted.
 
 ``palette_layout``
-  Input: ``project``. Output: every family with its resolved absolute path.
+  Input: ``project``. Output: every family with its resolved absolute path
+  and the settings.
 
 ``palette_template``
   Input: ``family``. Output: the template text.
@@ -244,8 +280,8 @@ Tools:
 
 ``palette_init``
   Creates ``_palette/``, ``_palette/.gitignore`` (``*``), ``layout.rst`` from the
-  given placements, and empty backlog and state documents. Fails with
-  ``already_initialized`` when a layout exists.
+  given placements with ``amends-until`` set to ``none``, and empty backlog and
+  state documents. Fails with ``already_initialized`` when a layout exists.
 
 ``palette_layout_set``
   Moves one family to a new placement, moving its files and rewriting every
@@ -259,16 +295,17 @@ Tools:
 ``palette_backlog_update``
   Changes an item's fields. Status moves only
   ``proposed`` → ``approved`` → ``in-phase-<N>`` → ``done``, or to ``dropped``
-  from any status; ``in-phase-<N>`` requires phase ``<N>`` to be active.
+  from any status; ``in-phase-<N>`` requires phase ``<N>`` to be active, and
+  an item in one phase does not move to another.
 
 ``palette_phase_open``
   Creates ``phase-<N>/phase.rst`` from goal, reason, assumptions and exit
   criteria; adds the phase to the backlog as ``active``; moves the given items
-  to ``in-phase-<N>``. Fails when another phase is active.
+  to ``in-phase-<N>``. Several phases may be active at once.
 
 ``palette_deliverable_create`` and ``palette_deliverable_update``
-  Write a deliverable of the active phase for one backlog item and link it from
-  the item.
+  Write a deliverable for one backlog item in an active phase and link it
+  from the item.
 
 ``palette_phase_close``
   Takes, for every item in the phase, ``done`` with an outcome pointer or
@@ -289,15 +326,19 @@ Tools:
 ``palette_record_create``
   Allocates the next number of ``rfc`` or ``adr``, writes the record from the
   template with the given fields and sections, and sets the time-varying
-  fields to their initial values.
+  fields to their initial values. A ``supersedes`` entry takes ``partial:
+  true`` to replace a part; only a whole entry sets the older record to
+  ``Superseded``.
 
 ``palette_record_update``
   Changes a record. A draft or proposed record may change freely. An accepted
   record's body changes only with ``clarification: true`` (a mechanical
   correction), which adds a ``Revised`` entry. Status moves ``Draft`` →
-  ``Proposed`` → ``Accepted`` (requires the accepting person), or to
-  ``Rejected`` or ``Withdrawn``; ``Superseded`` is set only through a newer
-  record's ``Supersedes``.
+  ``Proposed`` → ``Accepted`` (requires ``accepted_by`` and writes
+  ``Accepted`` as ``<who> (<YYYY-MM-DDTHH:MMZ>)`` with the current UTC time),
+  or to ``Rejected`` or ``Withdrawn``; ``Superseded`` is set only through a
+  newer record's whole ``Supersedes`` entry. ``supersedes`` entries take
+  ``partial`` as in ``palette_record_create``.
 
 ``palette_changeset_edit``
   Adds, replaces or removes one edit in a record's changeset.
@@ -305,8 +346,8 @@ Tools:
 ``palette_changeset_promote``
   Merges implemented edits of a record into their maintained documents, removes
   them from the changeset, deletes an empty changeset, and sets the record's
-  ``Implementation`` (``partial`` or ``complete``), ``Implementers`` and
-  ``Verification`` from the given values.
+  ``Implementation`` (``partial``, or ``complete`` when no edit remains),
+  ``Implementers`` and ``Verification`` from the given values.
 
 Command line
 ~~~~~~~~~~~~

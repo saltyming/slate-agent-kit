@@ -46,6 +46,8 @@ pub fn layout_source(
         lines.push(format!(":{}: {}", fam.key(), p.text()));
     }
     lines.push(format!(":checker: {checker}"));
+    // A new project admits no legacy Amends relation.
+    lines.push(":amends-until: none".to_string());
     Source::from_lines(&lines, Eol::Lf)
 }
 

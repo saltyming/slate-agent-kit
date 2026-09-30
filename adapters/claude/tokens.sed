@@ -17,7 +17,7 @@ s#{{EDIT_SURFACE}}#Edit / Write directly#g
 s#{{DELEGATION_SURFACE}}#Agent / Workflow / dispatch#g
 s#{{FANOUT_DELEGATION_SURFACE}}#Workflow#g
 s#{{KIT_PREFIX}}#claude-agent-kit#g
-s#{{KIT_VERSION}}#13.0.0#g
+s#{{KIT_VERSION}}#13.1.0#g
 s#{{SUBAGENT_PREFS_FILE}}#claude-agent-kit--subagent-prefs.md#g
 s#{{HARNESS_SKILLS_DIR}}#$HOME/.claude/skills#g
 s#{{PREFS_LOADING}}#it loads with these rules#g

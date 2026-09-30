@@ -18,3 +18,4 @@ Families
 :glossary: docs/glossary.rst
 :contributing: docs/contributing.rst
 :checker: none
+:amends-until: none

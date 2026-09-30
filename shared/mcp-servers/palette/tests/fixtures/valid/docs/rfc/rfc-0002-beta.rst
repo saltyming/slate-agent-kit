@@ -8,7 +8,7 @@ RFC-0002: Beta rules
 :Authors: Sample Author
 :Reviewers: none yet
 :Implementers: none yet
-:Accepted: 2026-02-10, Sample Owner
+:Accepted: Sample Owner (2026-02-10T00:00Z)
 :Date: 2026-02-10
 :Revised: none
 :Depends: RFC-0001 (the alpha contract it extends)

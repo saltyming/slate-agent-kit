@@ -17,6 +17,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 pub const TODAY: &str = "2026-09-30";
+pub const NOW: &str = "2026-09-30T12:00Z";
 
 /// A project in a temporary folder.
 pub struct Proj {
@@ -48,6 +49,7 @@ impl Proj {
             extra_roots: Vec::new(),
         });
         ctx.clock = Arc::new(|| TODAY.to_string());
+        ctx.clock_now = Arc::new(|| NOW.to_string());
         ctx.lock_timeout = std::time::Duration::from_millis(300);
         Proj {
             _tmp: tmp,

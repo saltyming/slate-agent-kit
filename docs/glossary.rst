@@ -52,7 +52,7 @@ backlog item
 
 phase
   One increment the user approved: its goal, reason, assumptions and exit
-  criteria. At most one phase is active.
+  criteria. Several phases may be active at once; an item belongs to one.
 
 deliverable
   One approved unit inside a phase, defined by its ``Done when`` contract: the
@@ -118,7 +118,7 @@ backlog
 
 state
   The document holding decisions not yet written into an RFC or ADR, the
-  questions blocking the active phase, and discrepancies. It records no
+  questions blocking an active phase, and discrepancies. It records no
   progress and gives no instructions to a later session.
 
 contributing

@@ -8,7 +8,7 @@ ADR-0001: Naming choice
 :Authors: Sample Author
 :Reviewers: none yet
 :Implementers: none yet
-:Accepted: 2026-02-01, Sample Owner
+:Accepted: Sample Owner (2026-02-01T00:00Z)
 :Date: 2026-02-01
 :Revised: none
 :Depends: RFC-0001 (the alpha contract)

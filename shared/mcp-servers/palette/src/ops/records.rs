@@ -15,7 +15,7 @@ use crate::edit;
 use crate::errors::{PalError, Res};
 use crate::layout::split_logical;
 use crate::params::*;
-use crate::records::{RecId, RecordKind};
+use crate::records::{PARTIAL_MARKER, RecId, RecordKind};
 use crate::rst::Doc;
 use crate::schema::{schemas, split_entries};
 use crate::text::{Eol, Source};
@@ -30,6 +30,20 @@ fn record_path(s: &Session<'_, '_>, id: RecId) -> PathBuf {
         .join(format!("{}-{:04}", id.kind.lower(), id.number))
 }
 
+/// The note and partial flag of a relation input: `partial: true`, or a note that
+/// already starts with the `in part:` marker (which is stripped so it is never
+/// written twice), makes the entry partial.
+fn relation_parts(r: &RelationIn) -> (String, bool) {
+    let note = edit::one_line(&r.note).replace(';', ",");
+    let lower = note.to_lowercase();
+    if let Some(rest) = lower.strip_prefix(PARTIAL_MARKER) {
+        let cut = note.len() - rest.len();
+        (note[cut..].trim().to_string(), true)
+    } else {
+        (note, r.partial == Some(true))
+    }
+}
+
 fn rel_value(list: &[RelationIn]) -> Res<String> {
     if list.is_empty() {
         return Ok("none".to_string());
@@ -42,13 +56,17 @@ fn rel_value(list: &[RelationIn]) -> Res<String> {
                 r.record
             ))
         })?;
-        let note = edit::one_line(&r.note).replace(';', ",");
+        let (note, partial) = relation_parts(r);
         if note.is_empty() {
             return Err(PalError::invalid(format!(
                 "{id}: the parenthetical (what is used, replaced or gathered) is required"
             )));
         }
-        parts.push(format!("{id} ({note})"));
+        if partial {
+            parts.push(format!("{id} ({PARTIAL_MARKER} {note})"));
+        } else {
+            parts.push(format!("{id} ({note})"));
+        }
     }
     Ok(parts.join("; "))
 }
@@ -225,7 +243,7 @@ pub fn record_create(ctx: &Ctx, p: RecordCreateParams) -> Res<WriteResult> {
                     .join(", ")
             )));
         }
-        for r in &supersedes {
+        for r in supersedes.iter().filter(|r| !relation_parts(r).1) {
             let older = RecId::parse(&r.record).ok_or_else(|| {
                 PalError::invalid(format!("`{}` is not a record identifier", r.record))
             })?;
@@ -276,6 +294,12 @@ pub fn record_update(ctx: &Ctx, p: RecordUpdateParams) -> Res<WriteResult> {
         let rel = s.rel(&path);
         let status = rec.status.clone().unwrap_or_default();
         let old_supersedes: Vec<RecId> = rec.supersedes.iter().map(|e| e.id).collect();
+        let old_whole: Vec<RecId> = rec
+            .supersedes
+            .iter()
+            .filter(|e| !e.partial)
+            .map(|e| e.id)
+            .collect();
         let old_revised = rec
             .field("Revised")
             .map(|f| f.value.clone())
@@ -365,13 +389,24 @@ pub fn record_update(ctx: &Ctx, p: RecordUpdateParams) -> Res<WriteResult> {
                     })
                 })
                 .collect::<Res<_>>()?;
+            let new_whole: Vec<RecId> = sup
+                .iter()
+                .zip(&new_ids)
+                .filter(|(r, _)| !relation_parts(r).1)
+                .map(|(_, n)| *n)
+                .collect();
             if let Some(gone) = old_supersedes.iter().find(|o| !new_ids.contains(o)) {
                 return Err(PalError::invariant(format!(
                     "{gone} is already superseded by {id}; that cannot be undone through this tool"
                 )));
             }
+            if let Some(gone) = old_whole.iter().find(|o| !new_whole.contains(o)) {
+                return Err(PalError::invariant(format!(
+                    "{gone} is superseded as a whole by {id}; that cannot become a partial supersession through this tool"
+                )));
+            }
             set(&mut src, "Supersedes", &rel_value(sup)?)?;
-            for n in new_ids.iter().filter(|n| !old_supersedes.contains(n)) {
+            for n in new_whole.iter().filter(|n| !old_whole.contains(n)) {
                 mark_superseded(s, *n)?;
             }
         }
@@ -401,7 +436,7 @@ pub fn record_update(ctx: &Ctx, p: RecordUpdateParams) -> Res<WriteResult> {
                     .map(edit::one_line)
                     .filter(|x| !x.is_empty())
                     .ok_or_else(|| PalError::invalid("accepted_by is required to move a record to Accepted: the person who accepted it"))?;
-                set(&mut src, "Accepted", &format!("{}, {who}", s.today))?;
+                set(&mut src, "Accepted", &format!("{who} ({})", s.now))?;
             }
         }
         if clarification {

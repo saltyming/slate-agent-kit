@@ -10,7 +10,7 @@ RFC-0003: palette document system
 :Authors: Claude Opus 5.5
 :Reviewers: Hamin Sung
 :Implementers: Claude Opus 5.5 (2026-09-29 to 2026-09-30)
-:Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)
+:Accepted: Hamin Sung (2026-09-30T01:26Z)
 :Date: 2026-09-29
 :Revised: 2026-09-30 — a thirteenth family (contributing) and a closed phase
   keeps its files

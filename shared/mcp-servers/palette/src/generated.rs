@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use crate::changeset::{Changeset, StagingPlan};
 use crate::docs::{Role, Snapshot};
 use crate::layout::Family;
-use crate::records::{RecId, Records};
+use crate::records::{PARTIAL_MARKER, RecId, Records};
 use crate::text::{Eol, Source};
 use crate::util::relative_link;
 
@@ -96,20 +96,20 @@ fn record_index(snap: &Snapshot, records: &Records, fam: Family) -> Source {
             .into_iter()
             .map(|(from, k)| format!("{from} ({})", k.label()))
             .collect();
-        let sup: Vec<String> = records
-            .superseded_by(id)
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        entries.push((
-            term,
-            vec![
-                format!("Status: {status}. Implementation: {implementation}."),
-                format!("Depends: {}.", list_or_none(&depends)),
-                format!("Linked from: {}.", list_or_none(&incoming)),
-                format!("Superseded by: {}.", list_or_none(&sup)),
-            ],
-        ));
+        let sup = Records::labels(&records.superseded_by(id), Some(PARTIAL_MARKER));
+        let amended = Records::labels(&records.amended_by(id), None);
+        let mut lines = vec![
+            format!("Status: {status}. Implementation: {implementation}."),
+            format!("Depends: {}.", list_or_none(&depends)),
+            format!("Linked from: {}.", list_or_none(&incoming)),
+            format!("Superseded by: {}.", list_or_none(&sup)),
+        ];
+        // Only records that are amended show the line, so an index without any
+        // legacy Amends is unchanged.
+        if !amended.is_empty() {
+            lines.push(format!("Amended by: {}.", amended.join(", ")));
+        }
+        entries.push((term, lines));
     }
     let (title, heading) = if fam == Family::Rfc {
         ("Index — RFC", "Records")

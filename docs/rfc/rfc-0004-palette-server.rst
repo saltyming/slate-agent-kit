@@ -12,7 +12,7 @@ RFC-0004: palette MCP server
 :Reviewers: Hamin Sung
 :Implementers: Claude Opus 5.5 (2026-09-29 to 2026-09-30), Claude Fable 5.1
   (2026-09-30, inference without a layout)
-:Accepted: 2026-09-29, Hamin Sung (decisions made in conversation)
+:Accepted: Hamin Sung (2026-09-30T01:26Z)
 :Date: 2026-09-29
 :Revised: 2026-09-30 — the check and generate commands no longer need
   ``_palette/layout.rst``

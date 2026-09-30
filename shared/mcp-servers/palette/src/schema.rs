@@ -79,7 +79,14 @@ pub const TEMPLATES: &[(&str, &str)] = &[
 ];
 
 /// Header fields whose value is a list of entries separated by `;`.
-pub const REPEATING_FIELDS: [&str; 5] = ["Depends", "Supersedes", "Related", "Changes", "Revised"];
+pub const REPEATING_FIELDS: [&str; 6] = [
+    "Depends",
+    "Supersedes",
+    "Related",
+    "Changes",
+    "Revised",
+    "Amends",
+];
 
 /// The template text named `name`.
 pub fn template_text(name: &str) -> Option<&'static str> {
@@ -99,6 +106,8 @@ pub enum Part {
     Num,
     /// `<YYYY-MM-DD>`: an ISO date.
     Date,
+    /// `<YYYY-MM-DDTHH:MMZ>`: an ISO date and 24-hour time in UTC.
+    DateTime,
     /// A placeholder repeated with `; ` in the template: one or more.
     List(Box<Part>),
     /// One of several literal tokens.
@@ -112,6 +121,7 @@ fn part_regex(p: &Part) -> String {
         Part::Num4 => r"\d{4}".to_string(),
         Part::Num => r"\d+".to_string(),
         Part::Date => r"\d{4}-\d{2}-\d{2}".to_string(),
+        Part::DateTime => r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z".to_string(),
         Part::List(inner) => {
             let r = part_regex(inner);
             format!(r"{r}(?:;\s*{r})*")
@@ -138,6 +148,7 @@ fn parse_parts(text: &str) -> Vec<Part> {
                         "NNNN" => Part::Num4,
                         "n" | "N" => Part::Num,
                         "YYYY-MM-DD" => Part::Date,
+                        "YYYY-MM-DDTHH:MMZ" => Part::DateTime,
                         other => Part::Free(other.to_string()),
                     });
                     rest = &rest[i + j + 1..];
@@ -236,6 +247,8 @@ impl Pattern {
     }
 }
 
+static DATE_TOKEN: LazyLock<Regex> = LazyLock::new(|| re(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}Z)?"));
+
 /// The allowed values of a header field, derived from the template value.
 #[derive(Clone, Debug)]
 pub struct ValueSpec {
@@ -309,6 +322,13 @@ impl ValueSpec {
         self.res.iter().position(|r| r.is_match(v))
     }
 
+    /// Whether `v` matches alternative `i` (a free-text alternative matches
+    /// almost anything, so a caller that wants the most specific alternative
+    /// checks the later ones first).
+    pub fn matches_alt(&self, i: usize, v: &str) -> bool {
+        self.res.get(i).is_some_and(|r| r.is_match(v))
+    }
+
     /// Whether alternative `i` has no placeholder (for example `none`).
     pub fn is_bare(&self, i: usize) -> bool {
         self.alts[i].iter().all(|p| matches!(p, Part::Lit(_)))
@@ -322,18 +342,45 @@ impl ValueSpec {
         }
         if !repeating {
             return match self.match_index(value) {
-                Some(_) => Ok(()),
+                Some(_) => self.check_dates(value),
                 None => Err(format!("`{value}` does not match: {}", self.raw)),
             };
         }
         let entries = split_entries(value);
+        if entries.is_empty() {
+            return Err(format!("the value has no entry; allowed: {}", self.raw));
+        }
         for e in &entries {
             match self.match_index(e) {
                 None => return Err(format!("entry `{e}` does not match: {}", self.raw)),
                 Some(i) if self.is_bare(i) && entries.len() > 1 => {
                     return Err(format!("`{e}` must be the only entry"));
                 }
-                Some(_) => {}
+                Some(_) => self.check_dates(e)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// When any alternative that `v` matches carries a date or time placeholder
+    /// (a free-text alternative may match the same value), every date-shaped token
+    /// in `v` is a calendar date and every time-shaped one a UTC time; the regex
+    /// only fixes the digit widths.
+    fn check_dates(&self, v: &str) -> Result<(), String> {
+        let dated = self.alts.iter().zip(&self.res).any(|(alt, re)| {
+            re.is_match(v) && alt.iter().any(|p| matches!(p, Part::Date | Part::DateTime))
+        });
+        if !dated {
+            return Ok(());
+        }
+        for m in DATE_TOKEN.find_iter(v) {
+            let t = m.as_str();
+            if t.contains('T') {
+                if !crate::util::is_iso_datetime(t) {
+                    return Err(format!("`{t}` is not a UTC time `YYYY-MM-DDTHH:MMZ`"));
+                }
+            } else if !crate::util::is_iso_date(t) {
+                return Err(format!("`{t}` is not a calendar date"));
             }
         }
         Ok(())
@@ -630,9 +677,9 @@ mod tests {
     }
 
     #[test]
-    fn layout_lists_thirteen_families_and_checker() {
+    fn layout_lists_thirteen_families_and_two_settings() {
         let s = schemas().get("layout").expect("layout");
-        assert_eq!(s.sections[0].fields.len(), 14);
+        assert_eq!(s.sections[0].fields.len(), 15);
     }
 
     #[test]

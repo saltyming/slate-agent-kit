@@ -15,19 +15,19 @@ Records
 `RFC-0002 <rfc-0002-installer-and-kit-layout.rst>`_ Installer and kit layout
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: none.
+  Linked from: RFC-0008 (Depends).
   Superseded by: none.
 
 `RFC-0003 <rfc-0003-palette-document-system.rst>`_ palette document system
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: RFC-0004 (Depends), RFC-0007 (Related).
+  Linked from: RFC-0004 (Depends), RFC-0007 (Related), RFC-0009 (Depends), RFC-0009 (link).
   Superseded by: none.
 
 `RFC-0004 <rfc-0004-palette-server.rst>`_ palette MCP server
   Status: Accepted. Implementation: complete.
   Depends: RFC-0003.
-  Linked from: RFC-0007 (Depends), RFC-0007 (link).
+  Linked from: RFC-0007 (Depends), RFC-0007 (link), RFC-0009 (Depends), RFC-0009 (link).
   Superseded by: none.
 
 `RFC-0005 <rfc-0005-memory-discipline.rst>`_ Memory discipline
@@ -45,5 +45,17 @@ Records
 `RFC-0007 <rfc-0007-checking-without-the-layout.rst>`_ Checking shared documents without the layout
   Status: Accepted. Implementation: complete.
   Depends: RFC-0004.
+  Linked from: none.
+  Superseded by: none.
+
+`RFC-0008 <rfc-0008-shared-backend-execution.rst>`_ Shared backend execution layer
+  Status: Draft. Implementation: not-started.
+  Depends: RFC-0002.
+  Linked from: none.
+  Superseded by: none.
+
+`RFC-0009 <rfc-0009-record-header-rules.rst>`_ Record header rules and several active phases
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0003, RFC-0004.
   Linked from: none.
   Superseded by: none.

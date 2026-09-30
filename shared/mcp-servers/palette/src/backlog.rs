@@ -208,11 +208,12 @@ impl Backlog {
         self.phases.iter().find(|p| p.number == n)
     }
 
-    /// The active phase, if exactly one entry says `active`.
-    pub fn active_phase(&self) -> Option<&PhaseEntry> {
+    /// Every phase whose entry says `active`; several may be active at once.
+    pub fn active_phases(&self) -> Vec<&PhaseEntry> {
         self.phases
             .iter()
-            .find(|p| p.state.as_deref() == Some("active"))
+            .filter(|p| p.state.as_deref() == Some("active"))
+            .collect()
     }
 }
 

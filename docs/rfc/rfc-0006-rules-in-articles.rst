@@ -10,7 +10,7 @@ RFC-0006: Rules in articles
 :Authors: Claude Fable 5.1
 :Reviewers: Hamin Sung
 :Implementers: Claude Fable 5.1
-:Accepted: 2026-09-30, Hamin Sung (decision made in conversation)
+:Accepted: Hamin Sung (2026-09-30T01:39Z)
 :Date: 2026-09-30
 :Revised: none
 :Depends: RFC-0001 (direction, autonomy and levels: the content the articles

@@ -1,4 +1,4 @@
-//! One failing fixture per lint rule P001 to P015, made by mutating the valid fixture,
+//! One failing fixture per lint rule P001 to P016, made by mutating the valid fixture,
 //! plus positive variants for the rules that have an exception.
 
 mod common;
@@ -198,12 +198,9 @@ fn p002_fields() {
     failing("P002", "backlog.rst", "outside the allowed values", |p| {
         p.replace("_palette/backlog.rst", "— active", "— open")
     });
-    failing(
-        "P002",
-        "layout.rst",
-        "missing required field `:checker:`",
-        |p| p.replace("_palette/layout.rst", ":checker: none\n", ""),
-    );
+    failing("P012", "layout.rst", "setting `checker` is missing", |p| {
+        p.replace("_palette/layout.rst", ":checker: none\n", "")
+    });
     failing(
         "P002",
         "state.rst",
@@ -544,7 +541,10 @@ fn p007_independent_changesets_editing_one_section() {
     let eps = rfc3
         .replace("RFC-0003: Gamma proposal", "RFC-0005: Epsilon")
         .replace(":Status: Draft", ":Status: Accepted")
-        .replace(":Accepted: none", ":Accepted: 2026-03-11, Sample Owner")
+        .replace(
+            ":Accepted: none",
+            ":Accepted: Sample Owner (2026-03-11T00:00Z)",
+        )
         .replace(
             ":Depends: RFC-0002 (the beta rules it builds on)",
             ":Depends: none",
@@ -993,4 +993,284 @@ fn p015_stray_files() {
         },
     );
     passing("P015", |_| {});
+}
+
+// ── RFC-0009: partial supersession, Amends, Accepted, amends-until ────────
+
+#[test]
+fn p005_partial_supersession_leaves_the_older_record_accepted() {
+    passing("P005", |p| {
+        p.replace(
+            "docs/rfc/rfc-0003-gamma.rst",
+            ":Supersedes: none",
+            ":Supersedes: RFC-0001 (in part: the open operation)",
+        );
+    });
+    // A partially superseded record that is also wholly superseded elsewhere is
+    // Superseded without complaint.
+    passing("P005", |p| {
+        p.replace(
+            "docs/rfc/rfc-0002-beta.rst",
+            ":Supersedes: none",
+            ":Supersedes: RFC-0001 (in part: the open operation)",
+        );
+        p.replace(
+            "docs/rfc/rfc-0003-gamma.rst",
+            ":Supersedes: none",
+            ":Supersedes: RFC-0001 (the alpha contract)",
+        );
+        p.replace(
+            "docs/rfc/rfc-0001-alpha.rst",
+            ":Status: Accepted",
+            ":Status: Superseded",
+        );
+    });
+    // A partial entry alone does not justify Superseded.
+    failing(
+        "P005",
+        "rfc-0001",
+        "no newer record names it in Supersedes as a whole",
+        |p| {
+            p.replace(
+                "docs/rfc/rfc-0003-gamma.rst",
+                ":Supersedes: none",
+                ":Supersedes: RFC-0001 (in part: the open operation)",
+            );
+            p.replace(
+                "docs/rfc/rfc-0001-alpha.rst",
+                ":Status: Accepted",
+                ":Status: Superseded",
+            );
+        },
+    );
+}
+
+fn with_amends(p: &Proj, until: &str) {
+    if until != "none" {
+        p.replace(
+            "_palette/layout.rst",
+            ":amends-until: none",
+            &format!(":amends-until: {until}"),
+        );
+    }
+    p.replace(
+        "docs/rfc/rfc-0003-gamma.rst",
+        ":Related: none\n",
+        ":Related: none\n:Amends: RFC-0001 (the open operation)\n",
+    );
+}
+
+#[test]
+fn p005_amends_is_admitted_up_to_the_layout_date() {
+    // RFC-0003 is dated 2026-03-10.
+    passing("P005", |p| with_amends(p, "2026-03-10"));
+    passing("P005", |p| with_amends(p, "2026-12-31"));
+    failing(
+        "P005",
+        "rfc-0003",
+        "admitted on records dated up to 2026-03-09",
+        |p| with_amends(p, "2026-03-09"),
+    );
+    failing("P005", "rfc-0003", "`amends-until` admits none", |p| {
+        with_amends(p, "none")
+    });
+    failing("P005", "adr-0001", "an ADR amends only an ADR", |p| {
+        p.replace(
+            "_palette/layout.rst",
+            ":amends-until: none",
+            ":amends-until: 2026-12-31",
+        );
+        p.replace(
+            "docs/adr/adr-0001-naming.rst",
+            ":Related: none\n",
+            ":Related: none\n:Amends: RFC-0001 (the names)\n",
+        );
+    });
+    // Amends follows the age rule like every relation.
+    failing("P005", "rfc-0001", "created later", |p| {
+        p.replace(
+            "_palette/layout.rst",
+            ":amends-until: none",
+            ":amends-until: 2026-12-31",
+        );
+        p.replace(
+            "docs/rfc/rfc-0001-alpha.rst",
+            ":Related: none\n",
+            ":Related: none\n:Amends: RFC-0002 (the beta rules)\n",
+        );
+    });
+}
+
+#[test]
+fn p002_amends_sits_after_related_with_a_relation_value() {
+    failing("P002", "rfc-0003", "belongs right after `:Related:`", |p| {
+        p.replace(
+            "_palette/layout.rst",
+            ":amends-until: none",
+            ":amends-until: 2026-12-31",
+        );
+        p.replace(
+            "docs/rfc/rfc-0003-gamma.rst",
+            ":Changes: none\n",
+            ":Changes: none\n:Amends: RFC-0001 (the open operation)\n",
+        );
+    });
+    failing("P002", "rfc-0003", "`:Amends:` has a value outside", |p| {
+        p.replace(
+            "_palette/layout.rst",
+            ":amends-until: none",
+            ":amends-until: 2026-12-31",
+        );
+        p.replace(
+            "docs/rfc/rfc-0003-gamma.rst",
+            ":Related: none\n",
+            ":Related: none\n:Amends: RFC-0001\n",
+        );
+    });
+}
+
+#[test]
+fn p002_amends_needs_at_least_one_entry() {
+    failing("P002", "rfc-0003", "has no entry", |p| {
+        p.replace(
+            "_palette/layout.rst",
+            ":amends-until: none",
+            ":amends-until: 2026-12-31",
+        );
+        p.replace(
+            "docs/rfc/rfc-0003-gamma.rst",
+            ":Related: none\n",
+            ":Related: none\n:Amends: ;\n",
+        );
+    });
+}
+
+#[test]
+fn p005_repeated_supersedes_targets_are_all_seen() {
+    // A partial and a whole entry for the same record: the whole one counts.
+    passing("P005", |p| {
+        p.replace(
+            "docs/rfc/rfc-0003-gamma.rst",
+            ":Supersedes: none",
+            ":Supersedes: RFC-0001 (in part: the names); RFC-0001 (the alpha contract)",
+        );
+        p.replace(
+            "docs/rfc/rfc-0001-alpha.rst",
+            ":Status: Accepted",
+            ":Status: Superseded",
+        );
+    });
+}
+
+#[test]
+fn p012_amends_until_is_required_and_a_date_or_none() {
+    failing("P012", "layout.rst", "`amends-until` is missing", |p| {
+        p.replace("_palette/layout.rst", ":amends-until: none\n", "");
+    });
+    failing("P012", "layout.rst", "`none` or a date", |p| {
+        p.replace(
+            "_palette/layout.rst",
+            ":amends-until: none",
+            ":amends-until: soon",
+        );
+    });
+}
+
+#[test]
+fn p016_accepted_without_the_time_is_a_warning() {
+    let p = Proj::valid();
+    p.replace(
+        "docs/rfc/rfc-0001-alpha.rst",
+        ":Accepted: Sample Owner (2026-01-10T00:00Z)",
+        ":Accepted: Sample Owner",
+    );
+    let f = p.lint();
+    assert!(
+        has(
+            &f,
+            "P016",
+            "rfc-0001",
+            "names who accepted the record but not when"
+        ),
+        "{}",
+        show(&f)
+    );
+    assert!(
+        f.iter().all(|x| x.severity == Severity::Warning),
+        "{}",
+        show(&f)
+    );
+    // The earlier `<date>, <who>` form is the same warning, not an error.
+    let p = Proj::valid();
+    p.replace(
+        "docs/rfc/rfc-0001-alpha.rst",
+        ":Accepted: Sample Owner (2026-01-10T00:00Z)",
+        ":Accepted: 2026-01-10, Sample Owner",
+    );
+    let f = p.lint();
+    assert!(
+        has(
+            &f,
+            "P016",
+            "rfc-0001",
+            "names who accepted the record but not when"
+        ) && f.iter().all(|x| x.severity == Severity::Warning),
+        "{}",
+        show(&f)
+    );
+    // A time that is not on the calendar or the clock is an error.
+    failing("P002", "rfc-0001", "is not a UTC time", |p| {
+        p.replace(
+            "docs/rfc/rfc-0001-alpha.rst",
+            ":Accepted: Sample Owner (2026-01-10T00:00Z)",
+            ":Accepted: Sample Owner (2026-13-40T99:99Z)",
+        );
+    });
+    failing("P002", "rfc-0001", "is not a calendar date", |p| {
+        p.replace(
+            "docs/rfc/rfc-0001-alpha.rst",
+            ":Date: 2026-01-10",
+            ":Date: 2026-02-30",
+        );
+    });
+    // A parenthetical that is not a UTC time is an error, not a longer name.
+    failing(
+        "P002",
+        "rfc-0001",
+        "the parenthetical is not a UTC time",
+        |p| {
+            p.replace(
+                "docs/rfc/rfc-0001-alpha.rst",
+                ":Accepted: Sample Owner (2026-01-10T00:00Z)",
+                ":Accepted: Sample Owner (2026-01-10 09:00)",
+            );
+        },
+    );
+}
+
+#[test]
+fn p007_and_p014_accept_every_implementation_value() {
+    for v in [
+        "in-progress",
+        "partial",
+        "abandoned",
+        "unassessed",
+        "not-applicable",
+    ] {
+        // RFC-0002 has a changeset with edits; only `complete` is refused then.
+        passing("P007", |p| {
+            p.replace(
+                "docs/rfc/rfc-0002-beta.rst",
+                ":Implementation: not-started — the beta rules section of the thing spec",
+                &format!(":Implementation: {v} — the beta rules section of the thing spec"),
+            );
+        });
+        passing("P014", |p| {
+            p.replace(
+                "docs/rfc/rfc-0002-beta.rst",
+                ":Implementation: not-started — the beta rules section of the thing spec",
+                &format!(":Implementation: {v} — the beta rules section of the thing spec"),
+            );
+        });
+    }
 }

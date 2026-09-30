@@ -188,7 +188,7 @@ fn check_transition(cur: &str, new: &str, b: &Backlog) -> Res<()> {
             return match b.phase(k) {
                 Some(ph) if ph.state.as_deref() == Some("active") => Ok(()),
                 Some(_) => Err(PalError::invariant(format!(
-                    "phase {k} is not active; an item can enter only the active phase"
+                    "phase {k} is not active; an item can enter only an active phase"
                 ))),
                 None => Err(PalError::invariant(format!(
                     "phase {k} does not exist; open it with palette_phase_open"
@@ -346,12 +346,6 @@ pub fn phase_open(ctx: &Ctx, p: PhaseOpenParams) -> Res<WriteResult> {
     run_write(ctx, &p.project, p.dry_run.unwrap_or(false), |s| {
         let (bpath, mut bsrc, b) = load_backlog(s)?;
         let rel = s.rel(&bpath);
-        if let Some(a) = b.active_phase() {
-            return Err(PalError::invariant(format!(
-                "phase {} is still active; close it with palette_phase_close first",
-                a.number
-            )));
-        }
         let criteria = p.exit_criteria.clone().unwrap_or_default();
         if criteria.iter().all(|c| c.trim().is_empty()) {
             return Err(PalError::invalid(
@@ -607,7 +601,7 @@ fn active_item(b: &Backlog, raw: &str) -> Res<(u32, u32)> {
     let st = it.value("Status").unwrap_or("");
     let ph = in_phase(st).ok_or_else(|| {
         PalError::invariant(format!(
-            "item B-{id} is {st}; a deliverable belongs to an item in the active phase"
+            "item B-{id} is {st}; a deliverable belongs to an item in an active phase"
         ))
     })?;
     match b.phase(ph) {

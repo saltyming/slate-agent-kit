@@ -111,6 +111,18 @@ pub fn today_utc() -> String {
     civil_from_days((secs / 86_400) as i64)
 }
 
+/// The current UTC date and time to the minute, `YYYY-MM-DDTHH:MMZ`, as the
+/// `Accepted` field records it.
+pub fn now_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let day = civil_from_days((secs / 86_400) as i64);
+    let rem = secs % 86_400;
+    format!("{day}T{:02}:{:02}Z", rem / 3_600, (rem % 3_600) / 60)
+}
+
 /// Civil date for a day count since 1970-01-01 (Howard Hinnant's algorithm).
 pub fn civil_from_days(z: i64) -> String {
     let z = z + 719_468;
@@ -136,9 +148,39 @@ pub fn is_iso_date(s: &str) -> bool {
     if !(digits(0..4) && digits(5..7) && digits(8..10)) {
         return false;
     }
+    let y: u32 = s[0..4].parse().unwrap_or(0);
     let m: u32 = s[5..7].parse().unwrap_or(0);
     let d: u32 = s[8..10].parse().unwrap_or(0);
-    (1..=12).contains(&m) && (1..=31).contains(&d)
+    (1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m)
+}
+
+fn days_in_month(y: u32, m: u32) -> u32 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400)) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// Whether `s` is `YYYY-MM-DDTHH:MMZ`: a calendar date and a 24-hour time in UTC.
+pub fn is_iso_datetime(s: &str) -> bool {
+    let Some((date, time)) = s.split_once('T') else {
+        return false;
+    };
+    let Some(hm) = time.strip_suffix('Z') else {
+        return false;
+    };
+    let Some((h, m)) = hm.split_once(':') else {
+        return false;
+    };
+    let two = |t: &str| t.len() == 2 && t.chars().all(|c| c.is_ascii_digit());
+    is_iso_date(date)
+        && two(h)
+        && two(m)
+        && h.parse::<u32>().is_ok_and(|h| h < 24)
+        && m.parse::<u32>().is_ok_and(|m| m < 60)
 }
 
 /// Splits `text` into words at whitespace, except inside backtick spans (`` `a b` `` and
@@ -240,6 +282,13 @@ mod tests {
         assert_eq!(civil_from_days(20_725), "2026-09-29");
         assert!(is_iso_date("2026-09-29"));
         assert!(!is_iso_date("2026-13-01"));
+        assert!(!is_iso_date("2026-02-30"));
+        assert!(is_iso_date("2024-02-29"));
+        assert!(!is_iso_date("2023-02-29"));
+        assert!(is_iso_datetime("2026-09-30T04:49Z"));
+        assert!(!is_iso_datetime("2026-09-30T24:00Z"));
+        assert!(!is_iso_datetime("2026-13-40T99:99Z"));
+        assert!(!is_iso_datetime("2026-09-30 04:49"));
         assert!(!is_iso_date("26-09-29"));
     }
 

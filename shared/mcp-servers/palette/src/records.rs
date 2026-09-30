@@ -95,8 +95,10 @@ impl RecId {
 pub struct RelEntry {
     /// Target.
     pub id: RecId,
-    /// Parenthetical text.
+    /// Parenthetical text, without the `in part:` marker.
     pub note: Option<String>,
+    /// `Supersedes` only: the entry replaces a part (`in part: ...`), not the record.
+    pub partial: bool,
     /// 0-based line of the field the entry is in.
     pub line: usize,
 }
@@ -121,6 +123,8 @@ pub enum EdgeKind {
     Supersedes,
     /// `Related`.
     Related,
+    /// `Amends` (a legacy relation of older records).
+    Amends,
     /// `Within` (ADR to RFC).
     Within,
     /// A hyperlink in the body.
@@ -134,6 +138,7 @@ impl EdgeKind {
             EdgeKind::Depends => "Depends",
             EdgeKind::Supersedes => "Supersedes",
             EdgeKind::Related => "Related",
+            EdgeKind::Amends => "Amends",
             EdgeKind::Within => "Within",
             EdgeKind::Link => "link",
         }
@@ -176,6 +181,8 @@ pub struct Record {
     pub supersedes: Vec<RelEntry>,
     /// `Related` entries.
     pub related: Vec<RelEntry>,
+    /// `Amends` entries (absent from the templates; older records carry them).
+    pub amends: Vec<RelEntry>,
     /// `Within` entries that name a record.
     pub within: Vec<RelEntry>,
     /// `Within` entries that name a maintained document.
@@ -202,6 +209,9 @@ pub struct Records {
     by_id: BTreeMap<RecId, usize>,
 }
 
+/// The marker that makes a `Supersedes` entry partial: `RFC-0104 (in part: ...)`.
+pub const PARTIAL_MARKER: &str = "in part:";
+
 fn parse_rel(field: &Field) -> Vec<RelEntry> {
     let rel = re(r"(?s)^(RFC|ADR)-(\d{4})\s*(?:\((.*)\))?$");
     let mut out = Vec::new();
@@ -209,9 +219,17 @@ fn parse_rel(field: &Field) -> Vec<RelEntry> {
         if let Some(c) = rel.captures(&e)
             && let Some(id) = RecId::parse(&format!("{}-{}", &c[1], &c[2]))
         {
+            let raw = c.get(3).map(|m| m.as_str().trim().to_string());
+            let (note, partial) = match raw {
+                Some(n) if n.to_lowercase().starts_with(PARTIAL_MARKER) => {
+                    (Some(n[PARTIAL_MARKER.len()..].trim().to_string()), true)
+                }
+                other => (other, false),
+            };
             out.push(RelEntry {
                 id,
-                note: c.get(3).map(|m| m.as_str().trim().to_string()),
+                note,
+                partial,
                 line: field.start,
             });
         }
@@ -283,6 +301,7 @@ impl Records {
                 depends: Vec::new(),
                 supersedes: Vec::new(),
                 related: Vec::new(),
+                amends: Vec::new(),
                 within: Vec::new(),
                 within_docs: Vec::new(),
                 changes: Vec::new(),
@@ -296,6 +315,7 @@ impl Records {
                     "Depends" => rec.depends = parse_rel(fld),
                     "Supersedes" => rec.supersedes = parse_rel(fld),
                     "Related" => rec.related = parse_rel(fld),
+                    "Amends" => rec.amends = parse_rel(fld),
                     "Within" => {
                         rec.within = parse_rel(fld);
                         rec.within_docs = parse_docrefs(fld);
@@ -371,6 +391,7 @@ impl Records {
             push(&r.depends, EdgeKind::Depends);
             push(&r.supersedes, EdgeKind::Supersedes);
             push(&r.related, EdgeKind::Related);
+            push(&r.amends, EdgeKind::Amends);
             push(&r.within, EdgeKind::Within);
             for (to, line) in &r.body_links {
                 out.push(Edge {
@@ -425,13 +446,67 @@ impl Records {
         out
     }
 
-    /// Records whose `Supersedes` names `id`.
-    pub fn superseded_by(&self, id: RecId) -> Vec<RecId> {
-        let mut out: Vec<RecId> = self
+    /// Records whose `Supersedes` names `id`, each with the part it replaces when
+    /// the entry is partial (`None` for a whole supersession).
+    pub fn superseded_by(&self, id: RecId) -> Vec<(RecId, Option<String>)> {
+        let mut out: Vec<(RecId, Option<String>)> = self
             .list
             .iter()
-            .filter(|r| r.supersedes.iter().any(|e| e.id == id))
-            .filter_map(Records::id_of)
+            .flat_map(|r| {
+                let from = Records::id_of(r);
+                r.supersedes
+                    .iter()
+                    .filter(move |e| e.id == id)
+                    .filter_map(move |e| {
+                        let part = if e.partial {
+                            Some(e.note.clone().unwrap_or_default())
+                        } else {
+                            None
+                        };
+                        Some((from?, part))
+                    })
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Records whose `Supersedes` names `id` as a whole; only these set the status.
+    pub fn wholly_superseded_by(&self, id: RecId) -> Vec<RecId> {
+        self.superseded_by(id)
+            .into_iter()
+            .filter(|(_, part)| part.is_none())
+            .map(|(from, _)| from)
+            .collect()
+    }
+
+    /// Labels for the records `superseded_by` or `amended_by` returns: the note in
+    /// parentheses, prefixed by `marker` when one is given (`RFC-0120 (in part:
+    /// rights)`, `RFC-0121 (the names)`), or the bare identifier.
+    pub fn labels(list: &[(RecId, Option<String>)], marker: Option<&str>) -> Vec<String> {
+        list.iter()
+            .map(|(id, note)| match (note, marker) {
+                (Some(n), Some(m)) if !n.is_empty() => format!("{id} ({m} {n})"),
+                (Some(n), None) if !n.is_empty() => format!("{id} ({n})"),
+                (Some(_), Some(m)) => format!("{id} ({})", m.trim_end_matches(':')),
+                _ => id.to_string(),
+            })
+            .collect()
+    }
+
+    /// Records whose `Amends` names `id`, each with what it changed.
+    pub fn amended_by(&self, id: RecId) -> Vec<(RecId, Option<String>)> {
+        let mut out: Vec<(RecId, Option<String>)> = self
+            .list
+            .iter()
+            .flat_map(|r| {
+                let from = Records::id_of(r);
+                r.amends
+                    .iter()
+                    .filter(move |e| e.id == id)
+                    .filter_map(move |e| Some((from?, e.note.clone())))
+            })
             .collect();
         out.sort();
         out.dedup();

@@ -36,7 +36,7 @@ fn init_creates_a_lint_clean_project() {
     assert!(
         layout.contains(":rfc: docs/rfc\n")
             && layout.contains(":glossary: docs/glossary.rst\n")
-            && layout.ends_with(":checker: make check\n")
+            && layout.ends_with(":checker: make check\n:amends-until: none\n")
     );
     assert_eq!(
         p.read("_palette/backlog.rst"),
@@ -575,4 +575,201 @@ fn multi_id_pointers_are_recognised_counted_and_removed_at_close() {
         !s.contains("Graduated to") && s.contains("D-1 Use the sample layout"),
         "{s}"
     );
+}
+
+// ── RFC-0009: partial supersession, several active phases ───────────────
+
+#[test]
+fn a_partial_supersession_leaves_the_older_record_and_shows_the_part() {
+    let p = Proj::valid();
+    records::record_update(&p.ctx, params(&p, json!({
+        "record": "RFC-0003",
+        "supersedes": [{"record": "RFC-0001", "note": "the open operation", "partial": true}]
+    }))).expect("partial supersede");
+    assert!(
+        p.read("docs/rfc/rfc-0003-gamma.rst")
+            .contains(":Supersedes: RFC-0001 (in part: the open operation)")
+    );
+    assert!(
+        p.read("docs/rfc/rfc-0001-alpha.rst")
+            .contains(":Status: Accepted")
+    );
+    assert!(
+        p.read("docs/rfc/index.rst")
+            .contains("Superseded by: RFC-0003 (in part: the open operation).")
+    );
+    let status = tools::status(&p.ctx, params(&p, json!({"record": "RFC-0001"}))).expect("status");
+    assert!(
+        status.contains("Superseded by: RFC-0003 (in part: the open operation)"),
+        "{status}"
+    );
+    // Widening the entry to a whole supersession flips the older record; narrowing
+    // a whole one back to a part is refused.
+    records::record_update(
+        &p.ctx,
+        params(
+            &p,
+            json!({
+                "record": "RFC-0003",
+                "supersedes": [{"record": "RFC-0001", "note": "the alpha contract"}]
+            }),
+        ),
+    )
+    .expect("whole supersede");
+    assert!(
+        p.read("docs/rfc/rfc-0001-alpha.rst")
+            .contains(":Status: Superseded")
+    );
+    let err = records::record_update(&p.ctx, params(&p, json!({
+        "record": "RFC-0003",
+        "supersedes": [{"record": "RFC-0001", "note": "the open operation", "partial": true}]
+    }))).expect_err("narrow");
+    assert_eq!(err.code, ErrCode::InvariantViolation);
+    // The marker inside the note is the same request.
+    let err = records::record_update(
+        &p.ctx,
+        params(
+            &p,
+            json!({
+                "record": "RFC-0003",
+                "supersedes": [{"record": "RFC-0001", "note": "in part: the open operation"}]
+            }),
+        ),
+    )
+    .expect_err("narrow through the note");
+    assert_eq!(err.code, ErrCode::InvariantViolation);
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+}
+
+#[test]
+fn record_create_with_a_partial_supersession() {
+    let p = Proj::valid();
+    records::record_create(&p.ctx, params(&p, json!({
+        "kind": "rfc", "title": "Delta", "authors": "A", "description": "D.", "areas": "thing",
+        "supersedes": [{"record": "RFC-0002", "note": "the beta names", "partial": true}]
+    }))).expect("create");
+    assert!(
+        p.read("docs/rfc/rfc-0004-delta.rst")
+            .contains(":Supersedes: RFC-0002 (in part: the beta names)")
+    );
+    assert!(
+        p.read("docs/rfc/rfc-0002-beta.rst")
+            .contains(":Status: Accepted")
+    );
+    // A note that carries the marker is partial too, and the marker is written once.
+    let before = p.read("docs/rfc/rfc-0001-alpha.rst");
+    records::record_create(&p.ctx, params(&p, json!({
+        "kind": "rfc", "title": "Epsilon", "authors": "A", "description": "D.", "areas": "thing",
+        "supersedes": [{"record": "RFC-0001", "note": "In part: the open operation"}]
+    }))).expect("create");
+    assert!(
+        p.read("docs/rfc/rfc-0005-epsilon.rst")
+            .contains(":Supersedes: RFC-0001 (in part: the open operation)")
+    );
+    assert_eq!(
+        p.read("docs/rfc/rfc-0001-alpha.rst"),
+        before,
+        "the older record is untouched"
+    );
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+}
+
+#[test]
+fn amended_by_is_computed_for_a_legacy_amends_field() {
+    let p = Proj::valid();
+    p.replace(
+        "_palette/layout.rst",
+        ":amends-until: none",
+        ":amends-until: 2026-12-31",
+    );
+    p.replace(
+        "docs/rfc/rfc-0003-gamma.rst",
+        ":Related: none\n",
+        ":Related: none\n:Amends: RFC-0001 (the open operation)\n",
+    );
+    // Any write regenerates the index.
+    state::state_record(
+        &p.ctx,
+        params(
+            &p,
+            json!({"kind": "decision", "text": "x", "source": "me", "target": "y"}),
+        ),
+    )
+    .expect("write");
+    assert!(
+        p.read("docs/rfc/index.rst")
+            .contains("Amended by: RFC-0003 (the open operation).")
+    );
+    let status = tools::status(&p.ctx, params(&p, json!({"record": "RFC-0001"}))).expect("status");
+    assert!(
+        status.contains("Amended by: RFC-0003 (the open operation)"),
+        "{status}"
+    );
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+}
+
+#[test]
+fn two_phases_can_be_active_and_an_item_belongs_to_one() {
+    let p = Proj::valid();
+    let c = &p.ctx;
+    // phase-1 is active; B-2 is approved.
+    backlog::phase_open(c, params(&p, json!({"title": "Two", "goal": "G.", "reason": "R.", "exit_criteria": ["E."], "items": ["B-2"]}))).expect("second phase");
+    let text = p.read("_palette/backlog.rst");
+    assert!(
+        text.contains(":phase-1: `phase-1/phase.rst <phase-1/phase.rst>`_ — active")
+            && text.contains(":phase-2: `phase-2/phase.rst <phase-2/phase.rst>`_ — active")
+            && text.contains(":Status: in-phase-2"),
+        "{text}"
+    );
+    backlog::deliverable_create(
+        c,
+        params(
+            &p,
+            json!({"item": "B-2", "title": "Second thing", "what_and_why": "W.", "done_when": ["D."]}),
+        ),
+    )
+    .expect("deliverable in the second phase");
+    assert!(p.exists("_palette/phase-2/deliverables/deliverable-2-second-thing.rst"));
+    let err = backlog::backlog_update(
+        c,
+        params(&p, json!({"item": "B-1", "status": "in-phase-2"})),
+    )
+    .expect_err("an item is in one phase");
+    assert_eq!(err.code, ErrCode::InvariantViolation);
+    let status = tools::status(c, params(&p, json!({}))).expect("status");
+    assert!(
+        status.contains("phase-1 active; phase-2 active"),
+        "{status}"
+    );
+    assert!(p.errors().is_empty(), "{}", show(&p.errors()));
+}
+
+#[test]
+fn accepting_writes_who_and_the_utc_time() {
+    let p = Proj::valid();
+    records::record_update(
+        &p.ctx,
+        params(
+            &p,
+            json!({
+                "record": "RFC-0003", "status": "Proposed"
+            }),
+        ),
+    )
+    .expect("propose");
+    records::record_update(
+        &p.ctx,
+        params(
+            &p,
+            json!({
+                "record": "RFC-0003", "status": "Accepted", "accepted_by": "Sample Owner"
+            }),
+        ),
+    )
+    .expect("accept");
+    assert!(
+        p.read("docs/rfc/rfc-0003-gamma.rst")
+            .contains(":Accepted: Sample Owner (2026-09-30T12:00Z)")
+    );
+    assert!(p.lint().is_empty(), "{}", show(&p.lint()));
 }

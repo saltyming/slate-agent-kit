@@ -8,7 +8,7 @@ RFC-0001: Alpha contract
 :Authors: Sample Author
 :Reviewers: none yet
 :Implementers: Sample Implementer
-:Accepted: 2026-01-10, Sample Owner
+:Accepted: Sample Owner (2026-01-10T00:00Z)
 :Date: 2026-01-10
 :Revised: none
 :Depends: none

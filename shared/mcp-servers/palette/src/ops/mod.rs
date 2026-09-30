@@ -22,7 +22,7 @@ use crate::generated;
 use crate::lint::{self, Analysis, Severity};
 use crate::project::Roots;
 use crate::text::Source;
-use crate::util::{rel_slash, today_utc};
+use crate::util::{now_utc, rel_slash, today_utc};
 use crate::vfs::{self, DiskSource, FileSource, Overlay, ProjectLock};
 
 /// Callback run before each commit step; a test seam that is a no-op in production.
@@ -37,6 +37,8 @@ pub struct Ctx {
     pub lock_timeout: Duration,
     /// Today's date as `YYYY-MM-DD`.
     pub clock: Arc<dyn Fn() -> String + Send + Sync>,
+    /// The current UTC time as `YYYY-MM-DDTHH:MMZ` (written into `Accepted`).
+    pub clock_now: Arc<dyn Fn() -> String + Send + Sync>,
     /// Test seam: called before each rename or delete of a commit.
     pub commit_hook: Option<CommitHook>,
 }
@@ -48,6 +50,7 @@ impl Ctx {
             roots,
             lock_timeout: Duration::from_secs(10),
             clock: Arc::new(today_utc),
+            clock_now: Arc::new(now_utc),
             commit_hook: None,
         }
     }
@@ -94,6 +97,8 @@ pub struct Session<'o, 'a> {
     pub an: Analysis,
     /// Today's date.
     pub today: String,
+    /// The current UTC time to the minute.
+    pub now: String,
 }
 
 impl Session<'_, '_> {
@@ -239,6 +244,7 @@ where
             snap,
             an,
             today: (ctx.clock)(),
+            now: (ctx.clock_now)(),
         };
         op(&mut sess)?
     };

@@ -227,7 +227,7 @@ fn scenario(p: &Proj, crlf: bool) {
     ));
     assert!(
         p.read("docs/rfc/rfc-0003-gamma.rst")
-            .contains(":Accepted: 2026-09-30, Sample Owner")
+            .contains(":Accepted: Sample Owner (2026-09-30T12:00Z)")
     );
     run!("record_update clarification", |c| records::record_update(
         c,

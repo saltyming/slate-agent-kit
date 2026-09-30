@@ -1,7 +1,8 @@
 //! P005 relations and P006 changes.
 //!
 //! P005: links to newer records, cycles, redundant `Depends` entries, a target in both
-//! `Depends` and `Related`, and `Supersedes` targets that are not `Superseded`.
+//! `Depends` and `Related`, whole `Supersedes` targets that are not `Superseded`, and
+//! `Amends` outside what the layout admits.
 //! P006: `Changes` targets that neither exist nor are created by the record's changeset.
 
 use std::collections::BTreeSet;
@@ -10,7 +11,7 @@ use super::patterns::DIRECT_USE_KEYWORD;
 use super::{Cx, Finding};
 use crate::changeset::{Changeset, EditKind, resolve_section};
 use crate::layout::split_logical;
-use crate::records::{RecId, Records};
+use crate::records::{RecId, RecordKind, Records};
 use crate::util::is_iso_date;
 
 pub(super) fn check(cx: &Cx, out: &mut Vec<Finding>) {
@@ -132,7 +133,8 @@ fn relations(cx: &Cx, out: &mut Vec<Finding>) {
                 ));
             }
         }
-        for e in &r.supersedes {
+        // A whole supersession sets the older record's status; a partial one leaves it.
+        for e in r.supersedes.iter().filter(|e| !e.partial) {
             let Some(target) = recs.get(e.id) else {
                 continue;
             };
@@ -142,23 +144,70 @@ fn relations(cx: &Cx, out: &mut Vec<Finding>) {
                     "P005",
                     f,
                     e.line,
-                    format!("{} is named in Supersedes but its status is {status}; its status must be Superseded", e.id),
+                    format!("{} is named in Supersedes but its status is {status}; its status must be Superseded (write `in part: ...` to replace only a part)", e.id),
                 ));
             }
         }
-        // The other direction: a Superseded record must be named by a newer record.
+        // The other direction: a Superseded record must be named as a whole by a
+        // newer record.
         if r.status.as_deref() == Some("Superseded")
             && let Some(id) = Records::id_of(r)
-            && recs.superseded_by(id).is_empty()
+            && recs.wholly_superseded_by(id).is_empty()
         {
             let line = r.field("Status").map(|x| x.start).unwrap_or(0);
             out.push(Finding::error(
                 "P005",
                 f,
                 line,
-                format!("{id} is Superseded but no newer record names it in Supersedes; add the Supersedes entry to the record that replaces it, or correct the status"),
+                format!("{id} is Superseded but no newer record names it in Supersedes as a whole; add the Supersedes entry to the record that replaces it, or correct the status"),
             ));
         }
+        amends(cx, r, out);
+    }
+}
+
+/// `Amends` is admitted only up to the layout's `amends-until`, and an ADR amends
+/// only an ADR (it decides within an RFC's contract and cannot change it).
+fn amends(cx: &Cx, r: &crate::records::Record, out: &mut Vec<Finding>) {
+    if r.amends.is_empty() {
+        return;
+    }
+    let f = &cx.snap.files[r.file];
+    let line = r.field("Amends").map(|x| x.start).unwrap_or(0);
+    let is_adr = cx.snap.files[r.file].role == crate::docs::Role::Adr;
+    for e in &r.amends {
+        if is_adr && e.id.kind == RecordKind::Rfc {
+            out.push(Finding::error(
+                "P005",
+                f,
+                e.line,
+                format!(
+                    "Amends {} names an RFC from an ADR; an ADR amends only an ADR",
+                    e.id
+                ),
+            ));
+        }
+    }
+    match cx.snap.layout.amends_until.as_ref().map(|(v, _)| v.as_str()) {
+        Some(until) if is_iso_date(until) => {
+            if let Some(date) = r.date.as_deref()
+                && is_iso_date(date)
+                && date > until
+            {
+                out.push(Finding::error(
+                    "P005",
+                    f,
+                    line,
+                    format!("Amends is admitted on records dated up to {until} (layout `amends-until`); this record is dated {date}. Write the relation as Supersedes or Related"),
+                ));
+            }
+        }
+        _ => out.push(Finding::error(
+            "P005",
+            f,
+            line,
+            "Amends is a relation of older records; the layout's `amends-until` admits none. Write the relation as Supersedes or Related, or set `amends-until` to the last date that may carry it",
+        )),
     }
 }
 

@@ -353,6 +353,10 @@ pub struct RelationIn {
     pub record: String,
     /// The parenthetical: what is used, replaced or gathered.
     pub note: String,
+    /// `supersedes` only: true replaces a part of the older record (written
+    /// `in part: <note>`), which then keeps its status.
+    #[serde(default)]
+    pub partial: Option<bool>,
 }
 
 /// A maintained document touched by a record.

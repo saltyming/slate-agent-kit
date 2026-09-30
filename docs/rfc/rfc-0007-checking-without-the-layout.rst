@@ -11,7 +11,7 @@ RFC-0007: Checking shared documents without the layout
 :Authors: Claude Fable 5.1
 :Reviewers: Hamin Sung
 :Implementers: Claude Fable 5.1
-:Accepted: 2026-09-30, Hamin Sung (decision made in conversation)
+:Accepted: Hamin Sung (2026-09-30T01:59Z)
 :Date: 2026-09-30
 :Revised: none
 :Depends: RFC-0004 (the check and generate commands and the document model)

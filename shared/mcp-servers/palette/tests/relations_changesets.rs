@@ -53,6 +53,10 @@ fn closure_incoming_and_supersession_are_computed() {
     let (_, an) = analyse(&p);
     assert_eq!(
         an.records.superseded_by(id("RFC-0001")),
+        vec![(id("RFC-0003"), None)]
+    );
+    assert_eq!(
+        an.records.wholly_superseded_by(id("RFC-0001")),
         vec![id("RFC-0003")]
     );
 }
@@ -130,7 +134,10 @@ fn accept_rfc4_depending_on_rfc2(p: &Proj, depends: bool) {
         .read("docs/rfc/rfc-0003-gamma.rst")
         .replace("RFC-0003: Gamma proposal", "RFC-0004: Delta rules")
         .replace(":Status: Draft", ":Status: Accepted")
-        .replace(":Accepted: none", ":Accepted: 2026-04-01, Sample Owner")
+        .replace(
+            ":Accepted: none",
+            ":Accepted: Sample Owner (2026-04-01T00:00Z)",
+        )
         .replace(":Date: 2026-03-10", ":Date: 2026-04-01")
         .replace(
             ":Depends: RFC-0002 (the beta rules it builds on)",
@@ -182,7 +189,7 @@ fn draft_and_proposed_changesets_are_checked_not_applied() {
     );
     p.replace(
         "docs/rfc/rfc-0004-delta.rst",
-        ":Accepted: 2026-04-01, Sample Owner",
+        ":Accepted: Sample Owner (2026-04-01T00:00Z)",
         ":Accepted: none",
     );
     let (_, an) = analyse(&p);

@@ -1,4 +1,5 @@
-//! P002 structure, P003 identity, P012 layout and P014 time-varying fields.
+//! P002 structure, P003 identity, P012 layout, P014 time-varying fields and P016
+//! acceptance.
 //!
 //! Applies the schemas derived from the templates to each document: title pattern,
 //! required header fields and values, required sections, and the item and phase-entry
@@ -13,7 +14,7 @@ use super::{Cx, Finding};
 use crate::docs::{DocFile, Role};
 use crate::records::{RecordKind, Records};
 use crate::rst::{Doc, Field};
-use crate::schema::{FieldSpec, SectionSpec, schemas};
+use crate::schema::{FieldSpec, SectionSpec, ValueSpec, schemas};
 use crate::util::{is_kebab_rst, re};
 
 /// Header fields only the server writes; P014 owns their value format.
@@ -27,6 +28,17 @@ static DELIVERABLE_NAME: LazyLock<Regex> =
     LazyLock::new(|| re(r"^deliverable-(\d+)-[a-z0-9]+(?:-[a-z0-9]+)*\.rst$"));
 static DELIVERABLE_TITLE: LazyLock<Regex> = LazyLock::new(|| re(r"^Deliverable (\d+):"));
 static PHASE_TITLE: LazyLock<Regex> = LazyLock::new(|| re(r"^Phase (\d+)\b"));
+
+/// The one optional header field of a record: `Amends`, a relation of older records
+/// that no template lists. It is accepted right after `Related` with this grammar.
+pub const AMENDS_FIELD: &str = "Amends";
+static AMENDS_VALUE: LazyLock<ValueSpec> =
+    LazyLock::new(|| ValueSpec::parse("RFC-<NNNN> (<what changed>) | ADR-<NNNN> (<what changed>)"));
+
+/// `Accepted` alternatives in the record templates: `none`, the person alone (P016
+/// warns), the person and the time.
+const ACCEPTED_WHO_ONLY: usize = 1;
+const ACCEPTED_WHO_AND_TIME: usize = 2;
 
 pub(super) fn check(cx: &Cx, out: &mut Vec<Finding>) {
     layout_problems(cx, out);
@@ -104,16 +116,19 @@ fn check_fields(
         let Some(name) = spec.literal_name() else {
             continue;
         };
-        if role == Role::Layout && name != "checker" {
+        if role == Role::Layout && !matches!(name, "checker" | "amends-until") {
             continue;
         }
         let Some(pos) = actual.iter().position(|a| a.name == name) else {
-            out.push(Finding::error(
-                "P002",
-                f,
-                anchor,
-                format!("missing required field `:{name}:` ({})", spec.value.raw),
-            ));
+            // A missing layout setting is P012, reported from the layout itself.
+            if role != Role::Layout {
+                out.push(Finding::error(
+                    "P002",
+                    f,
+                    anchor,
+                    format!("missing required field `:{name}:` ({})", spec.value.raw),
+                ));
+            }
             continue;
         };
         if let Some(fur) = furthest
@@ -139,7 +154,58 @@ fn check_fields(
                 actual[pos].start,
                 format!("field `:{name}:` {what}: {msg}"),
             ));
+        } else if record
+            && name == "Accepted"
+            && !spec
+                .value
+                .matches_alt(ACCEPTED_WHO_AND_TIME, actual[pos].value.trim())
+            && spec.value.match_index(actual[pos].value.trim()) == Some(ACCEPTED_WHO_ONLY)
+        {
+            // `<who>` is free text, so a malformed time would read as part of the
+            // name; a value that ends in `)` meant to carry a time and is an error.
+            if actual[pos].value.trim().ends_with(')') {
+                out.push(Finding::error(
+                    "P002",
+                    f,
+                    actual[pos].start,
+                    "field `:Accepted:` has a value outside the allowed values: the parenthetical is not a UTC time `(<YYYY-MM-DDTHH:MMZ>)`",
+                ));
+            } else {
+                out.push(Finding::warning(
+                    "P016",
+                    f,
+                    actual[pos].start,
+                    "field `:Accepted:` names who accepted the record but not when; write `<who> (<YYYY-MM-DDTHH:MMZ>)`",
+                ));
+            }
         }
+    }
+    if record {
+        check_amends(f, actual, out);
+    }
+}
+
+/// `Amends` is optional: absent, or right after `Related` with a relation value.
+fn check_amends(f: &DocFile, actual: &[Field], out: &mut Vec<Finding>) {
+    let Some(pos) = actual.iter().position(|a| a.name == AMENDS_FIELD) else {
+        return;
+    };
+    let after_related = pos > 0 && actual[pos - 1].name == "Related";
+    if !after_related {
+        out.push(Finding::error(
+            "P002",
+            f,
+            actual[pos].start,
+            format!("field `:{AMENDS_FIELD}:` belongs right after `:Related:`"),
+        ));
+    }
+    if let Err(msg) = AMENDS_VALUE.check(&actual[pos].value, true) {
+        out.push(Finding::error(
+            "P002",
+            f,
+            actual[pos].start,
+            format!("field `:{AMENDS_FIELD}:` has a value outside the allowed values: {msg}"),
+        ));
     }
 }
 
