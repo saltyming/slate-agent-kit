@@ -17,7 +17,7 @@ s#{{EDIT_SURFACE}}#Kimi's native edit/write tools#g
 s#{{DELEGATION_SURFACE}}#Agent / dispatch when installed#g
 s#{{FANOUT_DELEGATION_SURFACE}}#AgentSwarm#g
 s#{{KIT_PREFIX}}#kimi-agent-kit#g
-s#{{KIT_VERSION}}#0.11.0#g
+s#{{KIT_VERSION}}#0.11.1#g
 s#{{SUBAGENT_PREFS_FILE}}#kimi-agent-kit--subagent-prefs.md#g
 s#{{HARNESS_SKILLS_DIR}}#$KIMI_CODE_HOME/skills#g
 s#{{PREFS_LOADING}}#read it the first time a session needs it#g
