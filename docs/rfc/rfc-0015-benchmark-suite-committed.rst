@@ -1,8 +1,8 @@
 RFC-0015: The benchmark suite is committed
 ==========================================
 
-:Status: Accepted
-:Implementation: not-started — the benchmarks/ directory with its license texts
+:Status: Superseded
+:Implementation: abandoned — the benchmarks/ directory with its license texts
   and README, and the suite's design document
 :Verification: none — 2026-09-30; not verified yet
 :Areas: benchmarks; licensing; repository layout
@@ -11,13 +11,13 @@ RFC-0015: The benchmark suite is committed
 :Implementers: none yet
 :Accepted: Hamin Sung (2026-09-30T14:20Z)
 :Date: 2026-09-30
-:Revised: none
+:Revised: 2026-10-08 — Changes cleared, the bench is dropped by RFC-0017
 :Depends: RFC-0011 (direct use of the benchmark suite and the task layout the
   bench server runs)
 :Supersedes: RFC-0011 (in part: the suite and its fixtures stay outside any
   public path)
 :Related: none
-:Changes: design/benchmark-suite.rst (Ownership and state)
+:Changes: none
 :Description: The benchmark fixtures, tasks, scorers and hidden tests live in
   this repository under benchmarks/ with per-file licenses; only run results
   stay outside it.

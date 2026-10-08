@@ -17,9 +17,13 @@ adapters/codex/tokens.sed
 adapters/kimi/tokens.sed
 adapters/codex/surface.md
 adapters/kimi/surface.md
+adapters/claude/inserts/models-table.md
+adapters/codex/inserts/models-table.md
+adapters/kimi/inserts/models-table.md
 shared/rules/core/kernel.md
 shared/rules/core/loop-execution.md
 shared/rules/core/loop-delegation.md
+shared/rules/core/loop-models.md
 shared/rules/core/git-workflow.md
 shared/rules/mcp/aside.md
 shared/rules/mcp/dispatch.md
@@ -267,9 +271,9 @@ budget_check() {
     fail=1
   fi
 }
-budget_check claude "$claude_bytes" 26000
-budget_check codex "$codex_bytes" 27000
-budget_check kimi "$kimi_bytes" 26000
+budget_check claude "$claude_bytes" 28500
+budget_check codex "$codex_bytes" 29500
+budget_check kimi "$kimi_bytes" 28500
 
 # ── 9. rendered titles ────────────────────────────────────
 

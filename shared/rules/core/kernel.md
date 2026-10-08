@@ -12,6 +12,7 @@
 
 - `{{TASK_EXECUTION_RULE_FILE}}`: the execution loop, undo, destructive git.
 - `{{DELEGATION_RULE_FILE}}`: subagents and the other ways work leaves the session.
+- `{{MODELS_RULE_FILE}}`: which model and effort a delegate, a dispatch step or a consultation runs on.
 - `{{PALETTE_RULE_FILE}}`: the palette document system, active only where `_palette/` exists.
 - `{{ASIDE_RULE_FILE}}`, `{{DISPATCH_RULE_FILE}}`: consulting another model family; handing a step to `dispatch`.
 - `{{GIT_WORKFLOW_RULE_FILE}}`: the user's git preferences.

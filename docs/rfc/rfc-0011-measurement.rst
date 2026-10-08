@@ -1,8 +1,8 @@
 RFC-0011: Measurement — bench server and benchmark suite
 ========================================================
 
-:Status: Accepted
-:Implementation: not-started — the bench MCP server, its rule and prefs
+:Status: Superseded
+:Implementation: abandoned — the bench MCP server, its rule and prefs
   template, the benchmark fixtures, scorers and analysis of the first wave
 :Verification: none — 2026-09-30; not verified yet
 :Areas: MCP servers; installer; rules; prefs; benchmarks
@@ -11,15 +11,13 @@ RFC-0011: Measurement — bench server and benchmark suite
 :Implementers: none yet
 :Accepted: Hamin Sung (2026-09-30T08:38Z)
 :Date: 2026-09-30
-:Revised: none
+:Revised: 2026-10-08 — Changes cleared, the bench is dropped by RFC-0017
 :Depends: RFC-0008 (direct use of ``RunRecord``, ``Usage`` and the usage
   parsers); RFC-0002 (direct use of the server registration and the prefs
   schema, which gain bench)
 :Supersedes: none
 :Related: RFC-0001 (the levels and models the evidence will inform)
-:Changes: spec/bench.rst (created); design/benchmark-suite.rst (created);
-  design/architecture.rst (Sources; Interfaces and dependencies);
-  spec/support-matrix.rst (Contract)
+:Changes: none
 :Description: A kit-registered bench server runs a model × effort × harness grid
   over agent-exec and records each run's usage and list-price cost, and a
   benchmark suite on saltyos excerpts turns those runs into an error rate per

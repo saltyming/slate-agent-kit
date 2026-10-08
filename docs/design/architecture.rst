@@ -21,8 +21,11 @@ Sources
 ~~~~~~~
 
 ``shared/rules/core/``
-  The kernel (the articles, in six parts) and the execution, delegation and
-  git rule files, which hold only what the articles do not imply.
+  The kernel (the articles, in six parts) and the execution, delegation,
+  model-choice and git rule files, which hold only what the articles do not
+  imply. The model-choice file, ``loop-models.md``, carries the choice rules
+  common to the harnesses and takes its table of the harness vendor's own
+  models from the ``models-table`` insert.
 
 ``shared/rules/mcp/``
   When to consult (aside) and when to dispatch.
@@ -39,9 +42,10 @@ Sources
 
 ``adapters/<harness>/``
   ``tokens.sed`` (render-time values, including the kit version),
-  ``inserts/*.md`` (harness-specific text for each insert marker) and, for
-  Codex and Kimi, ``surface.md`` (how that harness loads the rules and reaches
-  the servers).
+  ``inserts/*.md`` (harness-specific text for each insert marker, including
+  ``models-table.md``, the models of that harness's vendor) and, for Codex and
+  Kimi, ``surface.md`` (how that harness loads the rules and reaches the
+  servers).
 
 ``shared/crates/``
   The Rust libraries the servers share: agent-exec (one headless backend

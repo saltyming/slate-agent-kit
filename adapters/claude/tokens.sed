@@ -5,6 +5,7 @@ s#{{PRIMARY_MANUAL_FILE}}#CLAUDE.md#g
 s#{{TASK_EXECUTION_RULE_FILE}}#claude-agent-kit--task-execution.md#g
 s#{{PALETTE_RULE_FILE}}#claude-agent-kit--palette.md#g
 s#{{DELEGATION_RULE_FILE}}#claude-agent-kit--parallel-work.md#g
+s#{{MODELS_RULE_FILE}}#claude-agent-kit--models.md#g
 s#{{GIT_WORKFLOW_RULE_FILE}}#claude-agent-kit--git-workflow.md#g
 s#{{ASIDE_RULE_FILE}}#claude-agent-kit--aside.md#g
 s#{{DISPATCH_RULE_FILE}}#claude-agent-kit--dispatch.md#g
@@ -17,7 +18,7 @@ s#{{EDIT_SURFACE}}#Edit / Write directly#g
 s#{{DELEGATION_SURFACE}}#Agent / Workflow / dispatch#g
 s#{{FANOUT_DELEGATION_SURFACE}}#Workflow#g
 s#{{KIT_PREFIX}}#claude-agent-kit#g
-s#{{KIT_VERSION}}#13.3.2#g
+s#{{KIT_VERSION}}#13.3.3#g
 s#{{SUBAGENT_PREFS_FILE}}#claude-agent-kit--subagent-prefs.md#g
 s#{{HARNESS_SKILLS_DIR}}#$HOME/.claude/skills#g
 s#{{PREFS_LOADING}}#it loads with these rules#g

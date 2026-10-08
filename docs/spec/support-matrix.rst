@@ -58,6 +58,15 @@ Subagent default model
   ``default_subagent_reasoning_effort``. Kimi: ``[secondary_model]``
   ``default_model`` (an alias of ``[models]``) and ``default_effort``.
 
+Model guidance
+  Claude, Codex, Kimi: the ``models`` rule file, loaded after the delegation
+  rule, which says which model and effort a subagent, a dispatch step or a
+  consultation runs on where the user, the prefs or the call has not fixed
+  them. Its table lists the harness vendor's own models only. Claude: Fable
+  5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5. Codex: ``gpt-6-astra``,
+  ``gpt-6.1-sol``, ``gpt-6-luna``. Kimi: ``k3``, ``k3-256k``,
+  ``kimi-for-coding``, ``kimi-for-coding-highspeed``.
+
 Read-only subagents
   Claude: ``Explore``, ``Plan``, ``claude-code-guide``. Codex: none; a read-only
   opinion goes through aside. Kimi: ``Agent`` with ``explore`` or ``plan``.

@@ -5,6 +5,7 @@ s#{{PRIMARY_MANUAL_FILE}}#AGENTS.md#g
 s#{{TASK_EXECUTION_RULE_FILE}}#kimi-agent-kit--task-execution.md#g
 s#{{PALETTE_RULE_FILE}}#kimi-agent-kit--palette.md#g
 s#{{DELEGATION_RULE_FILE}}#kimi-agent-kit--delegation.md#g
+s#{{MODELS_RULE_FILE}}#kimi-agent-kit--models.md#g
 s#{{GIT_WORKFLOW_RULE_FILE}}#kimi-agent-kit--git-workflow.md#g
 s#{{ASIDE_RULE_FILE}}#kimi-agent-kit--aside.md#g
 s#{{DISPATCH_RULE_FILE}}#kimi-agent-kit--dispatch.md#g
@@ -17,7 +18,7 @@ s#{{EDIT_SURFACE}}#Kimi's native edit/write tools#g
 s#{{DELEGATION_SURFACE}}#Agent / dispatch when installed#g
 s#{{FANOUT_DELEGATION_SURFACE}}#AgentSwarm#g
 s#{{KIT_PREFIX}}#kimi-agent-kit#g
-s#{{KIT_VERSION}}#0.11.2#g
+s#{{KIT_VERSION}}#0.11.3#g
 s#{{SUBAGENT_PREFS_FILE}}#kimi-agent-kit--subagent-prefs.md#g
 s#{{HARNESS_SKILLS_DIR}}#$KIMI_CODE_HOME/skills#g
 s#{{PREFS_LOADING}}#read it the first time a session needs it#g

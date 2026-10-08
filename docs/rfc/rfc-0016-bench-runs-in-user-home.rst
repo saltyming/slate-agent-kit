@@ -1,8 +1,8 @@
 RFC-0016: Bench runs in the user's harness home
 ===============================================
 
-:Status: Accepted
-:Implementation: not-started — the bench crate and its contract; the benchmark
+:Status: Superseded
+:Implementation: abandoned — the bench crate and its contract; the benchmark
   deliverables
 :Verification: none — 2026-09-30; not verified yet
 :Areas: bench server; measurement; agent-exec
@@ -11,14 +11,14 @@ RFC-0016: Bench runs in the user's harness home
 :Implementers: none yet
 :Accepted: Hamin Sung (2026-09-30T22:37Z)
 :Date: 2026-09-30
-:Revised: none
+:Revised: 2026-10-08 — Changes cleared, the bench is dropped by RFC-0017
 :Depends: RFC-0011 (the bench server, its record schema and the paired design);
   RFC-0008 (direct use of agent-exec's RunSpec isolation to run in the user's
   home)
 :Supersedes: RFC-0011 (in part: the isolated backend home, the kit and none
   harness conditions and the kit installation per run)
 :Related: none
-:Changes: spec/bench.rst (Cell; Run; Isolation; Tools; Conformance)
+:Changes: none
 :Description: The bench server runs every cell in the user's own harness home
   with the kit installed there, dropping the isolated home, the kit and no-kit
   conditions and the auth field.

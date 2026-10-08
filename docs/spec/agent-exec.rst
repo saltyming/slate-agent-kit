@@ -177,7 +177,7 @@ kills on close, inside the server process.
 ``RunSpec.guard`` is ``Required`` (without ``agent-guard`` the attempt is
 ``Spawn`` with a message saying how to install it), ``Preferred`` (without it
 the backend runs unguarded and the ``Started`` event says so) or ``Off``.
-dispatch and bench use ``Required``; aside uses ``Preferred``.
+dispatch uses ``Required``; aside uses ``Preferred``.
 
 The crate sets ``AGENT_EXEC_GUARD`` on the guard process, and ``agent-guard``
 removes it from the program's environment. ``run`` refuses with ``Spawn`` when

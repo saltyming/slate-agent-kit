@@ -9,13 +9,13 @@ Records
 `RFC-0001 <rfc-0001-direction-autonomy-levels.rst>`_ Direction, autonomy and action levels
   Status: Accepted. Implementation: complete.
   Depends: none.
-  Linked from: RFC-0002 (Depends), RFC-0003 (Depends), RFC-0005 (Depends), RFC-0006 (Depends), RFC-0006 (link), RFC-0011 (Related).
+  Linked from: RFC-0002 (Depends), RFC-0003 (Depends), RFC-0005 (Depends), RFC-0006 (Depends), RFC-0006 (link), RFC-0011 (Related), RFC-0017 (Depends), RFC-0017 (link).
   Superseded by: none.
 
 `RFC-0002 <rfc-0002-installer-and-kit-layout.rst>`_ Installer and kit layout
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: RFC-0008 (Depends), RFC-0011 (Depends).
+  Linked from: RFC-0008 (Depends), RFC-0011 (Depends), RFC-0017 (Depends), RFC-0017 (link).
   Superseded by: none.
 
 `RFC-0003 <rfc-0003-palette-document-system.rst>`_ palette document system
@@ -39,7 +39,7 @@ Records
 `RFC-0006 <rfc-0006-rules-in-articles.rst>`_ Rules in articles
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: none.
+  Linked from: RFC-0017 (Depends), RFC-0017 (link).
   Superseded by: none.
 
 `RFC-0007 <rfc-0007-checking-without-the-layout.rst>`_ Checking shared documents without the layout
@@ -67,10 +67,10 @@ Records
   Superseded by: none.
 
 `RFC-0011 <rfc-0011-measurement.rst>`_ Measurement — bench server and benchmark suite
-  Status: Accepted. Implementation: not-started.
+  Status: Superseded. Implementation: abandoned.
   Depends: RFC-0008, RFC-0002.
-  Linked from: RFC-0015 (Depends), RFC-0015 (Supersedes), RFC-0015 (link), RFC-0016 (Depends), RFC-0016 (Supersedes).
-  Superseded by: RFC-0015 (in part: the suite and its fixtures stay outside any public path), RFC-0016 (in part: the isolated backend home, the kit and none harness conditions and the kit installation per run).
+  Linked from: RFC-0015 (Depends), RFC-0015 (Supersedes), RFC-0015 (link), RFC-0016 (Depends), RFC-0016 (Supersedes), RFC-0017 (Supersedes), RFC-0017 (link).
+  Superseded by: RFC-0015 (in part: the suite and its fixtures stay outside any public path), RFC-0016 (in part: the isolated backend home, the kit and none harness conditions and the kit installation per run), RFC-0017.
 
 `RFC-0012 <rfc-0012-tables-and-code-blocks.rst>`_ Tables and code blocks in maintained documents and records
   Status: Accepted. Implementation: complete.
@@ -91,13 +91,19 @@ Records
   Superseded by: none.
 
 `RFC-0015 <rfc-0015-benchmark-suite-committed.rst>`_ The benchmark suite is committed
-  Status: Accepted. Implementation: not-started.
+  Status: Superseded. Implementation: abandoned.
   Depends: RFC-0011.
-  Linked from: none.
-  Superseded by: none.
+  Linked from: RFC-0017 (Supersedes), RFC-0017 (link).
+  Superseded by: RFC-0017.
 
 `RFC-0016 <rfc-0016-bench-runs-in-user-home.rst>`_ Bench runs in the user's harness home
-  Status: Accepted. Implementation: not-started.
+  Status: Superseded. Implementation: abandoned.
   Depends: RFC-0011, RFC-0008.
+  Linked from: RFC-0017 (Supersedes), RFC-0017 (link).
+  Superseded by: RFC-0017.
+
+`RFC-0017 <rfc-0017-model-effort-guidance-as-a-rule.rst>`_ Model and effort guidance ships as a rule; the bench is dropped
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0001, RFC-0002, RFC-0006.
   Linked from: none.
   Superseded by: none.
