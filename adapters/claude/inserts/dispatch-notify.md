@@ -1,1 +1,1 @@
-In Claude Code, a backgrounded `Agent` or `Workflow` call notifies the session when it completes; dispatch does not. Under `/loop`, arm `ScheduleWakeup` with an interval matched to the run's expected duration; outside a loop, tell the user the run is still going.
+In Claude Code, a backgrounded `Agent` or `Workflow` call notifies the session when it completes; dispatch does not. The follow-up is `ScheduleWakeup`, inside `/loop` or not: an interval matched to the run's expected duration and a prompt naming the run to check.
