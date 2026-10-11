@@ -121,8 +121,9 @@ values carried over. A current-turn instruction outranks a file's value.
 
 Compatibility
 -------------
-Headings and values are stable within a major version of a kit; a renamed
-setting ships with a migration, as the 12.x and 0.7.x policies did.
+Headings and values are stable within one contract number of a kit (the
+descriptor's ``contract``); a renamed setting ships with a migration, as the
+12.x and 0.7.x policies did.
 
 Conformance
 -----------

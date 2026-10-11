@@ -65,9 +65,11 @@ Commands and options (see each kit's README for the full list):
 
 ## What lives here
 
-- `shared/rules/core` — the kernel (direction, autonomy, prohibitions,
-  reporting, memory) and the execution, delegation, git and convention rules.
-- `shared/rules/mcp` — when to consult (`aside`) and when to dispatch.
+- `shared/rules/constitution.md` — the constitution: the preamble and the
+  articles (direction, autonomy, state, delegation, verification, conduct).
+- `shared/rules/implementing` — the implementing rules: execution, delegation,
+  model choice, git, and under `mcp/` when to consult (`aside`) and when to
+  dispatch.
 - `shared/workflows/palette` — the palette document system: rule, skills and
   templates; `shared/workflows/memory` — the memory-triage skill.
 - `shared/prefs` — aside, dispatch, subagent, git and comment preference

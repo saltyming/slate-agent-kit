@@ -114,6 +114,11 @@ fn upgrading_from_the_earlier_layout_migrates_prefs_and_replaces_the_line_manife
                 .exists()
         );
         assert!(home.join(format!(".{kit}-manifest.toml")).is_file());
+        // The payload fixture predates contracts, so the recorded contract is 1.
+        assert!(
+            read(&home.join(format!(".{kit}-manifest.toml"))).contains("contract = 1"),
+            "{harness:?}: manifest lacks the contract"
+        );
         assert!(!home.join(format!(".{kit}-manifest")).exists());
         assert!(!home.join(".kimi-code-agent-kit-manifest").exists());
         assert!(!read(&home.join(harness.primary_file())).contains("Old manual"));

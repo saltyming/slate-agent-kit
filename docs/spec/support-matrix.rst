@@ -23,7 +23,7 @@ Contract
 --------
 
 Rules
-  Claude, Codex, Kimi: the kernel and every rule file, including the formal
+  Claude, Codex, Kimi: the constitution and every rule file, including the formal
   register rule and the memory invariant.
 
 Rule delivery

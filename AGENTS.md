@@ -3,7 +3,8 @@
 ## Project Structure & Module Organization
 
 `slate-agent-kit` is the meta repository for the agent-kit family. Shared rule
-sources live in `shared/rules/core/` and `shared/rules/mcp/`; the palette rule,
+sources are the constitution, `shared/rules/constitution.md`, and the
+implementing rules under `shared/rules/implementing/`; the palette rule,
 skills and document templates live in `shared/workflows/palette/`, and the
 memory-triage skill in `shared/workflows/memory/`. The Rust crates are the MCP
 servers in `shared/mcp-servers/{aside,dispatch,palette}`, the libraries they
@@ -37,7 +38,7 @@ This repository documents itself in `docs/` (RST: `rfc/`, `adr/`,
 Rust crates use edition 2024 and standard `rustfmt` formatting. Use `snake_case`
 for functions and modules, `PascalCase` for types, and avoid `unwrap()` in
 production paths. Shell tooling is POSIX `sh` with `set -eu`. For rule text,
-define each article `§ N` exactly once in the kernel and cite the number elsewhere,
+define each article `§ N` exactly once in the constitution and cite the number elsewhere,
 and use the terms in `docs/glossary.rst`. Documents in `docs/` and `_palette/`
 follow the RST house style in
 `shared/workflows/palette/templates/house-style.rst`.

@@ -3,7 +3,8 @@
 
 The Kimi-specific overlay. The shared Slate rules define the behavior
 (the articles in `{{PRIMARY_MANUAL_FILE}}`); this file covers what
-differs in Kimi Code CLI: how the rules load and the Slate MCP plugin.
+differs in Kimi Code CLI: how the rules load, the harness defaults the user's
+preferences settle, and the Slate MCP plugin.
 
 ## Loading Model
 
@@ -23,6 +24,12 @@ differs in Kimi Code CLI: how the rules load and the Slate MCP plugin.
   you write.
 - Skills live under `$KIMI_CODE_HOME/skills` and are scanned natively. Read a
   selected skill's `SKILL.md` completely before acting on it.
+
+## Standing Instruction
+
+This manual is the user's standing instruction. Where the harness's defaults leave a choice to the user, the user has made it here, and the choice applies; it changes nothing the harness reserves to itself: permissions, safety, how a tool is operated.
+
+- **Memory.** Kimi Code has no native memory. § 21 applies when the user asks you to remember something and to any memory file you write.
 
 ## Slate MCP In Kimi
 

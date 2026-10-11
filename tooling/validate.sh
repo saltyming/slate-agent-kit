@@ -15,18 +15,19 @@ docs/glossary.rst
 adapters/claude/tokens.sed
 adapters/codex/tokens.sed
 adapters/kimi/tokens.sed
+adapters/claude/surface.md
 adapters/codex/surface.md
 adapters/kimi/surface.md
 adapters/claude/inserts/models-table.md
 adapters/codex/inserts/models-table.md
 adapters/kimi/inserts/models-table.md
-shared/rules/core/kernel.md
-shared/rules/core/loop-execution.md
-shared/rules/core/loop-delegation.md
-shared/rules/core/loop-models.md
-shared/rules/core/git-workflow.md
-shared/rules/mcp/aside.md
-shared/rules/mcp/dispatch.md
+shared/rules/constitution.md
+shared/rules/implementing/execution.md
+shared/rules/implementing/delegation.md
+shared/rules/implementing/models.md
+shared/rules/implementing/git.md
+shared/rules/implementing/mcp/aside.md
+shared/rules/implementing/mcp/dispatch.md
 shared/workflows/palette/rules.md
 shared/workflows/palette/skills/palette-init/SKILL.md
 shared/workflows/palette/templates/house-style.rst
@@ -45,6 +46,7 @@ shared/setup/Cargo.toml
 tooling/render-kit.sh
 tooling/install-mcp.sh
 tooling/slate-version
+tooling/contract
 tooling/kit-scripts/kit-maintainer.md.tmpl
 tooling/kit-scripts/entry/install.sh.tmpl
 tooling/kit-scripts/entry/install.ps1.tmpl
@@ -73,7 +75,7 @@ done
 
 markers=$(grep -rhoE '^\{\{@INSERT [a-z0-9-]+\}\}$' \
     "$ROOT/shared/rules" "$ROOT/shared/workflows" \
-    "$ROOT/adapters/codex/surface.md" "$ROOT/adapters/kimi/surface.md" 2>/dev/null \
+    "$ROOT"/adapters/*/surface.md 2>/dev/null \
   | sed 's/{{@INSERT \([a-z0-9-]*\)}}/\1/' | sort -u)
 
 for m in $markers; do
@@ -168,8 +170,8 @@ fi
 
 # ── 5. formal-language + stale-terminology ────────────────
 
-if ! grep -R -n "polite formal" "$ROOT/shared/rules/core" >/dev/null; then
-  echo "formal-language rule missing from core rules" >&2
+if ! grep -n "polite formal" "$ROOT/shared/rules/constitution.md" >/dev/null; then
+  echo "formal-language rule missing from the constitution" >&2
   fail=1
 fi
 
@@ -204,9 +206,9 @@ fi
 
 # ── 6. article id integrity ───────────────────────────────
 # Every referenced article (§ N, optionally with a letter suffix) must have
-# exactly one bold definition line, in the kernel.
+# exactly one bold definition line, in the constitution.
 
-src_all=$(cat "$ROOT"/shared/rules/core/*.md "$ROOT"/shared/rules/mcp/*.md "$ROOT/shared/workflows/palette/rules.md" \
+src_all=$(cat "$ROOT"/shared/rules/*.md "$ROOT"/shared/rules/implementing/*.md "$ROOT"/shared/rules/implementing/mcp/*.md "$ROOT/shared/workflows/palette/rules.md" \
   "$ROOT"/shared/workflows/*/skills/*/SKILL.md "$ROOT"/adapters/*/inserts/*.md "$ROOT"/adapters/*/surface.md 2>/dev/null)
 refs=$(printf '%s' "$src_all" | grep -oE '§ [0-9]+[a-z]?' | sort -u | sed 's/§ //')
 for id in $refs; do
@@ -271,9 +273,9 @@ budget_check() {
     fail=1
   fi
 }
-budget_check claude "$claude_bytes" 28500
-budget_check codex "$codex_bytes" 29500
-budget_check kimi "$kimi_bytes" 28500
+budget_check claude "$claude_bytes" 31500
+budget_check codex "$codex_bytes" 31500
+budget_check kimi "$kimi_bytes" 30500
 
 # ── 9. rendered titles ────────────────────────────────────
 
@@ -305,7 +307,7 @@ for kit in claude codex kimi; do
   if [ -f "$kd/install.sh" ] && ! sh -n "$kd/install.sh" 2>/dev/null; then
     echo "$kit: install.sh has a syntax error" >&2; fail=1
   fi
-  for key in kit harness version slate_version primary load rules skills prefs servers; do
+  for key in kit harness version contract slate_version primary load rules skills prefs servers; do
     if [ -f "$kd/dist/kit.toml" ] && ! grep -q "^$key = " "$kd/dist/kit.toml"; then
       echo "$kit: dist/kit.toml lacks '$key'" >&2; fail=1
     fi

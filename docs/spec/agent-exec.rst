@@ -325,9 +325,9 @@ Ownership and ordering
 Compatibility
 -------------
 
-The crates are workspace-internal and versioned with the workspace. Within a
-kit major version a ``RunRecord`` or ``Usage`` field is added, never removed
-or renamed, so a record written by one server is readable by another; a new
+The crates are workspace-internal and versioned with the workspace. Within
+one kit contract number a ``RunRecord`` or ``Usage`` field is added, never
+removed or renamed, so a record written by one server is readable by another; a new
 ``usage_source`` value is added when a new source is parsed.
 
 Conformance

@@ -26,8 +26,10 @@ case "$harness" in
     target="${2:-$ROOT/kits/claude-agent-kit}"
     primary="CLAUDE.md"
     prefix="claude-agent-kit"
-    delegation_name="parallel-work"
+    delegation_name="delegation"
     load="rules-dir"
+    surface_src="$ROOT/adapters/claude/surface.md"
+    surface_name="claude-surface"
     legacy='"workslate"'
     ;;
   codex)
@@ -64,6 +66,11 @@ inserts_dir="$ROOT/adapters/$harness/inserts"
 slate_version=$(sed -n '1p' "$ROOT/tooling/slate-version")
 [ -n "$slate_version" ] || {
   echo "tooling/slate-version is empty" >&2
+  exit 1
+}
+contract=$(sed -n '1p' "$ROOT/tooling/contract")
+[ -n "$contract" ] || {
+  echo "tooling/contract is empty" >&2
   exit 1
 }
 kit_version=$(sed -n 's/^s#{{KIT_VERSION}}#\([^#]*\)#g$/\1/p' "$sed_script")
@@ -147,7 +154,7 @@ mkdir -p "$dist/rules" "$dist/skills" "$dist/prefs"
 rm -rf "$target/${harness}-rules" "$target/${harness}-skills" "$target/scripts"
 [ "$harness" = "claude" ] && rm -f "$target/CLAUDE.md"
 
-render "$ROOT/shared/rules/core/kernel.md" "$dist/$primary"
+render "$ROOT/shared/rules/constitution.md" "$dist/$primary"
 
 # Rule files in the order a concatenating harness loads them.
 rules=""
@@ -158,13 +165,13 @@ add_rule() {
 if [ -n "$surface_src" ]; then
   add_rule "$surface_src" "$surface_name"
 fi
-add_rule "$ROOT/shared/rules/core/loop-execution.md" task-execution
+add_rule "$ROOT/shared/rules/implementing/execution.md" task-execution
 add_rule "$ROOT/shared/workflows/palette/rules.md" palette
-add_rule "$ROOT/shared/rules/core/loop-delegation.md" "$delegation_name"
-add_rule "$ROOT/shared/rules/core/loop-models.md" models
-add_rule "$ROOT/shared/rules/core/git-workflow.md" git-workflow
-add_rule "$ROOT/shared/rules/mcp/aside.md" aside
-add_rule "$ROOT/shared/rules/mcp/dispatch.md" dispatch
+add_rule "$ROOT/shared/rules/implementing/delegation.md" "$delegation_name"
+add_rule "$ROOT/shared/rules/implementing/models.md" models
+add_rule "$ROOT/shared/rules/implementing/git.md" git-workflow
+add_rule "$ROOT/shared/rules/implementing/mcp/aside.md" aside
+add_rule "$ROOT/shared/rules/implementing/mcp/dispatch.md" dispatch
 
 skills=""
 for skill in palette-init palette-resume palette-state palette-record palette-spec palette-ux palette-ui palette-rules; do
@@ -188,6 +195,7 @@ done
   echo "kit = \"$prefix\""
   echo "harness = \"$harness\""
   echo "version = \"$kit_version\""
+  echo "contract = $contract"
   echo "slate_version = \"$slate_version\""
   echo "primary = \"$primary\""
   echo "load = \"$load\""

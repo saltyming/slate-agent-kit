@@ -2,7 +2,7 @@ Glossary — slate-agent-kit
 ==========================
 
 :Status: Maintained
-:Date: 2026-09-29
+:Date: 2026-10-11
 
 The terms the kit's rules, skills, tools and palette documents use. Each term
 has one meaning. In a project's own documents, the project's glossary wins; a
@@ -33,6 +33,25 @@ article
   One numbered rule of the kit (``§ N``): a norm in numbered clauses and the
   test that shows it was broken. Defined once in the manual, cited by number
   everywhere else; numbers never move.
+
+constitution
+  The manual a kit installs: the preamble and the articles. One text for every
+  harness; what differs by harness lives in that harness's surface rule.
+
+preamble
+  The constitution's opening statement of the intent the articles derive
+  from. It guides interpretation where the articles and implementing rules
+  leave a choice; it overrides no article and grants no authorization.
+
+implementing rules
+  The rule files that say how the articles are applied: execution,
+  delegation, models, git, aside, dispatch, palette and each harness's
+  surface rule. They load with the constitution.
+
+contract number
+  The integer in a kit's descriptor (``contract``) naming the compatibility
+  line of its descriptor, manifest, prefs and server interfaces. It rises only
+  on an incompatible change, independently of the release number.
 
 approval
   The user's explicit agreement that turns a proposal into authorized work.
@@ -209,6 +228,7 @@ Retired terms
 
 Do not use these; use the replacement.
 
+- kernel: constitution
 - story: deliverable
 - slice (as a planning unit): phase
 - handoff: approval (the step that authorizes work) or resume (a new session

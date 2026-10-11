@@ -73,6 +73,9 @@ pub struct Manifest {
     /// Slate release the binaries came from.
     #[serde(default)]
     pub slate_version: String,
+    /// Contract number of the installed kit; 0 in a manifest written before contracts.
+    #[serde(default)]
+    pub contract: u32,
     /// When the manifest was last written.
     #[serde(default)]
     pub updated_at: String,

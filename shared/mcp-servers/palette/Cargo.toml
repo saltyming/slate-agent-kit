@@ -1,6 +1,6 @@
 [package]
 name = "palette"
-version = "0.3.1"
+version = "26.10.0"
 edition = "2024"
 license = "MIT"
 

@@ -31,6 +31,10 @@ pub struct Descriptor {
     pub harness: String,
     /// Kit version.
     pub version: String,
+    /// Compatibility contract of the descriptor, manifest, prefs and server
+    /// interfaces; kits released before 26.10.0 carry none and are contract 1.
+    #[serde(default = "contract_one")]
+    pub contract: u32,
     /// Slate release that provides the binaries.
     pub slate_version: String,
     /// Primary instruction file inside `dist/`.
@@ -52,6 +56,10 @@ pub struct Descriptor {
     /// Legacy cleanups to run.
     #[serde(default)]
     pub legacy: Vec<String>,
+}
+
+fn contract_one() -> u32 {
+    1
 }
 
 /// The servers the installer knows how to install and register.
@@ -233,8 +241,9 @@ mod tests {
     const KIT: &str = r#"
 kit = "claude-agent-kit"
 harness = "claude"
-version = "13.0.0"
-slate_version = "0.7.0"
+version = "26.10.0"
+contract = 1
+slate_version = "26.10.0"
 primary = "CLAUDE.md"
 load = "rules-dir"
 rules = ["claude-agent-kit--a.md"]
@@ -292,6 +301,18 @@ legacy = ["workslate"]
         let bad = KIT.replace("\"aside\", \"git\"", "\"aside\", \"nope\"");
         let d: Descriptor = toml::from_str(&bad).unwrap();
         assert!(d.validate().is_err());
+    }
+
+    #[test]
+    fn contract_defaults_to_one_when_the_descriptor_predates_it() {
+        let d: Descriptor = toml::from_str(KIT).unwrap();
+        assert_eq!(d.contract, 1);
+        let old = KIT.replace("contract = 1\n", "");
+        let d: Descriptor = toml::from_str(&old).unwrap();
+        assert_eq!(d.contract, 1);
+        let next = KIT.replace("contract = 1", "contract = 2");
+        let d: Descriptor = toml::from_str(&next).unwrap();
+        assert_eq!(d.contract, 2);
     }
 
     #[test]

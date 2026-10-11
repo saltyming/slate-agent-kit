@@ -63,8 +63,9 @@ Descriptor
 
    kit = "claude-agent-kit"          # file prefix and manifest name
    harness = "claude"                # claude | codex | kimi
-   version = "13.0.0"                # kit version
-   slate_version = "0.7.0"           # slate release that provides the binaries
+   version = "26.10.0"               # kit version, YY.MM.N
+   contract = 1                      # compatibility contract (Compatibility)
+   slate_version = "26.10.0"         # slate release that provides the binaries
    primary = "CLAUDE.md"             # file in dist/
    load = "rules-dir"                # rules-dir | concat
    rules = ["claude-agent-kit--task-execution.md", "..."]   # concat order
@@ -366,9 +367,12 @@ earlier steps' results in place and the manifest describing them.
 Compatibility
 -------------
 The manifest format, the descriptor fields and the command names are stable
-within a major version of a kit. An older line-format manifest and 12.x or
-0.7.x prefs files are read once and replaced. A new descriptor field is
-compatible; a removed or renamed one is not.
+within one contract number, the descriptor's ``contract``; a release that
+changes one of them incompatibly raises the number, and the release number
+(``YY.MM.N``) says nothing about compatibility. A descriptor without
+``contract`` is contract 1. An older line-format manifest and 12.x or 0.7.x
+prefs files are read once and replaced. A new descriptor field is compatible;
+a removed or renamed one is not.
 
 Conformance
 -----------

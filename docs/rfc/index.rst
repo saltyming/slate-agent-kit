@@ -9,13 +9,13 @@ Records
 `RFC-0001 <rfc-0001-direction-autonomy-levels.rst>`_ Direction, autonomy and action levels
   Status: Accepted. Implementation: complete.
   Depends: none.
-  Linked from: RFC-0002 (Depends), RFC-0003 (Depends), RFC-0005 (Depends), RFC-0006 (Depends), RFC-0006 (link), RFC-0011 (Related), RFC-0017 (Depends), RFC-0017 (link).
+  Linked from: RFC-0002 (Depends), RFC-0003 (Depends), RFC-0005 (Depends), RFC-0006 (Depends), RFC-0006 (link), RFC-0011 (Related), RFC-0017 (Depends), RFC-0017 (link), RFC-0018 (Depends).
   Superseded by: none.
 
 `RFC-0002 <rfc-0002-installer-and-kit-layout.rst>`_ Installer and kit layout
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: RFC-0008 (Depends), RFC-0011 (Depends), RFC-0017 (Depends), RFC-0017 (link).
+  Linked from: RFC-0008 (Depends), RFC-0011 (Depends), RFC-0017 (Depends), RFC-0017 (link), RFC-0018 (Depends).
   Superseded by: none.
 
 `RFC-0003 <rfc-0003-palette-document-system.rst>`_ palette document system
@@ -33,14 +33,14 @@ Records
 `RFC-0005 <rfc-0005-memory-discipline.rst>`_ Memory discipline
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: RFC-0006 (Related), RFC-0006 (link).
+  Linked from: RFC-0006 (Related), RFC-0006 (link), RFC-0018 (Related).
   Superseded by: none.
 
 `RFC-0006 <rfc-0006-rules-in-articles.rst>`_ Rules in articles
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: RFC-0017 (Depends), RFC-0017 (link).
-  Superseded by: none.
+  Linked from: RFC-0017 (Depends), RFC-0017 (link), RFC-0018 (Depends), RFC-0018 (Supersedes).
+  Superseded by: RFC-0018 (in part: the requirement that reasons and examples leave the standing corpus, and the budgets; the preamble is a reason, and § 19 (4) carries one example).
 
 `RFC-0007 <rfc-0007-checking-without-the-layout.rst>`_ Checking shared documents without the layout
   Status: Accepted. Implementation: complete.
@@ -103,6 +103,12 @@ Records
   Superseded by: RFC-0017.
 
 `RFC-0017 <rfc-0017-model-effort-guidance-as-a-rule.rst>`_ Model and effort guidance ships as a rule; the bench is dropped
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0001, RFC-0002, RFC-0006.
+  Linked from: RFC-0018 (Related).
+  Superseded by: none.
+
+`RFC-0018 <rfc-0018-constitution-and-implementing-rules.rst>`_ The manual is a constitution with a preamble; the rules implement it
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001, RFC-0002, RFC-0006.
   Linked from: none.

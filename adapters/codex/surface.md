@@ -3,7 +3,8 @@
 
 The Codex-specific overlay. The shared Slate rules define the behavior
 (the articles in `{{PRIMARY_MANUAL_FILE}}`); this file covers what
-differs in Codex: how the rules load, goals, editing, and the Slate MCP servers.
+differs in Codex: how the rules load, the harness defaults the user's
+preferences settle, goals, editing, and the Slate MCP servers.
 
 ## Loading Model
 
@@ -22,6 +23,12 @@ differs in Codex: how the rules load, goals, editing, and the Slate MCP servers.
   you write.
 - Skills live under `$CODEX_HOME/skills`. Read a selected skill's `SKILL.md`
   completely before acting on it.
+
+## Standing Instruction
+
+This manual is the user's standing instruction. Where the harness's defaults leave a choice to the user, the user has made it here, and the choice applies; it changes nothing the harness reserves to itself: permissions, safety, how a tool is operated.
+
+- **Memory.** Codex Memories are generated in the background from past sessions, not written by the agent. § 21 applies when the user asks you to remember something and to any memory file you write.
 
 ## Goals
 

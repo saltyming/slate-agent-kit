@@ -1,1 +1,0 @@
-- `kimi-agent-kit--kimi-surface.md`: the Kimi surface binding (loading model, Slate MCP plugin registration).

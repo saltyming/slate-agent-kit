@@ -2,7 +2,7 @@ Contributing — slate-agent-kit
 ==============================
 
 :Status: Maintained
-:Date: 2026-09-30
+:Date: 2026-10-11
 
 Branches
 --------
@@ -12,6 +12,15 @@ Ordinary changes go to ``main`` directly. A breaking release is developed on a
 ``main`` through one pull request per repository, fast-forwarded. Kit
 branches are pushed before the slate branch that pins them, so a checkout with
 ``submodules: recursive`` always resolves the pins.
+
+The three kits, the slate release and the workspace crates share one number,
+``YY.MM.N``: the year and month of the release, and ``N`` the release's
+ordinal in that month from 0; the next month's first release is ``26.11.0``,
+a second release in the same month ``26.10.1``. The number says when. What
+changed is in each kit's CHANGELOG, and whether an installed kit stays
+compatible is the contract number (``tooling/contract``, rendered as the
+descriptor's ``contract``), which rises only when the descriptor, manifest,
+prefs or server interfaces change incompatibly.
 
 Commits
 -------

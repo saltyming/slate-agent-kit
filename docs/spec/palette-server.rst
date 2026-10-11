@@ -429,8 +429,9 @@ drifted.
 Compatibility
 -------------
 
-Tool names and input fields are stable within a major version of the kit. A
-new optional input field is compatible; a removed or renamed one is not.
+Tool names and input fields are stable within one contract number of the kit
+(the descriptor's ``contract``). A new optional input field is compatible; a
+removed or renamed one is not.
 
 Conformance
 -----------

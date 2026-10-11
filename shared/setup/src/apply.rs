@@ -314,6 +314,7 @@ pub fn apply(env: &Env, ui: &mut Ui, kit: &Kit, plan: &Plan) -> Report {
     if result.is_ok() {
         manifest.version = desc.version.clone();
         manifest.slate_version = desc.slate_version.clone();
+        manifest.contract = desc.contract;
         manifest.roots = plan.roots.clone();
         if !plan.servers.is_empty() || manifest.bin_dir.is_none() {
             manifest.bin_dir = Some(kit.bin_dir.clone());
