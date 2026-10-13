@@ -2,9 +2,10 @@
 //! link into `_palette/`. Also reports header relations that name a record that does
 //! not exist.
 //!
-//! A link inside a changeset's edit body is text of the edit's target document: it is
-//! read from that document's folder, and its target may be a document or section that
-//! the record's own edits or its dependency closure's edits create.
+//! A link inside a changeset's edit body is text of the edit's target document (a
+//! family document or another document under the document root): it is read from that
+//! document's folder, and its target may be a document or section that the record's
+//! own edits or its dependency closure's edits create.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -58,7 +59,7 @@ pub(super) fn check(cx: &Cx, out: &mut Vec<Finding>) {
             let body_doc = edits
                 .as_ref()
                 .and_then(|cs| cs.body_target(doc, l.line))
-                .and_then(|logical| cx.snap.loc.maintained_file(logical));
+                .map(|t| cx.snap.loc.target_file(t));
             let (from_file, from_dir, internal_source) = match &body_doc {
                 Some(p) => (p.clone(), parent(p), cx.snap.loc.is_internal(p)),
                 None => (f.path.clone(), dir.clone(), internal_source),

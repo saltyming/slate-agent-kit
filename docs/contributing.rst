@@ -65,6 +65,7 @@ Records
 -------
 
 :Amends: none
+:Acceptance: who-and-time
 
 A record that changes an accepted contract supersedes the older record in
 ``Supersedes``, wholly or ``in part``; no record amends another.

@@ -21,14 +21,14 @@ Records
 `RFC-0003 <rfc-0003-palette-document-system.rst>`_ palette document system
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: RFC-0004 (Depends), RFC-0007 (Related), RFC-0009 (Depends), RFC-0009 (link), RFC-0012 (Related), RFC-0012 (link), RFC-0013 (Depends), RFC-0013 (Supersedes), RFC-0013 (link).
+  Linked from: RFC-0004 (Depends), RFC-0007 (Related), RFC-0009 (Depends), RFC-0009 (link), RFC-0012 (Related), RFC-0012 (link), RFC-0013 (Depends), RFC-0013 (Supersedes), RFC-0013 (link), RFC-0019 (Related).
   Superseded by: RFC-0013 (in part: Changes names only design and spec documents).
 
 `RFC-0004 <rfc-0004-palette-server.rst>`_ palette MCP server
   Status: Accepted. Implementation: complete.
   Depends: RFC-0003.
-  Linked from: RFC-0007 (Depends), RFC-0007 (link), RFC-0009 (Depends), RFC-0009 (link), RFC-0012 (Depends), RFC-0012 (link), RFC-0013 (Depends), RFC-0013 (link).
-  Superseded by: none.
+  Linked from: RFC-0007 (Depends), RFC-0007 (link), RFC-0009 (Depends), RFC-0009 (link), RFC-0012 (Depends), RFC-0012 (link), RFC-0013 (Depends), RFC-0013 (link), RFC-0019 (Depends), RFC-0019 (Supersedes), RFC-0019 (link), RFC-0021 (Depends), RFC-0021 (Supersedes), RFC-0021 (link).
+  Superseded by: RFC-0019 (in part: the edit kinds and the design-and-spec limit of changesets and staging), RFC-0021 (in part: regeneration only from the command line, and Implementation written only by promotion).
 
 `RFC-0005 <rfc-0005-memory-discipline.rst>`_ Memory discipline
   Status: Accepted. Implementation: complete.
@@ -45,7 +45,7 @@ Records
 `RFC-0007 <rfc-0007-checking-without-the-layout.rst>`_ Checking shared documents without the layout
   Status: Accepted. Implementation: complete.
   Depends: RFC-0004.
-  Linked from: RFC-0010 (Depends), RFC-0010 (link), RFC-0013 (Related), RFC-0013 (link).
+  Linked from: RFC-0010 (Depends), RFC-0010 (link), RFC-0013 (Related), RFC-0013 (link), RFC-0019 (Depends), RFC-0019 (link).
   Superseded by: none.
 
 `RFC-0008 <rfc-0008-shared-backend-execution.rst>`_ Shared backend execution layer
@@ -57,13 +57,13 @@ Records
 `RFC-0009 <rfc-0009-record-header-rules.rst>`_ Record header rules and several active phases
   Status: Accepted. Implementation: complete.
   Depends: RFC-0003, RFC-0004.
-  Linked from: RFC-0010 (Depends), RFC-0010 (Supersedes), RFC-0010 (link).
-  Superseded by: RFC-0010 (in part: the layout setting ``amends-until``).
+  Linked from: RFC-0010 (Depends), RFC-0010 (Supersedes), RFC-0010 (link), RFC-0020 (Depends), RFC-0020 (Supersedes), RFC-0020 (link).
+  Superseded by: RFC-0010 (in part: the layout setting ``amends-until``), RFC-0020 (in part: the Accepted form without the time lints as a P016 warning in every project).
 
 `RFC-0010 <rfc-0010-amends-cutoff-in-contributing.rst>`_ Amends cutoff in the contributing document
   Status: Accepted. Implementation: complete.
   Depends: RFC-0009, RFC-0007.
-  Linked from: none.
+  Linked from: RFC-0020 (Depends), RFC-0020 (link).
   Superseded by: none.
 
 `RFC-0011 <rfc-0011-measurement.rst>`_ Measurement — bench server and benchmark suite
@@ -81,8 +81,8 @@ Records
 `RFC-0013 <rfc-0013-changes-names-any-project-document.rst>`_ Changes names any project document
   Status: Accepted. Implementation: complete.
   Depends: RFC-0003, RFC-0004.
-  Linked from: none.
-  Superseded by: none.
+  Linked from: RFC-0019 (Depends), RFC-0019 (Supersedes), RFC-0019 (link), RFC-0021 (Related).
+  Superseded by: RFC-0019 (in part: changesets and staging limited to design and spec documents).
 
 `RFC-0014 <rfc-0014-guard-executable.rst>`_ The parent-death guard is its own executable
   Status: Accepted. Implementation: complete.
@@ -111,5 +111,23 @@ Records
 `RFC-0018 <rfc-0018-constitution-and-implementing-rules.rst>`_ The manual is a constitution with a preamble; the rules implement it
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001, RFC-0002, RFC-0006.
+  Linked from: ADR-0001 (Depends), ADR-0001 (Within).
+  Superseded by: none.
+
+`RFC-0019 <rfc-0019-changesets-under-the-document-root.rst>`_ Changesets edit any document under the document root, and Replace body: keeps subsections
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0004, RFC-0013, RFC-0007.
+  Linked from: RFC-0020 (Depends), RFC-0020 (link), RFC-0021 (Depends), RFC-0021 (link).
+  Superseded by: none.
+
+`RFC-0020 <rfc-0020-acceptance-setting-in-contributing.rst>`_ An Acceptance setting decides whether Accepted must carry the time
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0010, RFC-0009, RFC-0019.
+  Linked from: none.
+  Superseded by: none.
+
+`RFC-0021 <rfc-0021-generate-and-refresh-tools.rst>`_ Generation and derived header fields on demand
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0004, RFC-0019.
   Linked from: none.
   Superseded by: none.

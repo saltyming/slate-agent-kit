@@ -5,10 +5,11 @@
 //! `Amends` outside what the contributing document admits.
 //! P006: `Changes` targets that neither exist, nor are created by the record's changeset,
 //! nor exist once the record's dependency closure's changesets are applied; principles,
-//! glossary and contributing entries whose document or sections are missing; and other
-//! project documents that are missing, not `.md` or `.rst`, outside the project, internal,
-//! or a palette document under its real path. An entry without a parenthetical fails
-//! the template format, P002, and P006 does not repeat it.
+//! glossary and contributing entries whose document is missing or marked created, or
+//! whose sections neither exist nor are added by those changesets; and other project
+//! documents that are missing, not `.md` or `.rst`, outside the project, internal, or a
+//! palette document under its real path. An entry without a parenthetical fails the
+//! template format, P002, and P006 does not repeat it.
 
 use std::collections::BTreeSet;
 
@@ -16,7 +17,9 @@ use super::patterns::DIRECT_USE_KEYWORD;
 use super::{Cx, Finding};
 use crate::changeset::{Changeset, EditKind, resolve_section};
 use crate::docs::Role;
-use crate::layout::{CHANGES_FORMS, ChangesDoc, Family, changes_doc};
+use crate::layout::{
+    CHANGES_FORMS, CREATE_TARGETS, ChangesDoc, Family, changes_doc, split_logical,
+};
 use crate::records::DocRef;
 use crate::records::{AmendsCutoff, RecId, RecordKind, Records};
 use crate::rst::Doc;
@@ -271,26 +274,28 @@ fn changes(cx: &Cx, out: &mut Vec<Finding>) {
         let own = id.and_then(|id| cx.an.sets.get(&id));
         let state = id.and_then(|id| cx.an.states.get(&id));
         for c in &r.changes {
-            let problem = match changes_doc(&c.doc) {
-                Ok(ChangesDoc::Maintained(_)) => None,
-                Ok(ChangesDoc::Single(fam)) => Some(single_document(cx, fam, c)),
-                Ok(ChangesDoc::Project(parts)) => Some(project_document(cx, &parts, c)),
-                Err(msg) => Some(Err(msg)),
-            };
-            // Principles, glossary, contributing and other project documents are
-            // checked on disk alone: no changeset edits them.
-            if let Some(result) = problem {
-                if let Err(msg) = result {
-                    out.push(Finding::error("P006", f, c.line, msg));
+            // Other project documents are checked on disk alone, since what changes in
+            // them is free text; principles, glossary and contributing need their
+            // document on disk, and their sections are then checked like design and
+            // spec sections.
+            let checked = match changes_doc(&c.doc) {
+                Ok(ChangesDoc::Maintained(fam)) => Ok(split_logical(&c.doc)
+                    .map(|(_, name)| (cx.snap.loc.dir_of(fam).join(name), false))),
+                Ok(ChangesDoc::Single(fam)) => {
+                    single_document(cx, fam, c).map(|()| Some((cx.snap.loc.file_of(fam), true)))
                 }
-                continue;
-            }
-            let maintained = cx
-                .snap
-                .loc
-                .maintained_file(&c.doc)
-                .and_then(|p| cx.snap.file(&p))
-                .and_then(|d| d.doc.as_ref());
+                Ok(ChangesDoc::Project(parts)) => project_document(cx, &parts, c).map(|()| None),
+                Err(msg) => Err(msg),
+            };
+            let (path, single) = match checked {
+                Ok(Some(found)) => found,
+                Ok(None) => continue,
+                Err(msg) => {
+                    out.push(Finding::error("P006", f, c.line, msg));
+                    continue;
+                }
+            };
+            let maintained = cx.snap.file(&path).and_then(|d| d.doc.as_ref());
             // The document as the record's dependency closure leaves it.
             let from_deps = state
                 .and_then(|st| st.source(cx.snap, &c.doc, false))
@@ -345,56 +350,43 @@ fn changes(cx: &Cx, out: &mut Vec<Finding>) {
                 let exists = maintained.is_some_and(found) || from_deps.as_ref().is_some_and(found);
                 let last = s.rsplit(" / ").next().unwrap_or(s).trim();
                 if !exists && !created.contains(last) {
-                    out.push(Finding::error(
-                        "P006",
-                        f,
-                        c.line,
-                        format!("section `{s}` of `{}` neither exists nor is created by this record's changeset or its dependencies' changesets", c.doc),
-                    ));
+                    let message = if single {
+                        format!(
+                            "section `{s}` of `{}` does not exist and is not added by this record's changeset or its dependencies' changesets",
+                            c.doc
+                        )
+                    } else {
+                        format!(
+                            "section `{s}` of `{}` neither exists nor is created by this record's changeset or its dependencies' changesets",
+                            c.doc
+                        )
+                    };
+                    out.push(Finding::error("P006", f, c.line, message));
                 }
             }
         }
     }
 }
 
-/// Why `(created)` is refused outside design and spec documents.
-const NOT_CREATED: &str = "changesets and staging hold only design and spec documents, so a record cannot create it with `(created)`";
-
 /// A `Changes` entry naming the principles, glossary or contributing document: the
-/// document exists where the layout places it and has the sections named.
+/// document exists where the layout places it and is not marked created. Its sections
+/// are checked by the caller, against the document as the changesets leave it.
 fn single_document(cx: &Cx, fam: Family, c: &DocRef) -> Result<(), String> {
     if c.sections.iter().any(|s| s.eq_ignore_ascii_case("created")) {
         return Err(format!(
-            "`{}` cannot be marked (created): {NOT_CREATED}; name the sections that change",
+            "`{}` cannot be marked (created): {CREATE_TARGETS}; name the sections that change",
             c.doc
         ));
     }
     let path = cx.snap.loc.file_of(fam);
-    let Some(doc) = cx.snap.file(&path).and_then(|d| d.doc.as_ref()) else {
+    if cx.snap.file(&path).and_then(|d| d.doc.as_ref()).is_none() {
         return Err(format!(
             "`{}` does not exist (the layout places it at `{}`)",
             c.doc,
             crate::util::rel_slash(&cx.snap.root, &path)
         ));
-    };
-    let missing: Vec<&str> = c
-        .sections
-        .iter()
-        .filter(|s| match resolve_section(doc, s) {
-            Ok(_) => false,
-            Err(msg) => !msg.contains("not unique"),
-        })
-        .map(String::as_str)
-        .collect();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "section `{}` of `{}` does not exist; a changeset cannot add it ({NOT_CREATED}), so name sections the document has",
-            missing.join("`, `"),
-            c.doc
-        ))
     }
+    Ok(())
 }
 
 /// A `Changes` entry naming another project document: an existing `.md` or `.rst` file
@@ -404,7 +396,7 @@ fn project_document(cx: &Cx, parts: &[String], c: &DocRef) -> Result<(), String>
     let doc = &c.doc;
     if c.note.eq_ignore_ascii_case("created") {
         return Err(format!(
-            "`{doc}` cannot be marked (created): {NOT_CREATED}; say what changes in the document"
+            "`{doc}` cannot be marked (created): {CREATE_TARGETS}; say what changes in the document"
         ));
     }
     let loc = &cx.snap.loc;

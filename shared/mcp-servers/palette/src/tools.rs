@@ -113,7 +113,7 @@ pub fn template(p: TemplateParams) -> Res<String> {
     let name = p.family.trim().to_ascii_lowercase();
     if name == "staging" {
         return Err(PalError::invalid(
-            "staging documents are generated from the maintained design and spec documents and have no template; use `design` or `spec`",
+            "staging documents are generated from the documents changesets edit and have no template; use `design` or `spec`",
         ));
     }
     template_text(&name).map(str::to_string).ok_or_else(|| {

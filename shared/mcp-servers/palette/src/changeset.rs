@@ -1,9 +1,10 @@
 //! Changesets: parsing, applying edits to maintained documents, and staging plans.
 //!
-//! Owns the changeset grammar (`Replace:`, `Insert after:`, `Insert into:`, `Delete:`,
-//! `Create:`), resolving an edit's target section, applying edits line by line, the
-//! dependency-ordered staging plan, the document state each record's edits see, and the
-//! resolution and conflict checks behind P007.
+//! Owns the changeset grammar (`Replace:`, `Replace body:`, `Insert after:`, `Insert
+//! into:`, `Delete:`, `Create:`), resolving an edit's target section, applying edits
+//! line by line, the dependency-ordered staging plan, the document state each record's
+//! edits see, and the resolution and conflict checks behind P007. Which document a
+//! changeset may edit is decided by [`Snapshot::target`].
 //! Does not write files (the write tools do) and does not report findings.
 //! Entry points: [`Changeset::parse`], [`apply_edit`], [`create_document`], [`plan`],
 //! [`record_states`].
@@ -12,17 +13,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::docs::{Role, Snapshot};
-use crate::layout::{CHANGESET_TARGETS, split_logical};
+use crate::layout::{CREATE_TARGETS, Target};
 use crate::records::{RecId, Records};
 use crate::rst::{Doc, HOUSE_CHARS, Kind};
 use crate::text::Source;
-use crate::util::{is_kebab_rst, re};
+use crate::util::re;
 
 /// The kind of an edit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EditKind {
-    /// Replace an existing section.
+    /// Replace an existing section together with its subsections.
     Replace,
+    /// Replace an existing section's heading and body up to its first subsection,
+    /// keeping the subsections.
+    ReplaceBody,
     /// Insert a section after an existing one.
     InsertAfter,
     /// Insert a new last subsection into an existing section.
@@ -38,6 +42,7 @@ impl EditKind {
     pub fn verb(self) -> &'static str {
         match self {
             EditKind::Replace => "Replace",
+            EditKind::ReplaceBody => "Replace body",
             EditKind::InsertAfter => "Insert after",
             EditKind::InsertInto => "Insert into",
             EditKind::Delete => "Delete",
@@ -49,6 +54,7 @@ impl EditKind {
     pub fn parse(verb: &str) -> Option<EditKind> {
         [
             EditKind::Replace,
+            EditKind::ReplaceBody,
             EditKind::InsertAfter,
             EditKind::InsertInto,
             EditKind::Delete,
@@ -84,8 +90,12 @@ impl Edit {
 /// The edits a changeset makes to one maintained document.
 #[derive(Clone, Debug)]
 pub struct DocEdits {
-    /// Logical document path (`spec/x.rst`).
+    /// The document as the changeset spells it (`spec/x.rst`, `principles.rst`,
+    /// `docs/guide.rst`).
     pub doc: String,
+    /// The document it resolves to; `None` when a changeset may not edit it (the
+    /// changeset's problems say why), and then no edit of it is applied.
+    pub target: Option<Target>,
     /// 0-based heading line.
     pub line: usize,
     /// Heading index.
@@ -110,9 +120,9 @@ pub struct Changeset {
 }
 
 impl Changeset {
-    /// The logical path of the maintained document that the edit body holding 0-based
-    /// line `line` writes into; `None` when the line lies outside every edit body.
-    pub fn body_target(&self, doc: &Doc, line: usize) -> Option<&str> {
+    /// The document that the edit body holding 0-based line `line` writes into; `None`
+    /// when the line lies outside every edit body or the document is not a target.
+    pub fn body_target(&self, doc: &Doc, line: usize) -> Option<&Target> {
         self.docs
             .iter()
             .find(|de| {
@@ -120,7 +130,7 @@ impl Changeset {
                     .iter()
                     .any(|e| (doc.headings[e.heading].body_start..e.end).contains(&line))
             })
-            .map(|de| de.doc.as_str())
+            .and_then(|de| de.target.as_ref())
     }
 
     /// The record this changeset belongs to.
@@ -139,7 +149,8 @@ impl Changeset {
         let doc = f.doc.as_ref()?;
         let title_re = re(r"^Changeset:\s*(RFC|ADR)-(\d{4})$");
         let name_re = re(r"^(rfc|adr)-(\d{4})\.rst$");
-        let edit_re = re(r"^(Replace|Insert after|Insert into|Delete|Create):\s*(.+)$");
+        let edit_re =
+            re(r"^(Replace body|Replace|Insert after|Insert into|Delete|Create):\s*(.+)$");
         let id = doc
             .title()
             .and_then(|t| title_re.captures(&t.title))
@@ -156,13 +167,13 @@ impl Changeset {
         };
         for (di, dh) in doc.headings_at(2) {
             let path = dh.title.clone();
-            match split_logical(&path) {
-                Some((_, name)) if is_kebab_rst(name) => {}
-                _ => cs.problems.push((
-                    dh.line,
-                    format!("`{path}` cannot be edited by a changeset: {CHANGESET_TARGETS}"),
-                )),
-            }
+            let target = match snap.target(&path) {
+                Ok(t) => Some(t),
+                Err(msg) => {
+                    cs.problems.push((dh.line, msg));
+                    None
+                }
+            };
             let mut edits = Vec::new();
             for ci in doc.children(di) {
                 let h = &doc.headings[ci];
@@ -180,12 +191,13 @@ impl Changeset {
                     }
                     None => cs.problems.push((
                         h.line,
-                        format!("`{}` is not an edit (`Replace:`, `Insert after:`, `Insert into:`, `Delete:` or `Create:`)", h.title),
+                        format!("`{}` is not an edit (`Replace:`, `Replace body:`, `Insert after:`, `Insert into:`, `Delete:` or `Create:`)", h.title),
                     )),
                 }
             }
             cs.docs.push(DocEdits {
                 doc: path,
+                target,
                 line: dh.line,
                 heading: di,
                 edits,
@@ -301,7 +313,10 @@ pub fn apply_edit(target: &mut Source, cs: &Doc, edit: &Edit) -> Result<(), Stri
             }
             Ok(())
         }
-        EditKind::Replace | EditKind::InsertAfter | EditKind::InsertInto => {
+        EditKind::Replace
+        | EditKind::ReplaceBody
+        | EditKind::InsertAfter
+        | EditKind::InsertInto => {
             let first_level = if edit.kind == EditKind::InsertInto {
                 t.level + 1
             } else {
@@ -335,6 +350,26 @@ pub fn apply_edit(target: &mut Source, cs: &Doc, edit: &Edit) -> Result<(), Stri
                         new.push(String::new());
                     }
                     target.splice(t.start..t.end, &new);
+                }
+                EditKind::ReplaceBody => {
+                    let h = &cs.headings[edit.heading];
+                    let headings = cs
+                        .headings
+                        .iter()
+                        .filter(|sub| sub.start > h.start && sub.start < edit.end)
+                        .count();
+                    if headings > 1 {
+                        return Err(format!(
+                            "the body of `{}: {}` holds the section's title underlined with `^` and text with no further heading; the subsections stay as they are (use `Replace:` to replace them too, or `Insert into:` to add one)",
+                            edit.kind.verb(),
+                            edit.target
+                        ));
+                    }
+                    let mut new = block;
+                    if t.body_end < n {
+                        new.push(String::new());
+                    }
+                    target.splice(t.start..t.body_end, &new);
                 }
                 _ => {
                     let at = t.end;
@@ -400,6 +435,8 @@ pub struct StagingPlan {
 
 /// One staged document.
 pub struct Staged {
+    /// The document it mirrors.
+    pub target: Target,
     /// The document with every accepted edit applied.
     pub source: Source,
     /// Records whose edits were applied, in order.
@@ -422,13 +459,14 @@ pub fn collect(snap: &Snapshot) -> BTreeMap<RecId, Changeset> {
     out
 }
 
-fn maintained_source(snap: &Snapshot, logical: &str) -> Option<Source> {
-    let path = snap.loc.maintained_file(logical)?;
-    snap.file(&path)?.doc.as_ref().map(|d| d.src.clone())
+/// The current lines of the document a target spelling names, when it is a target.
+fn maintained_source(snap: &Snapshot, spelling: &str) -> Option<Source> {
+    snap.target_source(&snap.target(spelling).ok()?)
 }
 
-/// Applies the edits of `id`'s changeset to `docs` (working copies keyed by logical
-/// path). Edits that fail are collected in `failures` and skipped.
+/// Applies the edits of `id`'s changeset to `docs` (working copies keyed by the
+/// target's spelling). Edits that fail are collected in `failures` and skipped; a
+/// document that is not a target is never touched.
 fn apply_changeset(
     snap: &Snapshot,
     id: RecId,
@@ -440,14 +478,17 @@ fn apply_changeset(
         return;
     };
     for de in &cs.docs {
-        if split_logical(&de.doc).is_none() {
+        let Some(target) = &de.target else {
             continue;
-        }
+        };
         let entry = docs
             .entry(de.doc.clone())
-            .or_insert_with(|| maintained_source(snap, &de.doc));
+            .or_insert_with(|| snap.target_source(target));
         for e in &de.edits {
             let res = match (e.kind, entry.as_mut()) {
+                (EditKind::Create, _) if !target.can_create() => {
+                    Err(format!("`{}`: {CREATE_TARGETS}", de.doc))
+                }
                 (EditKind::Create, None) => create_document(cs_doc, e).map(|s| *entry = Some(s)),
                 (EditKind::Create, Some(_)) => Err(format!(
                     "`{}` already exists; a Create edit needs a new document",
@@ -485,29 +526,37 @@ pub fn plan(snap: &Snapshot, records: &Records, sets: &BTreeMap<RecId, Changeset
         .filter(|id| records.get(*id).and_then(|r| r.status.as_deref()) == Some("Accepted"))
         .collect();
     let mut working: BTreeMap<String, Option<Source>> = BTreeMap::new();
-    let mut applied: BTreeMap<String, Vec<RecId>> = BTreeMap::new();
+    let mut applied: BTreeMap<String, (Target, Vec<RecId>)> = BTreeMap::new();
     let mut failures = Vec::new();
     for id in records.dependency_order(&accepted) {
         let Some(cs) = sets.get(&id) else { continue };
         apply_changeset(snap, id, cs, &mut working, &mut failures);
         for de in &cs.docs {
-            applied.entry(de.doc.clone()).or_default().push(id);
+            if let Some(t) = &de.target {
+                applied
+                    .entry(de.doc.clone())
+                    .or_insert_with(|| (t.clone(), Vec::new()))
+                    .1
+                    .push(id);
+            }
         }
     }
     let mut out = StagingPlan {
         docs: BTreeMap::new(),
         failures,
     };
-    for (logical, src) in working {
+    for (spelling, src) in working {
         if let Some(source) = src
-            && applied.contains_key(&logical)
+            && let Some((target, records)) = applied.remove(&spelling)
         {
+            let from_existing = snap.target_source(&target).is_some();
             out.docs.insert(
-                logical.clone(),
+                spelling,
                 Staged {
+                    target,
                     source,
-                    records: applied.remove(&logical).unwrap_or_default(),
-                    from_existing: maintained_source(snap, &logical).is_some(),
+                    records,
+                    from_existing,
                 },
             );
         }
@@ -539,13 +588,16 @@ impl RecordState {
         }
     }
 
-    /// The logical path of the document at `path` when an edit of this state holds it
-    /// and it exists there after the record's own edits.
+    /// The spelling of the document at `path` when an edit of this state holds it and
+    /// it exists there after the record's own edits.
     pub fn held_at(&self, snap: &Snapshot, path: &Path) -> Option<&str> {
         self.own
             .iter()
             .find(|(l, src)| {
-                src.is_some() && snap.loc.maintained_file(l).is_some_and(|p| p == path)
+                src.is_some()
+                    && snap
+                        .target(l)
+                        .is_ok_and(|t| snap.loc.target_file(&t) == path)
             })
             .map(|(l, _)| l.as_str())
     }
@@ -759,6 +811,107 @@ mod tests {
         apply_edit(&mut t, &cs, &e).expect("apply");
         let text = t.to_text();
         assert!(!text.contains("Two") && !text.contains("Sub") && text.contains("Three"));
+    }
+
+    const TWO_SUBS: &str = "Topic\n=====\n\n:Status: Contract\n\nOne\n---\n\nfirst\n\nTwo\n---\n\nsecond\n\nSub A\n~~~~~\n\na text\n\nSub B\n~~~~~\n\nb text\n\nThree\n-----\n\nthird\n";
+
+    #[test]
+    fn replace_body_keeps_the_subsections() {
+        for eol in ["\n", "\r\n"] {
+            let (cs, e) = cs_and_edit(
+                "Two renamed\n^^^^^^^^^^^\n\nnew body",
+                "Replace body",
+                "Two",
+            );
+            let mut t = Source::from_text(&TWO_SUBS.replace('\n', eol));
+            apply_edit(&mut t, &cs, &e).expect("apply");
+            let text = t.to_text().replace("\r\n", "\n");
+            assert!(
+                text.contains("first\n\nTwo renamed\n-----------\n\nnew body\n\nSub A\n~~~~~\n\na text\n\nSub B\n~~~~~\n\nb text\n\nThree\n"),
+                "{text}"
+            );
+            assert!(!text.contains("second"));
+            if eol == "\r\n" {
+                assert!(!t.to_text().replace("\r\n", "").contains('\n'));
+            }
+        }
+    }
+
+    #[test]
+    fn replace_body_with_the_heading_alone_keeps_one_blank_line() {
+        let (cs, e) = cs_and_edit("Two\n^^^", "Replace body", "Two");
+        let mut t = Source::from_text(TWO_SUBS);
+        apply_edit(&mut t, &cs, &e).expect("apply");
+        assert!(
+            t.to_text().contains("first\n\nTwo\n---\n\nSub A\n~~~~~\n"),
+            "{}",
+            t.to_text()
+        );
+        // With no subsection, the next sibling follows after one blank line.
+        let (cs, e) = cs_and_edit("One\n^^^", "Replace body", "One");
+        let mut t = Source::from_text(TWO_SUBS);
+        apply_edit(&mut t, &cs, &e).expect("apply");
+        assert!(
+            t.to_text()
+                .contains(":Status: Contract\n\nOne\n---\n\nTwo\n---\n"),
+            "{}",
+            t.to_text()
+        );
+        // The last section of the document ends the file.
+        let (cs, e) = cs_and_edit("Three\n^^^^^", "Replace body", "Three");
+        let mut t = Source::from_text(TWO_SUBS);
+        apply_edit(&mut t, &cs, &e).expect("apply");
+        assert!(
+            t.to_text().ends_with("b text\n\nThree\n-----\n"),
+            "{}",
+            t.to_text()
+        );
+    }
+
+    #[test]
+    fn replace_body_with_a_second_heading_is_refused() {
+        let (cs, e) = cs_and_edit(
+            "Two\n^^^\n\ntext\n\nInner\n\"\"\"\"\"\n\ndeep",
+            "Replace body",
+            "Two",
+        );
+        let mut t = Source::from_text(TWO_SUBS);
+        let err = apply_edit(&mut t, &cs, &e).expect_err("second heading");
+        assert!(err.contains("no further heading"), "{err}");
+        assert_eq!(t.to_text(), TWO_SUBS);
+    }
+
+    #[test]
+    fn replace_removes_the_subsections_that_replace_body_keeps() {
+        let (cs, e) = cs_and_edit("Two\n^^^\n\nnew body", "Replace", "Two");
+        let mut t = Source::from_text(TWO_SUBS);
+        apply_edit(&mut t, &cs, &e).expect("apply");
+        let text = t.to_text();
+        assert!(text.contains("Two\n---\n\nnew body\n\nThree\n"), "{text}");
+        assert!(!text.contains("Sub A") && !text.contains("Sub B"));
+    }
+
+    #[test]
+    fn a_renamed_section_takes_later_edits_by_its_new_name() {
+        let mut t = Source::from_text(TWO_SUBS);
+        let (cs, e) = cs_and_edit("Second\n^^^^^^\n\nnew body", "Replace body", "Two");
+        apply_edit(&mut t, &cs, &e).expect("rename");
+        let (cs, e) = cs_and_edit("Fresh\n^^^^^\n\nfresh text", "Insert into", "Second");
+        apply_edit(&mut t, &cs, &e).expect("insert into the new name");
+        let text = t.to_text();
+        assert!(
+            text.contains("Second\n------\n\nnew body\n\nSub A\n~~~~~\n\na text\n\nSub B\n~~~~~\n\nb text\n\nFresh\n~~~~~\n\nfresh text\n\nThree\n"),
+            "{text}"
+        );
+        let (cs, e) = cs_and_edit("Two\n^^^", "Replace body", "Two");
+        assert!(apply_edit(&mut t, &cs, &e).is_err_and(|m| m.contains("does not exist")));
+    }
+
+    #[test]
+    fn replace_body_is_a_kind_of_its_own() {
+        assert_eq!(EditKind::parse("Replace body"), Some(EditKind::ReplaceBody));
+        assert_eq!(EditKind::ReplaceBody.verb(), "Replace body");
+        assert_ne!(EditKind::parse("Replace"), Some(EditKind::ReplaceBody));
     }
 
     #[test]

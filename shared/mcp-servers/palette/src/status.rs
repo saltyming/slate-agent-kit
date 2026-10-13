@@ -248,18 +248,17 @@ fn record_summary(o: &mut Out, snap: &Snapshot, an: &Analysis, id: RecId, errors
                         "changeset edit",
                     );
                 }
-                let staged = snap
-                    .loc
-                    .staging_file(&de.doc)
-                    .map(|p| crate::util::rel_slash(&snap.root, &p))
-                    .unwrap_or_default();
-                let note = if accepted {
-                    staged
-                } else {
+                let staged = de
+                    .target
+                    .as_ref()
+                    .map(|t| crate::util::rel_slash(&snap.root, &snap.loc.mirror_file(t)));
+                let note = if !accepted {
                     format!(
                         "not applied while {}",
                         rec.status.as_deref().unwrap_or("unknown")
                     )
+                } else {
+                    staged.unwrap_or_else(|| "none (not a changeset target)".to_string())
                 };
                 o.line(format!("  staging document: {note}"), "staging line");
             }

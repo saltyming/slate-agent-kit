@@ -67,6 +67,9 @@ pub struct WriteResult {
     pub files: Vec<(String, &'static str)>,
     /// Unified diff of every changed file.
     pub diff: String,
+    /// A note for the caller when the result needs one (`palette_generate` with
+    /// nothing to regenerate).
+    pub message: Option<String>,
 }
 
 impl WriteResult {
@@ -77,13 +80,16 @@ impl WriteResult {
             .iter()
             .map(|(f, a)| serde_json::json!({"file": f, "action": a}))
             .collect();
-        serde_json::to_string_pretty(&serde_json::json!({
+        let mut v = serde_json::json!({
             "dry_run": self.dry_run,
             "allocated": self.allocated,
             "files": files,
             "diff": self.diff,
-        }))
-        .unwrap_or_else(|_| "{}".to_string())
+        });
+        if let Some(m) = &self.message {
+            v["message"] = serde_json::json!(m);
+        }
+        serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
     }
 }
 
@@ -169,9 +175,10 @@ impl Session<'_, '_> {
     }
 
     /// Stores new content for `path`. A file that does not exist yet gets the project's
-    /// line ending; an existing file keeps the endings of the lines it already had.
+    /// line ending; an existing file (a palette document, or a document a changeset
+    /// edits) keeps the endings of the lines it already had.
     pub fn put(&mut self, path: &Path, src: &Source) -> Res<()> {
-        if self.snap.file(path).is_none() {
+        if self.snap.file(path).is_none() && !self.snap.is_referenced(path) {
             let converted = generated::with_eol(src.clone(), self.project_eol());
             return self.put_raw(path, &converted);
         }
@@ -237,6 +244,7 @@ where
     let disk = DiskSource;
     let mut ov = Overlay::new(&disk);
     let snap = Snapshot::load(&ov, &root)?;
+    refuse_without_staging(&snap)?;
     let an = Analysis::build(&snap);
     let allocated = {
         let mut sess = Session {
@@ -249,6 +257,31 @@ where
         op(&mut sess)?
     };
     finish(ctx, &root, &mut ov, dry_run, allocated)
+}
+
+/// Refuses a project whose `layout.rst` places no staging folder (the line is missing,
+/// invalid, or refused by P012): staging would fall back to `_palette/staging/` and
+/// the write would succeed while the layout error stays unreported.
+fn refuse_without_staging(snap: &Snapshot) -> Res<()> {
+    if snap.inferred
+        || snap
+            .layout
+            .placements
+            .contains_key(&crate::layout::Family::Staging)
+    {
+        return Ok(());
+    }
+    let why: Vec<String> = snap
+        .layout
+        .problems
+        .iter()
+        .filter(|p| p.message.contains("`staging`"))
+        .map(|p| format!("P012 _palette/layout.rst:{} {}", p.line + 1, p.message))
+        .collect();
+    Err(PalError::invariant(format!(
+        "layout.rst places no staging folder, so nothing was written; fix its `:staging:` line by hand first:\n  {}",
+        why.join("\n  ")
+    )))
 }
 
 /// Runs `op` on a project that has no layout yet (`palette_init`).
@@ -278,7 +311,26 @@ pub fn project_eol(snap: &Snapshot) -> crate::text::Eol {
 /// Regenerates every index and staging document that is missing or differs from what the
 /// server would generate (the generation every write tool runs), and nothing else.
 pub fn generate(ctx: &Ctx, project: &str) -> Res<WriteResult> {
-    run_transaction(ctx, project, false, false, |_| Ok(Vec::new()))
+    generate_files(ctx, project, false)
+}
+
+/// What `generate` says when every generated file is already up to date.
+pub const NOTHING_TO_GENERATE: &str =
+    "nothing to generate: every index and staging document is up to date";
+
+/// `palette_generate`: the transaction of `palette generate`, with `dry_run`. A project
+/// without a layout is regenerated from the families its documents imply, as on the
+/// command line.
+pub fn generate_tool(ctx: &Ctx, p: crate::params::GenerateParams) -> Res<WriteResult> {
+    generate_files(ctx, &p.project, p.dry_run.unwrap_or(false))
+}
+
+fn generate_files(ctx: &Ctx, project: &str, dry_run: bool) -> Res<WriteResult> {
+    let mut r = run_transaction(ctx, project, dry_run, false, |_| Ok(Vec::new()))?;
+    if r.files.is_empty() {
+        r.message = Some(NOTHING_TO_GENERATE.to_string());
+    }
+    Ok(r)
 }
 
 fn regenerate(ov: &mut Overlay<'_>, root: &Path) -> Res<()> {
@@ -368,6 +420,7 @@ fn finish(
         allocated,
         files,
         diff,
+        message: None,
     })
 }
 

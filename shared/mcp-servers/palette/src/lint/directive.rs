@@ -18,7 +18,7 @@ pub(super) fn admits(role: Role) -> bool {
         Role::Rfc
             | Role::Adr
             | Role::Changeset
-            | Role::Staging(_)
+            | Role::Staging(Some(_))
             | Role::Design
             | Role::Spec
             | Role::Principles

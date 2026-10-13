@@ -475,22 +475,22 @@ pub struct ChangesetEditParams {
     pub record: String,
     /// `add`, `replace` or `remove`.
     pub action: String,
-    /// `replace`, `insert_after`, `insert_into`, `delete` or `create`.
+    /// `replace` (the section with its subsections), `replace_body` (the section's title and text up to its first subsection), `insert_after`, `insert_into`, `delete` or `create` (a new design or spec document).
     pub kind: String,
-    /// The maintained document: `design/<topic>.rst` or `spec/<topic>.rst`.
+    /// The maintained document: `design/<topic>.rst`, `spec/<topic>.rst`, `principles.rst`, `glossary.rst`, `contributing.rst`, or the project-relative path of another existing `.rst` document under the document root (the staging folder's parent), outside `_palette/`, the staging folder and every family folder.
     pub document: String,
     /// The section title (prefixed by parent titles and " / " when not unique); for `create`, the new document's title.
     pub target: String,
-    /// The edit body in changeset syntax: the new section title underlined with `^`, then its text; subsections use `"`. For `create`, the header fields, then top-level sections underlined with `^`. Not used by `delete` or `remove`.
+    /// The edit body in changeset syntax: the new section title underlined with `^`, then its text; subsections use `"`. For `replace_body`, the title (which may rename the section) and its text, with no further heading. For `create`, the header fields, then top-level sections underlined with `^`. Not used by `delete` or `remove`.
     pub body: Option<String>,
 }
 
 /// One edit named by kind, document and target.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct EditRef {
-    /// `replace`, `insert_after`, `insert_into`, `delete` or `create`.
+    /// `replace`, `replace_body`, `insert_after`, `insert_into`, `delete` or `create`.
     pub kind: String,
-    /// The maintained document.
+    /// The maintained document, as the changeset names it.
     pub document: String,
     /// The edit's target as written in the changeset.
     pub target: String,
@@ -519,4 +519,32 @@ pub struct ChangesetPromoteParams {
     pub verification: String,
     /// The limit of the verification, in one line.
     pub verification_note: String,
+}
+
+/// Input of `palette_generate`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct GenerateParams {
+    /// Absolute path of the project folder.
+    pub project: String,
+    /// Show the diff without writing.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub dry_run: Option<bool>,
+}
+
+/// Input of `palette_record_refresh`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct RecordRefreshParams {
+    /// Absolute path of the project folder.
+    pub project: String,
+    /// Show the diff without writing.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub dry_run: Option<bool>,
+    /// The record whose change has landed, such as `ADR-0001`.
+    pub record: String,
+    /// `partial`, `in-progress`, `abandoned` or `not-applicable`, written as given whether or not edits remain; omit for `complete` (or `partial` while promoted edits remain).
+    pub implementation: Option<String>,
+    /// The scope in one line; defaults to the current scope text.
+    pub implementation_scope: Option<String>,
+    /// Who implemented it; omit to keep the current value.
+    pub implementers: Option<String>,
 }

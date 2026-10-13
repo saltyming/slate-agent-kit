@@ -267,16 +267,14 @@ fn move_family(s: &mut Session<'_, '_>, fam: Family, placement: Placement) -> Re
             )));
         }
     }
-    // Where each maintained document that a changeset edits or creates goes; a created
-    // one has no file yet, so `moved` does not know it.
+    // Where each document that a changeset edits or creates goes; a created one has no
+    // file yet, so `moved` does not know it. A document outside every family stays
+    // where it is.
     let mut edited: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
     for cs in s.an.sets.values() {
         for de in &cs.docs {
-            if let (Some(old), Some(new)) = (
-                old_loc.maintained_file(&de.doc),
-                new_loc.maintained_file(&de.doc),
-            ) {
-                edited.insert(old, new);
+            if let Some(t) = &de.target {
+                edited.insert(old_loc.target_file(t), new_loc.target_file(t));
             }
         }
     }
@@ -317,9 +315,9 @@ fn move_family(s: &mut Session<'_, '_>, fam: Family, placement: Placement) -> Re
             let body = changeset
                 .as_ref()
                 .and_then(|cs| cs.body_target(doc, l.line))
-                .and_then(|logical| {
-                    let old = old_loc.maintained_file(logical)?;
-                    let new = new_loc.maintained_file(logical)?;
+                .and_then(|t| {
+                    let old = old_loc.target_file(t);
+                    let new = new_loc.target_file(t);
                     Some((old.parent()?.to_path_buf(), new.parent()?.to_path_buf()))
                 });
             let in_body = body.is_some();

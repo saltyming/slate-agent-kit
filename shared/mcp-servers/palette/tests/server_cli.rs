@@ -69,7 +69,10 @@ fn read_only_tools_come_from_the_annotations() {
     api.sort();
     assert_eq!(printed, api);
     let ann = tool_annotations();
-    assert_eq!(ann.len(), 18);
+    assert_eq!(ann.len(), 20);
+    for added in ["palette_generate", "palette_record_refresh"] {
+        assert!(ann.iter().any(|(n, _, _)| n == added), "{added}");
+    }
     for (name, ro, destructive) in &ann {
         if printed.contains(name) {
             assert_eq!(*ro, Some(true), "{name}");
@@ -272,7 +275,7 @@ fn mcp_lists_tools_and_serves_calls() {
     });
     let list = c.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().expect("tools");
-    assert_eq!(tools.len(), 18);
+    assert_eq!(tools.len(), 20);
     for t in tools {
         let name = t["name"].as_str().expect("name");
         assert!(
@@ -288,7 +291,7 @@ fn mcp_lists_tools_and_serves_calls() {
         .iter()
         .filter(|t| t["annotations"]["readOnlyHint"] == json!(false))
         .collect();
-    assert_eq!(write_tools.len(), 14);
+    assert_eq!(write_tools.len(), 16);
     for t in write_tools.iter().filter(|t| t["name"] != "palette_init") {
         assert!(
             t["inputSchema"]["properties"].get("dry_run").is_some(),

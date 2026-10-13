@@ -88,6 +88,10 @@ pub const REPEATING_FIELDS: [&str; 6] = [
     "Amends",
 ];
 
+/// Fields a template shows that a document may leave out, by template name: the
+/// contributing document's `Acceptance` setting (RFC-0020).
+pub const OPTIONAL_FIELDS: [(&str, &str); 1] = [("contributing", "Acceptance")];
+
 /// The template text named `name`.
 pub fn template_text(name: &str) -> Option<&'static str> {
     TEMPLATES.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
@@ -443,6 +447,9 @@ pub struct FieldSpec {
     pub value: ValueSpec,
     /// Whether the value is a `;`-separated list.
     pub repeating: bool,
+    /// Whether a document may leave the field out ([`OPTIONAL_FIELDS`]); when present
+    /// it keeps its place and its allowed values.
+    pub optional: bool,
 }
 
 impl FieldSpec {
@@ -483,6 +490,20 @@ fn field_spec(name: &str, value: &str) -> FieldSpec {
         name: Pattern::parse(name),
         value: ValueSpec::parse(value),
         repeating: REPEATING_FIELDS.contains(&name),
+        optional: false,
+    }
+}
+
+/// Marks the fields of `sections` (and their subsections) that [`OPTIONAL_FIELDS`]
+/// lists for template `name`.
+fn mark_optional(name: &str, sections: &mut [SectionSpec]) {
+    for s in sections {
+        for f in &mut s.fields {
+            f.optional = f
+                .literal_name()
+                .is_some_and(|n| OPTIONAL_FIELDS.contains(&(name, n)));
+        }
+        mark_optional(name, &mut s.subs);
     }
 }
 
@@ -554,7 +575,13 @@ static SCHEMAS: LazyLock<Schemas> = LazyLock::new(|| {
         if matches!(*name, "changeset" | "house-style" | "rubrics") {
             continue;
         }
-        if let Some(s) = derive(text) {
+        if let Some(mut s) = derive(text) {
+            for f in &mut s.header {
+                f.optional = f
+                    .literal_name()
+                    .is_some_and(|n| OPTIONAL_FIELDS.contains(&(*name, n)));
+            }
+            mark_optional(name, &mut s.sections);
             by_name.insert(*name, s);
         }
     }

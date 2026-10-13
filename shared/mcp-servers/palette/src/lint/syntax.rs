@@ -4,7 +4,9 @@
 //! admits them, which P017 checks), overlined titles, short underlines, heading levels
 //! out of order, substitutions, footnotes and citations. Checks lines lexically;
 //! literal blocks, code-block content, inline literals and comments are skipped;
-//! list-table cells are checked as the text they hold.
+//! list-table cells are checked as the text they hold. The staging mirror of a document
+//! outside every family is not checked: that document is no palette document, and the
+//! edit bodies it carries are checked in their changeset.
 
 use std::sync::LazyLock;
 
@@ -12,6 +14,7 @@ use regex::Regex;
 
 use super::{Cx, Finding, directive};
 use crate::directives::name_at;
+use crate::docs::Role;
 use crate::rst::{Kind, mask_inline_literals};
 use crate::util::re;
 
@@ -26,6 +29,9 @@ static NOTE_REF: LazyLock<Regex> = LazyLock::new(|| re(r"\[(?:\d+|#[\w-]*|\*|[A-
 
 pub(super) fn check(cx: &Cx, out: &mut Vec<Finding>) {
     for f in &cx.snap.files {
+        if f.role == Role::Staging(None) {
+            continue;
+        }
         let Some(doc) = &f.doc else {
             if let Some(line) = f.bad_utf8 {
                 out.push(Finding::error(

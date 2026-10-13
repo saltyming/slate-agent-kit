@@ -2,9 +2,12 @@
 //! role, parsed once.
 //!
 //! Owns discovery of documents from the layout (which file belongs to which family),
-//! or from the documents themselves when the project has no layout, and loading them. Does not interpret document content beyond the RST scan; the
+//! or from the documents themselves when the project has no layout, and loading them;
+//! the documents outside every family that a changeset names, held apart from the
+//! palette documents so that no document rule reads them; and resolving a changeset
+//! target against both. Does not interpret document content beyond the RST scan; the
 //! models in `records`, `backlog`, `state` and `changeset` do that.
-//! Entry point: [`Snapshot::load`].
+//! Entry points: [`Snapshot::load`], [`Snapshot::target`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -12,10 +15,10 @@ use std::path::{Path, PathBuf};
 use crate::errors::{PalError, Res};
 #[cfg(test)]
 use crate::layout::Placement;
-use crate::layout::{Family, Layout, Locations};
+use crate::layout::{Family, Layout, Locations, Target};
 use crate::rst::Doc;
 use crate::text::Source;
-use crate::util::rel_slash;
+use crate::util::{rel_slash, same_path_nocase};
 use crate::vfs::FileSource;
 
 /// What a document is.
@@ -47,8 +50,10 @@ pub enum Role {
     Glossary,
     /// The contributing document.
     Contributing,
-    /// A generated staging document mirroring a design or spec document.
-    Staging(Family),
+    /// A generated staging document: any `.rst` under the staging folder, with the
+    /// family whose document it mirrors (`None` for the mirror of a document outside
+    /// every family, or a file at no mirror path).
+    Staging(Option<Family>),
     /// A generated `index.rst` of a record or changeset folder.
     Index(Family),
 }
@@ -83,7 +88,7 @@ impl Role {
             Family::Rfc => Role::Rfc,
             Family::Adr => Role::Adr,
             Family::Changeset => Role::Changeset,
-            Family::Staging => Role::Staging(Family::Spec),
+            Family::Staging => Role::Staging(None),
             Family::Design => Role::Design,
             Family::Spec => Role::Spec,
             Family::Principles => Role::Principles,
@@ -130,6 +135,20 @@ pub struct Snapshot {
     /// Documents in discovery order.
     pub files: Vec<DocFile>,
     by_path: BTreeMap<PathBuf, usize>,
+    /// Documents outside every family that a changeset names, by path. Not palette
+    /// documents.
+    referenced: BTreeMap<PathBuf, Referenced>,
+}
+
+/// A document outside every family as a changeset spelling found it.
+enum Referenced {
+    /// Its lines.
+    Text(Source),
+    /// The 1-based line of the first invalid UTF-8 byte.
+    BadUtf8(usize),
+    /// The spelling differs in case from the folder entries on disk, which are given
+    /// here; on a case-insensitive file system both would name one file.
+    Spelled(String),
 }
 
 fn io_err(action: &str, e: &std::io::Error) -> PalError {
@@ -165,6 +184,7 @@ impl Snapshot {
             loc,
             files: Vec::new(),
             by_path: BTreeMap::new(),
+            referenced: BTreeMap::new(),
         };
         if !inferred {
             snap.add(src, layout_path, Role::Layout)?;
@@ -185,7 +205,118 @@ impl Snapshot {
         for (path, role) in extra {
             snap.add(src, path, role)?;
         }
+        let named: Vec<String> = snap
+            .files
+            .iter()
+            .filter(|f| f.role == Role::Changeset)
+            .filter_map(|f| f.doc.as_ref())
+            .flat_map(|d| d.headings_at(2).map(|(_, h)| h.title.clone()))
+            .collect();
+        for spelling in named {
+            snap.reference(src, &spelling)?;
+        }
         Ok(snap)
+    }
+
+    /// Reads the document a changeset target names when it lies outside every family,
+    /// so that [`Snapshot::target`] can resolve it. Any other spelling reads nothing.
+    pub fn reference(&mut self, src: &dyn FileSource, spelling: &str) -> Res<()> {
+        let Ok(t) = self.loc.resolve_target(spelling) else {
+            return Ok(());
+        };
+        let Target::Document(parts) = &t else {
+            return Ok(());
+        };
+        let path = self.loc.target_file(&t);
+        if self.referenced.contains_key(&path) {
+            return Ok(());
+        }
+        // One file has one spelling: every component must match its folder entry
+        // exactly, so that two spellings never stage or promote one file twice.
+        let mut dir = self.root.clone();
+        let mut on_disk: Vec<String> = Vec::new();
+        let mut exact = true;
+        for part in parts {
+            let entries = src
+                .list(&dir)
+                .map_err(|e| io_err(&format!("listing {}", dir.display()), &e))?;
+            let entry = entries
+                .iter()
+                .find(|e| e.name == *part)
+                .or_else(|| entries.iter().find(|e| e.name.eq_ignore_ascii_case(part)));
+            let Some(entry) = entry else {
+                return Ok(());
+            };
+            exact &= entry.name == *part;
+            on_disk.push(entry.name.clone());
+            dir = dir.join(&entry.name);
+        }
+        if !exact {
+            self.referenced
+                .insert(path, Referenced::Spelled(on_disk.join("/")));
+            return Ok(());
+        }
+        let bytes = src
+            .read(&path)
+            .map_err(|e| io_err(&format!("reading {}", path.display()), &e))?;
+        if let Some(bytes) = bytes {
+            let r = match Source::from_bytes(&bytes) {
+                Ok(s) => Referenced::Text(s),
+                Err(line) => Referenced::BadUtf8(line),
+            };
+            self.referenced.insert(path, r);
+        }
+        Ok(())
+    }
+
+    /// Resolves the spelling of a changeset target: the location rules of
+    /// [`Locations::resolve_target`], and for a document outside every family, that it
+    /// exists, is valid UTF-8 and is no palette document. Every reader of a target
+    /// (the changeset parser, staging, promotion, P004) resolves it here, so they never
+    /// disagree about one.
+    pub fn target(&self, spelling: &str) -> Result<Target, String> {
+        let t = self.loc.resolve_target(spelling)?;
+        if let Target::Document(_) = &t {
+            let path = self.loc.target_file(&t);
+            let refuse = |why: &str| format!("`{spelling}` cannot be edited by a changeset: {why}");
+            if let Some(f) = self.files.iter().find(|f| same_path_nocase(&f.path, &path)) {
+                return Err(refuse(&format!(
+                    "it is a palette document ({}); records, indexes, changesets, staging and work documents are generated or frozen and are never changeset targets, and a family document is named by its logical name",
+                    role_label(f.role)
+                )));
+            }
+            match self.referenced.get(&path) {
+                None => return Err(refuse("it does not exist")),
+                Some(Referenced::BadUtf8(line)) => {
+                    return Err(refuse(&format!("it is not valid UTF-8 (line {line})")));
+                }
+                Some(Referenced::Spelled(actual)) => {
+                    return Err(refuse(&format!(
+                        "it is spelled `{actual}` on disk; a document has one spelling, so write it as it is on disk"
+                    )));
+                }
+                Some(Referenced::Text(_)) => {}
+            }
+        }
+        Ok(t)
+    }
+
+    /// The current lines of the document `t` names; `None` when it does not exist or
+    /// is not valid UTF-8.
+    pub fn target_source(&self, t: &Target) -> Option<Source> {
+        let path = self.loc.target_file(t);
+        match t {
+            Target::Family(..) => self.file(&path)?.doc.as_ref().map(|d| d.src.clone()),
+            Target::Document(_) => match self.referenced.get(&path)? {
+                Referenced::Text(s) => Some(s.clone()),
+                _ => None,
+            },
+        }
+    }
+
+    /// Whether `path` is a document outside every family that a changeset names.
+    pub fn is_referenced(&self, path: &Path) -> bool {
+        matches!(self.referenced.get(path), Some(Referenced::Text(_)))
     }
 
     fn add(&mut self, src: &dyn FileSource, path: PathBuf, role: Role) -> Res<()> {
@@ -227,7 +358,51 @@ impl Snapshot {
             .collect())
     }
 
+    fn list_rst_deep(&self, src: &dyn FileSource, dir: &Path, out: &mut Vec<PathBuf>) -> Res<()> {
+        let entries = src
+            .list(dir)
+            .map_err(|e| io_err(&format!("listing {}", dir.display()), &e))?;
+        for e in entries {
+            let p = dir.join(&e.name);
+            if e.is_dir {
+                // A linked folder may lead outside the project, or back into itself.
+                let linked =
+                    std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
+                if !linked {
+                    self.list_rst_deep(src, &p, out)?;
+                }
+            } else if e.name.ends_with(".rst") {
+                out.push(p);
+            }
+        }
+        Ok(())
+    }
+
     fn discover(&mut self, src: &dyn FileSource) -> Res<()> {
+        // Every document under the staging folder is a staging document, whatever its
+        // name or depth; loading these first keeps any other family from claiming one.
+        let staging = self.loc.dir_of(Family::Staging);
+        let mut mirrors = Vec::new();
+        self.list_rst_deep(src, &staging, &mut mirrors)?;
+        for p in mirrors {
+            let parts: Vec<String> = p
+                .strip_prefix(&staging)
+                .map(|r| {
+                    r.components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let fam = match parts.as_slice() {
+                [dir, _] if dir == "design" => Some(Family::Design),
+                [dir, _] if dir == "spec" => Some(Family::Spec),
+                [file] => [Family::Principles, Family::Glossary, Family::Contributing]
+                    .into_iter()
+                    .find(|f| *file == format!("{}.rst", f.key())),
+                _ => None,
+            };
+            self.add(src, p, Role::Staging(fam))?;
+        }
         for (fam, role) in [
             (Family::Backlog, Role::Backlog),
             (Family::State, Role::State),
@@ -280,12 +455,6 @@ impl Snapshot {
                 self.add(src, p, r)?;
             }
         }
-        let staging = self.loc.dir_of(Family::Staging);
-        for fam in [Family::Design, Family::Spec] {
-            for p in self.list_rst(src, &staging.join(fam.key()))? {
-                self.add(src, p, Role::Staging(fam))?;
-            }
-        }
         Ok(())
     }
 
@@ -307,6 +476,23 @@ impl Snapshot {
     /// The single file of a single-file family, when it exists.
     pub fn single(&self, fam: Family) -> Option<&DocFile> {
         self.file(&self.loc.file_of(fam))
+    }
+}
+
+/// What a palette document is, for messages.
+fn role_label(role: Role) -> &'static str {
+    match role {
+        Role::Layout => "the layout",
+        Role::Backlog | Role::State | Role::Phase(_) | Role::Deliverable(_) => "a work document",
+        Role::Rfc | Role::Adr => "a record",
+        Role::Changeset => "a changeset",
+        Role::Index(_) => "an index",
+        Role::Staging(_) => "a staging document",
+        Role::Design => "a design document",
+        Role::Spec => "a specification",
+        Role::Principles => "the principles document",
+        Role::Glossary => "the glossary",
+        Role::Contributing => "the contributing document",
     }
 }
 
@@ -435,7 +621,7 @@ mod tests {
         assert!(roles.contains(&("notes/rfc/index.rst".to_string(), Role::Index(Family::Rfc))));
         assert!(roles.contains(&(
             "notes/staging/spec/thing.rst".to_string(),
-            Role::Staging(Family::Spec)
+            Role::Staging(Some(Family::Spec))
         )));
         assert!(
             !roles

@@ -56,8 +56,8 @@ pub fn generate(project: &str) -> i32 {
     });
     match ops::generate(&ctx, &root.to_string_lossy()) {
         Ok(result) => {
-            if result.files.is_empty() {
-                println!("nothing to generate: every index and staging document is up to date");
+            if let Some(m) = &result.message {
+                println!("{m}");
             }
             for (file, action) in &result.files {
                 println!("{action} {file}");

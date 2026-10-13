@@ -2,8 +2,10 @@
 //! belongs to no document family.
 //!
 //! Walks the internal folder and the project-path family folders through the
-//! `FileSource` and reports every file the snapshot did not load. The message says
-//! where such content belongs, so the finding is actionable.
+//! `FileSource` and reports every file the snapshot did not load. The staging folder
+//! is walked to any depth, since every `.rst` in it is a staging document; P008 reports
+//! the ones no changeset produces. The message says where such content belongs, so the
+//! finding is actionable.
 
 use std::path::{Path, PathBuf};
 
@@ -41,24 +43,22 @@ pub(super) fn check(cx: &Cx, out: &mut Vec<Finding>) {
             continue;
         }
         let dir = loc.dir_of(fam);
+        if fam == Family::Staging {
+            let mut files = Vec::new();
+            walk(cx, &dir, &mut files);
+            for p in files {
+                if cx.snap.file(&p).is_none() {
+                    report(cx, &p, out);
+                }
+            }
+            continue;
+        }
         let Ok(entries) = cx.src.list(&dir) else {
             continue;
         };
         for e in entries {
             let p = dir.join(&e.name);
-            if e.is_dir {
-                if fam == Family::Staging && (e.name == "design" || e.name == "spec") {
-                    let Ok(inner) = cx.src.list(&p) else { continue };
-                    for f in inner {
-                        let q = p.join(&f.name);
-                        if f.is_dir || cx.snap.file(&q).is_none() {
-                            report(cx, &q, out);
-                        }
-                    }
-                } else {
-                    report(cx, &p, out);
-                }
-            } else if cx.snap.file(&p).is_none() {
+            if e.is_dir || cx.snap.file(&p).is_none() {
                 report(cx, &p, out);
             }
         }

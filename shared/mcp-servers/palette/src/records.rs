@@ -222,32 +222,53 @@ pub enum AmendsCutoff {
     Until(String),
 }
 
+/// The value of field `name` in the contributing document's `Records` section, from
+/// the document the snapshot resolves (placed by the layout or inferred).
+fn records_setting(snap: &Snapshot, name: &str) -> Option<String> {
+    let doc = snap
+        .single(Family::Contributing)
+        .and_then(|f| f.doc.as_ref())?;
+    let (idx, _) = doc
+        .headings_at(2)
+        .find(|(_, h)| h.title.trim() == "Records")?;
+    doc.body_fields(idx)
+        .into_iter()
+        .find(|f| f.name == name)
+        .map(|f| f.value.trim().to_string())
+}
+
 /// Reads the cutoff from the contributing document of `snap`.
 pub fn amends_cutoff(snap: &Snapshot) -> AmendsCutoff {
-    let Some(doc) = snap
-        .single(Family::Contributing)
-        .and_then(|f| f.doc.as_ref())
-    else {
-        return AmendsCutoff::None;
-    };
-    let Some((idx, _)) = doc
-        .headings_at(2)
-        .find(|(_, h)| h.title.trim() == "Records")
-    else {
-        return AmendsCutoff::None;
-    };
-    let Some(field) = doc
-        .body_fields(idx)
-        .into_iter()
-        .find(|f| f.name == "Amends")
-    else {
-        return AmendsCutoff::None;
-    };
-    match field.value.trim().strip_prefix("until ") {
+    match records_setting(snap, "Amends")
+        .as_deref()
+        .and_then(|v| v.strip_prefix("until "))
+    {
         Some(date) if crate::util::is_iso_date(date.trim()) => {
             AmendsCutoff::Until(date.trim().to_string())
         }
         _ => AmendsCutoff::None,
+    }
+}
+
+/// How an `Accepted` value without the time is reported, read from the contributing
+/// document's `Records` section (`:Acceptance: who-and-time | who`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcceptanceRule {
+    /// `who-and-time`: the time is required, so its absence is an error.
+    WhoAndTime,
+    /// `who`: the person alone is accepted.
+    Who,
+    /// No field, no `Records` section, no contributing document, or a value outside
+    /// the two (which P002 reports): the absence of the time is a warning.
+    Unset,
+}
+
+/// Reads the acceptance rule from the contributing document of `snap`.
+pub fn acceptance_rule(snap: &Snapshot) -> AcceptanceRule {
+    match records_setting(snap, "Acceptance").as_deref() {
+        Some("who-and-time") => AcceptanceRule::WhoAndTime,
+        Some("who") => AcceptanceRule::Who,
+        _ => AcceptanceRule::Unset,
     }
 }
 

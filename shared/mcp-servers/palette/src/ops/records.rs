@@ -1,10 +1,10 @@
 //! Record and changeset tools.
 //!
-//! `palette_record_create`, `palette_record_update`, `palette_changeset_edit` and
-//! `palette_changeset_promote`. Records are written from the RFC and ADR templates; the
-//! time-varying header fields (`Implementation`, `Verification`, `Implementers`,
-//! `Revised`) are written only here. Changeset edits are validated by the lint that
-//! runs before the commit.
+//! `palette_record_create`, `palette_record_update`, `palette_record_refresh`,
+//! `palette_changeset_edit` and `palette_changeset_promote`. Records are written from
+//! the RFC and ADR templates; the time-varying header fields (`Implementation`,
+//! `Verification`, `Implementers`, `Revised`) are written only here. Changeset edits
+//! are validated by the lint that runs before the commit.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use super::{Ctx, Session, WriteResult, run_write};
 use crate::changeset::{self, Changeset, Edit, EditKind};
 use crate::edit;
 use crate::errors::{PalError, Res};
-use crate::layout::{CHANGESET_TARGETS, ChangesDoc, changes_doc, split_logical};
+use crate::layout::{CREATE_TARGETS, ChangesDoc, changes_doc};
 use crate::params::*;
 use crate::records::{PARTIAL_MARKER, RecId, RecordKind};
 use crate::rst::Doc;
@@ -120,7 +120,7 @@ fn changes_value(list: &[ChangeIn]) -> Res<String> {
                     && secs.iter().any(|x| x.eq_ignore_ascii_case("created"))
                 {
                     return Err(PalError::invalid(format!(
-                        "{doc}: `created` is only for a new design or spec document; {CHANGESET_TARGETS}"
+                        "{doc}: `created` is only for a new design or spec document; name the sections that change"
                     )));
                 }
                 secs.join("; ")
@@ -491,12 +491,13 @@ pub fn record_update(ctx: &Ctx, p: RecordUpdateParams) -> Res<WriteResult> {
 fn parse_kind(k: &str) -> Res<EditKind> {
     match k.trim() {
         "replace" => Ok(EditKind::Replace),
+        "replace_body" => Ok(EditKind::ReplaceBody),
         "insert_after" => Ok(EditKind::InsertAfter),
         "insert_into" => Ok(EditKind::InsertInto),
         "delete" => Ok(EditKind::Delete),
         "create" => Ok(EditKind::Create),
         other => Err(PalError::invalid(format!(
-            "kind must be replace, insert_after, insert_into, delete or create, got `{other}`"
+            "kind must be replace, replace_body, insert_after, insert_into, delete or create, got `{other}`"
         ))),
     }
 }
@@ -539,13 +540,10 @@ pub fn changeset_edit(ctx: &Ctx, p: ChangesetEditParams) -> Res<WriteResult> {
         }
         let kind = parse_kind(&p.kind)?;
         let doc_path = p.document.trim().to_string();
-        match split_logical(&doc_path) {
-            Some((_, name)) if crate::util::is_kebab_rst(name) => {}
-            _ => {
-                return Err(PalError::invalid(format!(
-                    "`{doc_path}` cannot be edited by a changeset: {CHANGESET_TARGETS}"
-                )));
-            }
+        s.snap.reference(&*s.ov, &doc_path)?;
+        let resolved = s.snap.target(&doc_path).map_err(PalError::invalid)?;
+        if kind == EditKind::Create && !resolved.can_create() {
+            return Err(PalError::invalid(format!("`{doc_path}`: {CREATE_TARGETS}")));
         }
         let target = require("target", &p.target)?;
         let body = p.body.clone().unwrap_or_default();
@@ -764,25 +762,21 @@ pub fn changeset_promote(ctx: &Ctx, p: ChangesetPromoteParams) -> Res<WriteResul
             }
             _ => {}
         }
-        // Apply to the maintained documents.
-        let mut working: BTreeMap<String, (Option<Source>, bool)> = BTreeMap::new();
+        // Apply to the maintained documents, resolved as lint and staging resolve them.
+        let mut working: BTreeMap<String, (Option<Source>, bool, PathBuf)> = BTreeMap::new();
         for (doc, e) in &selected {
-            let path = s.snap.loc.maintained_file(doc).ok_or_else(|| {
-                PalError::invalid(format!("`{doc}` is not a maintained document path"))
-            })?;
+            let target = s.snap.target(doc).map_err(PalError::invalid)?;
+            let path = s.snap.loc.target_file(&target);
             if s.snap.file(&path).is_some() {
                 s.file(&path)?;
             }
-            let entry = working.entry(doc.clone()).or_insert_with(|| {
-                (
-                    s.snap
-                        .file(&path)
-                        .and_then(|f| f.doc.as_ref())
-                        .map(|d| d.src.clone()),
-                    false,
-                )
-            });
+            let entry = working
+                .entry(doc.clone())
+                .or_insert_with(|| (s.snap.target_source(&target), false, path.clone()));
             let res = match (e.kind, entry.0.as_mut()) {
+                (EditKind::Create, _) if !target.can_create() => {
+                    Err(format!("`{doc}`: {CREATE_TARGETS}"))
+                }
                 (EditKind::Create, None) => changeset::create_document(&cs_doc, e).map(|mut n| {
                     ensure_date(&mut n, &s.today);
                     entry.0 = Some(n);
@@ -800,9 +794,9 @@ pub fn changeset_promote(ctx: &Ctx, p: ChangesetPromoteParams) -> Res<WriteResul
                 ))
             })?;
         }
-        for (doc, (src, _)) in &working {
-            if let (Some(src), Some(path)) = (src, s.snap.loc.maintained_file(doc)) {
-                s.put(&path, src)?;
+        for (src, _, path) in working.values() {
+            if let Some(src) = src {
+                s.put(path, src)?;
             }
         }
         // Remove the promoted edits from the changeset.
@@ -862,6 +856,94 @@ pub fn changeset_promote(ctx: &Ctx, p: ChangesetPromoteParams) -> Res<WriteResul
                 .map_err(|m| PalError::parse(&rrel, 1, m))?;
         }
         s.put(&rpath, &rsrc)?;
+        Ok(Vec::new())
+    })
+}
+
+/// The `Implementation` values `palette_record_refresh` takes besides the default
+/// `complete`.
+const REFRESH_VALUES: [&str; 4] = ["partial", "in-progress", "abandoned", "not-applicable"];
+
+/// `palette_record_refresh`: the record's change has landed outside a changeset, so
+/// `Implementation` (and `Implementers` when given) and the `Superseded` status are
+/// brought in line with the documents. `Revised`, `Verification` and `Accepted` record
+/// events and are never written here.
+pub fn record_refresh(ctx: &Ctx, p: RecordRefreshParams) -> Res<WriteResult> {
+    run_write(ctx, &p.project, p.dry_run.unwrap_or(false), |s| {
+        let (id, rec) = find_record(s, &p.record)?;
+        let status = rec.status.clone().unwrap_or_default();
+        if matches!(status.as_str(), "Draft" | "Proposed") {
+            return Err(PalError::invariant(format!(
+                "{id} is {status}; only a record that has been accepted has a change that lands"
+            )));
+        }
+        let given = match p.implementation.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(v) if v == "complete" || REFRESH_VALUES.contains(&v) => Some(v.to_string()),
+            Some(other) => {
+                return Err(PalError::invalid(format!(
+                    "implementation must be {} (or omitted for complete), got `{other}`",
+                    REFRESH_VALUES.join(", ")
+                )));
+            }
+        };
+        let current = rec.field("Implementation").map(|f| f.value.clone());
+        let current_token = current
+            .as_deref()
+            .map(|v| v.split(" — ").next().unwrap_or("").trim().to_string())
+            .unwrap_or_default();
+        let remaining = s.an.sets.get(&id).map_or(0, Changeset::edit_count);
+        // A given value is the caller's statement and is written as given, except
+        // `complete` while edits remain (P007). Without one, the changeset decides.
+        let token = if let Some(v) = given {
+            if v == "complete" && remaining > 0 {
+                return Err(PalError::invalid(format!(
+                    "{id} still has {remaining} edit(s) in its changeset, so it is not complete; promote them with palette_changeset_promote"
+                )));
+            }
+            v
+        } else if remaining == 0 {
+            "complete".to_string()
+        } else if current_token == "partial" {
+            // Promotion records a partial landing as `partial`; the record stays so
+            // until the remaining edits are promoted.
+            "partial".to_string()
+        } else {
+            return Err(PalError::invariant(format!(
+                "{id} has {remaining} edit(s) in its changeset and none has been promoted; edits land through palette_changeset_promote"
+            )));
+        };
+        let scope = p
+            .implementation_scope
+            .as_deref()
+            .map(edit::one_line)
+            .filter(|x| !x.is_empty())
+            .or_else(|| {
+                current
+                    .as_deref()
+                    .and_then(|v| v.split_once(" — ").map(|(_, r)| r.trim().to_string()))
+            })
+            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        let superseded =
+            status != "Superseded" && !s.an.records.wholly_superseded_by(id).is_empty();
+        let implementers = match &p.implementers {
+            Some(v) => Some(require("implementers", v)?),
+            None => None,
+        };
+        let path = s.snap.files[rec.file].path.clone();
+        let rel = s.rel(&path);
+        let mut src = s.source(&path)?;
+        let mut set = |name: &str, value: &str| {
+            edit::set_header_field(&mut src, name, value).map_err(|m| PalError::parse(&rel, 1, m))
+        };
+        set("Implementation", &format!("{token} — {scope}"))?;
+        if let Some(who) = &implementers {
+            set("Implementers", who)?;
+        }
+        if superseded {
+            set("Status", "Superseded")?;
+        }
+        s.put(&path, &src)?;
         Ok(Vec::new())
     })
 }

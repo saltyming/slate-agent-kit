@@ -950,14 +950,27 @@ fn p006_changes_single_file_families() {
         "`principles.rst` cannot be marked (created)",
         |p| set_changes(p, "principles.rst (created)"),
     );
-    // A changeset still cannot edit one of them.
+    // A changeset edits them too (RFC-0019), and a section its edit adds may be named.
+    passing("P007", |p| {
+        p.mutate("docs/changeset/rfc-0002.rst", |s| {
+            format!("{s}\nprinciples.rst\n--------------\n\nDelete: Keep the thing small\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
+        })
+    });
+    passing("P006", |p| {
+        p.mutate("docs/changeset/rfc-0002.rst", |s| {
+            format!("{s}\nprinciples.rst\n--------------\n\nInsert after: Keep the thing small\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nState the limits\n^^^^^^^^^^^^^^^^\n\nEach limit is written down.\n")
+        });
+        set_changes(p, "principles.rst (State the limits)");
+    });
+    // A `.md` document is still only named in Changes.
     failing(
         "P007",
         "changeset/rfc-0002.rst",
-        "`principles.rst` cannot be edited by a changeset",
+        "`AGENTS.md` cannot be edited by a changeset: `.md` documents are named in a record's Changes",
         |p| {
+            p.write("AGENTS.md", "# Agents\n\n## Build\n\nWith make.\n");
             p.mutate("docs/changeset/rfc-0002.rst", |s| {
-                format!("{s}\nprinciples.rst\n--------------\n\nDelete: Keep the thing small\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
+                format!("{s}\nAGENTS.md\n---------\n\nDelete: Build\n~~~~~~~~~~~~~\n")
             })
         },
     );

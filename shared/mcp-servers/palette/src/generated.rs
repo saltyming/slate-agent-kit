@@ -179,10 +179,8 @@ pub fn generate(
         };
         out.insert(index_path, src);
     }
-    for (logical, staged) in &plan.docs {
-        if let Some(path) = snap.loc.staging_file(logical) {
-            out.insert(path, staged.source.clone());
-        }
+    for staged in plan.docs.values() {
+        out.insert(snap.loc.mirror_file(&staged.target), staged.source.clone());
     }
     out
 }

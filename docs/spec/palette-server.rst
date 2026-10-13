@@ -40,22 +40,7 @@ Families and locations
 
 ``layout.rst`` places each family (backlog, phase, deliverable, state, rfc,
 adr, changeset, staging, design, spec, principles, glossary, contributing)
-``internal`` or at
-a path relative to the project. ``internal`` resolves to:
-
-Without a layout, the families are inferred from the documents: every ``.rst``
-file outside ``_palette/``, ``.git``, ``target``, ``node_modules``, ``fixtures``
-and hidden folders is classified by its title and ``:Status:`` field (``RFC-NNNN:``,
-``ADR-NNNN:``, ``Changeset:``, ``Glossary —``, ``Principles —``, ``Backlog —``,
-``State —``, ``Phase N —`` in a ``phase-N`` folder, ``Deliverable N:`` in a
-``deliverables`` folder, ``:Status: Contract`` for a specification, ``:Status:
-Maintained`` with a title ending in ``design`` for a design document); a
-document whose title carries a template placeholder is skipped; the staging
-family is the folder named ``staging`` whose ``spec`` and ``design`` subfolders
-hold the mirrors. Each family is placed where its documents were found; a
-family found in two places keeps the first and reports the second (P012); a
-family with no documents is internal. This is how a checkout without
-``_palette/`` is checked.
+``internal`` or at a path relative to the project. ``internal`` resolves to:
 
 - ``_palette/backlog.rst``, ``_palette/state.rst``;
 - ``_palette/phase-<N>/phase.rst`` and
@@ -64,10 +49,34 @@ family with no documents is internal. This is how a checkout without
 
 A project path is used as given: ``<path>/rfc-0001-<slug>.rst``,
 ``<path>/adr-0001-<slug>.rst``, ``<path>/rfc-0001.rst`` (changeset),
-``<path>/design/<topic>.rst`` and ``<path>/spec/<topic>.rst`` (staging),
 ``<path>/<topic>.rst`` (design, spec), and a single file for principles,
-glossary and contributing. Every file name is lowercase ASCII kebab-case. Each record and
-changeset folder has a generated ``index.rst``.
+glossary and contributing. Every file name is lowercase ASCII kebab-case. Each
+record and changeset folder has a generated ``index.rst``.
+
+The staging folder holds the mirrors: ``<staging>/design/<topic>.rst`` and
+``<staging>/spec/<topic>.rst`` for design and spec documents,
+``<staging>/<family>.rst`` for principles, glossary and contributing, and
+``<staging>/<path relative to the document root>`` for any other document a
+changeset edits. Every ``.rst`` under the staging folder is a staging document.
+The document root is the folder that holds the staging folder; a project
+whose staging is internal has ``_palette/`` as its document root. A staging
+placement that contains another family's placement, or a family placed inside
+the staging folder, is an error (P012).
+
+Without a layout, the families are inferred from the documents: every ``.rst``
+file outside ``_palette/``, ``.git``, ``target``, ``node_modules``, ``fixtures``
+and hidden folders is classified by its title and ``:Status:`` field (``RFC-NNNN:``,
+``ADR-NNNN:``, ``Changeset:``, ``Glossary —``, ``Principles —``, ``Backlog —``,
+``State —``, ``Phase N —`` in a ``phase-N`` folder, ``Deliverable N:`` in a
+``deliverables`` folder, ``:Status: Contract`` for a specification, ``:Status:
+Maintained`` with a title ending in ``design`` for a design document); a
+document whose title carries a template placeholder is skipped. The staging
+family is the folder named ``staging`` that holds a ``design`` or ``spec``
+subfolder or lies beside an inferred record, design or spec folder; its
+contents are staging documents and are never classified. Each family is placed
+where its documents were found; a family found in two places keeps the first
+and reports the second (P012); a family with no documents is internal. This is
+how a checkout without ``_palette/`` is checked.
 
 Templates as schema
 ~~~~~~~~~~~~~~~~~~~
@@ -121,8 +130,14 @@ Records and relations
   document admits no record. Being a document, the cutoff is checked the same
   way with and without a layout.
 - ``Accepted`` is ``none``, ``<who>`` or ``<who> (<YYYY-MM-DDTHH:MMZ>)``: the
-  person who accepted the record and, expected, when, in UTC. The form
-  without the parenthetical is a warning.
+  person who accepted the record and when, in UTC. The contributing
+  document's ``Records`` section may state ``:Acceptance: who-and-time`` or
+  ``:Acceptance: who`` after ``Amends``; the field is optional. With
+  ``who-and-time`` the form without the parenthetical is an error; with
+  ``who`` it is not reported; without the field, a missing section or no
+  contributing document it is a warning. The setting is read the same way
+  with and without a layout. The server writes the full form on acceptance
+  whatever the setting.
 - ``Implementation`` is one of ``not-started``, ``in-progress`` (work under
   way), ``partial`` (a part implemented, no work under way), ``complete``,
   ``abandoned``, ``unassessed`` (an inherited claim that has not been
@@ -136,13 +151,42 @@ Records and relations
 Changesets and staging
 ~~~~~~~~~~~~~~~~~~~~~~
 
-A changeset holds one record's edits to maintained design and spec documents:
-``Replace:``, ``Insert after:``, ``Insert into:``, ``Delete:`` against an
-existing section (named by its title, prefixed by parent titles and " / " when
-not unique), and ``Create:`` for a new document. Staging is each maintained
-document with the edits of every accepted record's changeset applied in
-dependency order. Changesets of draft and proposed records are checked, not
-applied. Staging is only ever generated.
+A changeset holds one record's edits to maintained documents. A target is
+written as a ``Changes`` entry is: ``design/<topic>.rst`` or
+``spec/<topic>.rst``; ``principles.rst``, ``glossary.rst`` or
+``contributing.rst``; or the project-relative path of another ``.rst`` file
+under the document root that lies outside every family folder, the staging
+folder and ``_palette/``, spelled as its path components are spelled on disk.
+A family document is a target wherever its family is placed, internal
+included. A ``.md`` document, a record, an index, a
+changeset, a staging document, a work document, a document outside the
+document root, a family document written by its real path, and a document
+whose mirror would land in the ``design`` or ``spec`` mirror folder or equal
+a single-file mirror are refused, each with the rule it fails. One resolution
+of a target, its maintained file and its mirror serves the parser, the tools,
+staging and promotion, so a refused target is never applied.
+
+The edits are ``Replace:``, ``Replace body:``, ``Insert after:``, ``Insert
+into:`` and ``Delete:`` against an existing section (named by its title,
+prefixed by parent titles and " / " when not unique), and ``Create:`` for a
+new design or spec document. ``Replace:`` replaces the section together with
+its subsections; the body restates the subsections that stay. ``Replace
+body:`` replaces the section's heading and body up to its first subsection, or
+to its end when it has none, and leaves the subsections in place; its body is
+one heading at the section's level, which may rename the section, followed by
+text with no further heading, and a body of the heading alone is accepted. A
+later edit names a renamed section by its new title. ``Delete:`` removes the
+section with its subsections.
+
+Staging is each maintained document with the edits of every accepted record's
+changeset applied in dependency order. Changesets of draft and proposed
+records are checked, not applied. Staging is only ever generated: a staging
+document no changeset produces is reported (P008) and removed by the next
+generation. A document that belongs to no family is read when an edit names
+it and is not a palette document: no document rule applies to it or to its
+mirror, and only its edits (P007) and the links in them (P004) are checked. A
+``Changes`` entry keeps its meaning whether or not a changeset edits the
+document it names.
 
 The text of an edit reads as the maintained document will read, so a link in
 an edit body is relative to the edit's target document (for ``Create:``, the
@@ -167,12 +211,16 @@ line and a message.
   substitution, a footnote or a citation. ``.. list-table::`` and
   ``.. code-block::`` are not reported in RFC, ADR, changeset, staging,
   design, spec, principles, glossary and contributing documents; ``P017``
-  checks them there.
+  checks them there. The mirror of a document outside the families is not
+  checked by either.
 
 ``P002`` Structure (error)
   A missing, extra or out-of-order required section; a missing or out-of-order
-  required field; a value outside the field's allowed values. ``Amends`` is
-  the one optional field: absent or in its place after ``Related``.
+  required field; a value outside the field's allowed values. The optional
+  fields are ``Amends`` on a record (absent or in its place after
+  ``Related``) and ``Acceptance`` in the contributing document's ``Records``
+  section (absent or in its place after ``Amends``); a field the template
+  places in a section, found in the header or another section, is reported.
 
 ``P003`` Identity (error)
   File name, number and title disagree; a file name that is not lowercase
@@ -182,8 +230,9 @@ line and a message.
   A link whose target file or anchor does not exist; a link from a project path
   into ``_palette/``. Links in table cells are checked like any other; a link
   whose text and target wrap over lines within one block is one link; a link
-  in a changeset's edit body is read from the edit's target document, against
-  the documents as the record's edits and its ``Depends`` closure leave them.
+  in a changeset's edit body is read from the edit's target document, whatever
+  family or none it belongs to, against the documents as the record's edits
+  and its ``Depends`` closure leave them.
 
 ``P005`` Relations
   A link to a record created later (error); a relation cycle (error); a
@@ -203,23 +252,31 @@ line and a message.
   record's ``Depends`` closure are applied; ``created`` needs the record's own
   changeset to create it. ``principles.rst``, ``glossary.rst`` or
   ``contributing.rst`` with its sections: an error when the family's document
-  or a section is not on disk, or the entry says ``created`` (changesets and
-  staging hold only design and spec documents). Any other project document, as
+  is not on disk, when a section neither exists, nor is added by the record's
+  own changeset, nor exists once the changesets of the record's ``Depends``
+  closure are applied, or when the entry says ``created`` (only design and
+  spec documents are created by a changeset). Any other project document, as
   a project-relative path to a ``.md`` or ``.rst`` file with what changes in
   the parenthetical: an error when the file does not exist, the path is
   absolute, has ``..`` or a backslash, lies inside ``_palette/``, names a
   source file, names a record or another palette document, or names a family
-  document by its real path instead of its logical name.
+  document by its real path instead of its logical name. The parenthetical of
+  such an entry is free text; whether a changeset may edit the document is
+  decided when a changeset names it, not here.
 
 ``P007`` Changesets (error)
-  An edit that does not resolve against its target with only its record's
-  dependency closure applied; two changesets editing one section with no
+  A target a changeset may not edit (the rule the target fails is named); an
+  edit that does not resolve against its target with only its record's
+  dependency closure applied; a ``Replace body:`` whose body has no heading, a
+  heading at another level, or more than one heading; a ``Create:`` of a
+  document outside design and spec; two changesets editing one section with no
   dependency between them; a changeset with no record; a record whose
   ``Implementation`` is ``complete`` while its changeset still has edits.
 
 ``P008`` Generated files (error)
   A staging document or an index that differs from what the server would
-  generate; a staging document no changeset produces.
+  generate; a staging document no changeset produces, anywhere under the
+  staging folder.
 
 ``P009`` Status placement (error)
   A ``Status`` field, a checkbox (``[ ]`` or ``[x]``) or a done/pending marker
@@ -237,8 +294,12 @@ line and a message.
 
 ``P012`` Layout (error)
   A family missing from ``layout.rst``, an unknown family, a path outside the
-  project, or a project path inside ``_palette/``; a missing ``checker``.
-  ``checker`` is a setting, not a family.
+  project, or a project path inside ``_palette/``; a staging placement that
+  contains another family's placement, or a family placed inside the staging
+  folder, or placed at the same path as another family, in which case the
+  staging placement is dropped and every write tool and generation refuse
+  until the layout is corrected; a missing ``checker``. ``checker`` is a
+  setting, not a family.
 
 ``P013`` Backlog (error)
   A duplicate item id; ``in-phase-<N>`` without a phase ``<N>`` file; a
@@ -252,13 +313,17 @@ line and a message.
 ``P015`` Stray files (error)
   A file under ``_palette/`` other than ``layout.rst``, ``.gitignore``,
   ``.palette.lock`` and the documents the layout places; a file or folder
-  inside a placed family folder that is not a document of that family. Research
-  and evidence belong inside the record that relies on them; a decision or
-  question in state; anything else outside the palette folders.
+  inside a placed family folder that is not a document of that family, the
+  staging folder's mirrors excepted. Research and evidence belong inside the
+  record that relies on them; a decision or question in state; anything else
+  outside the palette folders.
 
-``P016`` Acceptance (warning)
+``P016`` Acceptance
   An ``Accepted`` value that names who accepted the record but not the date
-  and time.
+  and time: an error when the contributing document's ``Records`` section
+  states ``:Acceptance: who-and-time``, nothing when it states
+  ``:Acceptance: who``, a warning when the field, the section or the document
+  is absent.
 
 ``P017`` Directive structure (error)
   In a family that admits them, a ``list-table`` or ``code-block`` that
@@ -385,14 +450,38 @@ Tools:
   newer record's whole ``Supersedes`` entry. ``supersedes`` entries take
   ``partial`` as in ``palette_record_create``.
 
+``palette_record_refresh``
+  States that an Accepted record's change has landed outside a changeset and
+  brings its derived fields in line. Input: ``record``, optional
+  ``implementation`` (``partial``, ``in-progress``, ``abandoned`` or
+  ``not-applicable``; ``complete`` is the default), ``implementation_scope``,
+  ``implementers``. Without a given value: no changeset or no edit remaining
+  sets ``Implementation`` to ``complete``; edits remaining with the current
+  token ``partial`` keeps ``partial``; edits remaining with any other token
+  is refused, naming ``palette_changeset_promote``. A given value is written
+  as given whether or not edits remain; ``complete`` with edits remaining is
+  refused. It sets the status to ``Superseded`` when a newer record's whole
+  ``Supersedes`` entry names the record. It never writes ``Revised``,
+  ``Verification`` or ``Accepted``; a Draft or Proposed record is refused.
+
 ``palette_changeset_edit``
-  Adds, replaces or removes one edit in a record's changeset.
+  Adds, replaces or removes one edit in a record's changeset. ``kind`` is
+  ``replace``, ``replace_body``, ``insert_after``, ``insert_into``, ``delete``
+  or ``create``; ``document`` is a target as the changeset section writes it;
+  a target the changeset may not edit is refused with the rule it fails.
 
 ``palette_changeset_promote``
   Merges implemented edits of a record into their maintained documents, removes
   them from the changeset, deletes an empty changeset, and sets the record's
   ``Implementation`` (``partial``, or ``complete`` when no edit remains),
-  ``Implementers`` and ``Verification`` from the given values.
+  ``Implementers`` and ``Verification`` from the given values. ``Create:`` is
+  promoted for design and spec documents only.
+
+``palette_generate``
+  Regenerates every index and staging document that is missing or differs
+  from what the server would generate, as ``palette generate`` does, and
+  returns the diff; with nothing to regenerate it returns an empty file list
+  and says ``nothing to generate``.
 
 Command line
 ~~~~~~~~~~~~
@@ -422,9 +511,13 @@ Ownership and ordering
 ----------------------
 
 The server is the only writer of ``Implementation``, ``Verification``,
-``Implementers``, ``Revised``, generated indexes and staging. Any other text in
-a palette document may also be edited by hand; the next lint reports what
-drifted.
+``Implementers``, ``Revised``, generated indexes and staging. Promotion writes
+``Implementation``, ``Implementers`` and ``Verification`` as edits land;
+``palette_record_refresh`` writes ``Implementation``, ``Implementers`` and the
+``Superseded`` status from the documents as they stand, for a record whose
+change lands outside a changeset; ``palette_generate`` rewrites the indexes
+and staging that drifted. Any other text in a palette document may also be
+edited by hand; the next lint reports what drifted.
 
 Compatibility
 -------------

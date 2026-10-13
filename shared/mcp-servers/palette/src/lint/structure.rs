@@ -12,7 +12,7 @@ use regex::Regex;
 
 use super::{Cx, Finding};
 use crate::docs::{DocFile, Role};
-use crate::records::{RecordKind, Records};
+use crate::records::{AcceptanceRule, RecordKind, Records, acceptance_rule};
 use crate::rst::{Doc, Field};
 use crate::schema::{FieldSpec, SectionSpec, ValueSpec, schemas};
 use crate::util::{is_kebab_rst, re};
@@ -36,13 +36,20 @@ static AMENDS_VALUE: LazyLock<ValueSpec> =
     LazyLock::new(|| ValueSpec::parse("RFC-<NNNN> (<what changed>) | ADR-<NNNN> (<what changed>)"));
 
 /// `Accepted` alternatives in the record templates: `none`, the person alone (P016
-/// warns), the person and the time.
+/// reports it as the contributing document's `Acceptance` setting says), the person
+/// and the time.
 const ACCEPTED_WHO_ONLY: usize = 1;
 const ACCEPTED_WHO_AND_TIME: usize = 2;
 
 pub(super) fn check(cx: &Cx, out: &mut Vec<Finding>) {
     layout_problems(cx, out);
+    let acceptance = acceptance_rule(cx.snap);
     for f in &cx.snap.files {
+        // The mirror of a document outside every family is not a palette document,
+        // so no document rule reads it (RFC-0019).
+        if f.role == Role::Staging(None) {
+            continue;
+        }
         if !is_kebab_rst(&f.name) {
             out.push(Finding::error(
                 "P003",
@@ -60,8 +67,19 @@ pub(super) fn check(cx: &Cx, out: &mut Vec<Finding>) {
         check_title(f, doc, &schema.title, out);
         let header = doc.header_fields();
         let anchor = doc.title().map(|t| t.line).unwrap_or(0);
-        check_fields(f, &header, &schema.header, anchor, f.role, out);
+        check_fields(
+            f,
+            &header,
+            &schema.header,
+            anchor,
+            f.role,
+            Some(acceptance),
+            out,
+        );
         check_sections(f, doc, &schema.sections, f.role, out);
+        if f.role == Role::Contributing {
+            check_section_fields_placed(f, doc, &header, &schema.sections, out);
+        }
     }
     identity(cx, out);
 }
@@ -108,6 +126,7 @@ fn check_fields(
     specs: &[FieldSpec],
     anchor: usize,
     role: Role,
+    acceptance: Option<AcceptanceRule>,
     out: &mut Vec<Finding>,
 ) {
     let mut furthest: Option<usize> = None;
@@ -121,7 +140,7 @@ fn check_fields(
         }
         let Some(pos) = actual.iter().position(|a| a.name == name) else {
             // A missing layout setting is P012, reported from the layout itself.
-            if role != Role::Layout {
+            if role != Role::Layout && !spec.optional {
                 out.push(Finding::error(
                     "P002",
                     f,
@@ -171,17 +190,66 @@ fn check_fields(
                     "field `:Accepted:` has a value outside the allowed values: the parenthetical is not a UTC time `(<YYYY-MM-DDTHH:MMZ>)`",
                 ));
             } else {
-                out.push(Finding::warning(
-                    "P016",
-                    f,
-                    actual[pos].start,
-                    "field `:Accepted:` names who accepted the record but not when; write `<who> (<YYYY-MM-DDTHH:MMZ>)`",
-                ));
+                // The contributing document's `Acceptance` setting decides how the
+                // missing time is reported.
+                let message = "field `:Accepted:` names who accepted the record but not when; write `<who> (<YYYY-MM-DDTHH:MMZ>)`";
+                match acceptance.unwrap_or(AcceptanceRule::Unset) {
+                    AcceptanceRule::WhoAndTime => out.push(Finding::error(
+                        "P016",
+                        f,
+                        actual[pos].start,
+                        format!("{message}; the contributing document requires the time (`:Acceptance: who-and-time`)"),
+                    )),
+                    AcceptanceRule::Who => {}
+                    AcceptanceRule::Unset => {
+                        out.push(Finding::warning("P016", f, actual[pos].start, message))
+                    }
+                }
             }
         }
     }
     if record {
         check_amends(f, actual, out);
+    }
+}
+
+/// A field the template shows in one section (the contributing document's `Amends` and
+/// `Acceptance` in `Records`) written in the header or in another section, where it
+/// would have no effect.
+fn check_section_fields_placed(
+    f: &DocFile,
+    doc: &Doc,
+    header: &[Field],
+    specs: &[SectionSpec],
+    out: &mut Vec<Finding>,
+) {
+    let homes: Vec<(&str, &str)> = specs
+        .iter()
+        .filter_map(|s| Some((s.title.literal()?, s)))
+        .flat_map(|(title, s)| {
+            s.fields
+                .iter()
+                .filter_map(move |fs| Some((fs.literal_name()?, title)))
+        })
+        .collect();
+    let mut misplaced = |fields: &[Field], here: Option<&str>| {
+        for a in fields {
+            if let Some((_, home)) = homes
+                .iter()
+                .find(|(name, home)| *name == a.name && Some(*home) != here)
+            {
+                out.push(Finding::error(
+                    "P002",
+                    f,
+                    a.start,
+                    format!("field `:{}:` belongs in the `{home}` section", a.name),
+                ));
+            }
+        }
+    };
+    misplaced(header, None);
+    for (idx, h) in doc.headings_at(2) {
+        misplaced(&doc.body_fields(idx), Some(h.title.trim()));
     }
 }
 
@@ -316,7 +384,7 @@ fn check_section_body(
         .cloned()
         .collect();
     if !literal.is_empty() {
-        check_fields(f, &actual, &literal, h.line, role, out);
+        check_fields(f, &actual, &literal, h.line, role, None, out);
     }
     let patterned: Vec<&FieldSpec> = spec
         .fields
