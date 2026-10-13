@@ -7,12 +7,12 @@ Installer
 Scope and authority
 -------------------
 The installer installs one kit into one harness home: the kit's instruction
-files, rules and skills; the aside, dispatch and palette MCP servers; the prefs
+files, rules and skills; the dispatch and palette MCP servers; the prefs
 files; and the harness's native configuration. It also reconfigures and
 uninstalls. It is one Rust program, ``slate-setup``, built from the slate
 workspace crate ``shared/setup`` and shipped prebuilt for the same eight targets
-as aside and dispatch. Every harness and every operating system runs the same
-code; no step uses node, python, jq, awk or PowerShell logic of its own.
+as dispatch and palette. Every harness and every operating system runs the
+same code; no step uses node, python, jq, awk or PowerShell logic of its own.
 
 This document is the contract; ``shared/setup`` implements it, and each kit's
 ``dist/kit.toml`` descriptor is authoritative for what that kit installs.
@@ -39,9 +39,9 @@ Entry points
   run the installer; they implement no installer step.
 
 Release assets
-  ``slate-setup-<target>`` and ``palette-<target>`` archives beside the aside
-  and dispatch archives, and ``agent-guard-<target>`` for the Linux and macOS
-  targets, listed in the release's ``checksums.txt``.
+  ``slate-setup-<target>``, ``dispatch-<target>`` and ``palette-<target>``
+  archives, and ``agent-guard-<target>`` for the Linux and macOS targets,
+  listed in the release's ``checksums.txt``.
 
 Kit payload
 ~~~~~~~~~~~
@@ -63,15 +63,15 @@ Descriptor
 
    kit = "claude-agent-kit"          # file prefix and manifest name
    harness = "claude"                # claude | codex | kimi
-   version = "26.10.0"               # kit version, YY.MM.N
+   version = "26.10.1"               # kit version, YY.MM.N
    contract = 1                      # compatibility contract (Compatibility)
-   slate_version = "26.10.0"         # slate release that provides the binaries
+   slate_version = "26.10.1"         # slate release that provides the binaries
    primary = "CLAUDE.md"             # file in dist/
    load = "rules-dir"                # rules-dir | concat
    rules = ["claude-agent-kit--task-execution.md", "..."]   # concat order
    skills = ["palette-init", "..."]
-   prefs = ["aside", "dispatch", "subagent", "git", "comment"]
-   servers = ["aside", "dispatch", "palette"]
+   prefs = ["consult", "dispatch", "subagent", "git", "comment"]
+   servers = ["dispatch", "palette"]
    legacy = ["workslate"]            # optional legacy cleanups, claude only
 
 ``load = "rules-dir"`` means the harness loads every file in its rules folder
@@ -157,14 +157,18 @@ Terminal experience
 Install steps
 ~~~~~~~~~~~~~
 1. Detect the harness home, the installed kit version from the manifest, the
-   prefs files, the harness CLI (``claude``, ``codex``), and legacy leftovers.
+   prefs files (renaming a prefs file that carries an earlier release's name
+   first, spec/prefs.rst *Migration*), the harness CLI (``claude``,
+   ``codex``), legacy leftovers, and the servers the previous manifest
+   recorded that the descriptor no longer lists.
 2. Ask: binaries mode; workspace roots; each prefs file (spec/prefs.rst); the
    custom rules folder.
 3. Summarize and confirm.
-4. Legacy cleanup for every entry in ``legacy`` (below) and for binaries and
-   registrations that earlier installers left elsewhere.
-5. Binaries: aside, dispatch and palette into the binary folder and, on Linux
-   and macOS, ``agent-guard`` beside them.
+4. Legacy cleanup for every entry in ``legacy`` (below), for binaries and
+   registrations that earlier installers left elsewhere, and for the retired
+   servers.
+5. Binaries: dispatch and palette into the binary folder and, on Linux and
+   macOS, ``agent-guard`` beside them.
 6. Payload files: primary file, rules and skills; for ``concat`` the combined
    primary file.
 7. Prefs files and custom rules.
@@ -177,17 +181,17 @@ Binaries
   the slate release ``v<slate_version>``; when that release does not exist it
   uses the latest release and says so. Every archive is checked against the
   release's ``checksums.txt``; a mismatch aborts; a missing checksum file warns.
-- ``build`` runs ``cargo build --release -p aside -p dispatch -p palette`` in
+- ``build`` runs ``cargo build --release -p dispatch -p palette`` in
   ``--slate-dir``, and on Linux and macOS then ``cargo build --release -p
   agent-exec --bin agent-guard``.
-- ``agent-guard`` is the executable aside and dispatch start their backends
-  through on Linux and macOS. It is installed, replaced and recorded like a
-  server binary and is never registered with a harness. ``prebuilt`` downloads
+- ``agent-guard`` is the executable dispatch starts its backends through on
+  Linux and macOS. It is installed, replaced and recorded like a server binary
+  and is never registered with a harness. ``prebuilt`` downloads
   ``agent-guard-<target>.tar.gz`` and checks it like the others; a release
   that does not carry it installs the servers and adds one warning that
-  dispatch refuses to start backends and aside runs unguarded until a release
-  that ships it is installed; a checksum entry for an asset that is absent is
-  an error. Nothing is installed for it on Windows.
+  dispatch refuses to start execution backends and runs consultations
+  unguarded until a release that ships it is installed; a checksum entry for
+  an asset that is absent is an error. Nothing is installed for it on Windows.
 - ``skip`` installs no binary and registers nothing.
 - A binary is replaced by writing a temporary file and renaming it over the
   old one, so a running server keeps its old file; on macOS the new file is
@@ -200,6 +204,9 @@ Payload files and signatures
 - Install overwrites kit-managed files and never overwrites a user-owned one.
   A kit-managed file the previous manifest lists and the new payload no longer
   has is removed, and the summary says so.
+- A user-owned prefs file under the name an earlier release gave it is read
+  under its current name and renamed after the confirmation
+  (spec/prefs.rst, Migration).
 - An existing primary file that is not kit-managed is copied to
   ``<file>.bak-<UTC timestamp>`` before it is replaced; the backup is recorded.
 - A skill folder is replaced as a whole when its ``SKILL.md`` is kit-managed.
@@ -213,11 +220,10 @@ Server registration
 ~~~~~~~~~~~~~~~~~~~
 Environment per server:
 
-- aside: ``ASIDE_HARNESS=<harness>``; for Kimi with a non-default home also
-  ``KIMI_CODE_HOME``.
 - dispatch: ``SLATE_AGENT_STATE_HOME`` (Claude: the Claude home; Codex and
-  Kimi: ``<home>/slate-agent-kit``); ``DISPATCH_EXTRA_ROOTS`` when roots were
-  given; for Kimi with a non-default home also ``KIMI_CODE_HOME``.
+  Kimi: ``<home>/slate-agent-kit``); ``SLATE_HARNESS=<harness>``, the harness
+  whose session log a consultation forwards; ``DISPATCH_EXTRA_ROOTS`` when
+  roots were given; for Kimi with a non-default home also ``KIMI_CODE_HOME``.
 - palette: ``PALETTE_EXTRA_ROOTS`` when roots were given.
 
 The roots question is asked for every harness. For Kimi, whose plugin runtime
@@ -228,22 +234,23 @@ warning that dispatch and palette will reject every project.
   ``claude mcp remove <server> -s user`` then
   ``claude mcp add <server> -s user --transport stdio -e <K=V>... -- <binary>``.
   The palette server's read-only tools (the names printed by
-  ``palette --read-only-tools``) are added to ``permissions.allow`` in
-  ``settings.json`` as ``mcp__palette__<tool>``. When the home is not the
-  default, the CLI runs with ``CLAUDE_CONFIG_DIR`` set to it if the installed
-  Claude Code honors that variable; otherwise registration is skipped and the
-  commands are printed.
+  ``palette --read-only-tools``) and dispatch's consultation and read tools
+  (``dispatch_consult``, ``dispatch_status``, ``dispatch_list``,
+  ``dispatch_logs``, ``dispatch_backends``) are added to ``permissions.allow``
+  in ``settings.json`` as ``mcp__<server>__<tool>``, in one edit. When the home
+  is not the default, the CLI runs with ``CLAUDE_CONFIG_DIR`` set to it if the
+  installed Claude Code honors that variable; otherwise registration is
+  skipped and the commands are printed.
 
 ``codex``
   ``codex mcp remove`` then ``codex mcp add`` with ``CODEX_HOME`` set. Then in
-  ``config.toml``: ``[mcp_servers.aside]`` gets ``tool_timeout_sec = 1800`` and
-  ``default_tools_approval_mode = "approve"``; ``[features.code_mode]`` lists
-  ``mcp__aside`` in both ``excluded_tool_namespaces`` and
-  ``direct_only_tool_namespaces``, keeping every other entry. A scalar
-  ``code_mode`` key under ``[features]`` is reported and the edit is refused.
-  Each read-only tool of the palette server is pre-approved as
-  ``[mcp_servers.palette.tools.<tool>]`` with ``approval_mode = "approve"``;
-  the server-level approval of palette stays at the default.
+  ``config.toml`` each of dispatch's consultation and read tools
+  (``dispatch_consult``, ``dispatch_status``, ``dispatch_list``,
+  ``dispatch_logs``, ``dispatch_backends``) and each read-only tool of the
+  palette server is pre-approved as ``[mcp_servers.<server>.tools.<tool>]``
+  with ``approval_mode = "approve"``, only when ``codex mcp add`` wrote the
+  server's table; the server-level approval stays at the default. No tool
+  timeout and no code-mode namespace is written.
 
 ``kimi``
   The plugin folder ``<home>/plugins/managed/slate-agent-kit-mcp/`` holds
@@ -251,7 +258,9 @@ warning that dispatch and palette will reject every project.
   (``slate-agent-kit-mcp``), ``version`` (the kit version), ``description``,
   ``keywords``, ``mcpServers`` with one entry per server (``command`` the
   binary, ``args`` empty, ``cwd`` the plugin folder, ``env`` as above), and
-  ``interface`` (``displayName``, ``shortDescription``, ``developerName``). ``<home>/plugins/installed.json`` gets or updates the
+  ``interface`` (``displayName``, ``shortDescription``, ``developerName``).
+  ``SKILL.md`` names the expected tool prefixes, among them
+  ``dispatch_consult``. ``<home>/plugins/installed.json`` gets or updates the
   plugin's entry and keeps every other entry; an unreadable registry is backed
   up before it is rebuilt.
 
@@ -298,8 +307,7 @@ Uninstall
   removes it if it did not exist, but only when its current value is still the
   one the installer wrote; otherwise it reports the key and leaves it.
 - Removes a binary only when no other kit's manifest in any harness home lists
-  it; ``agent-guard`` also stays while another kit's manifest lists aside or
-  dispatch.
+  it; ``agent-guard`` also stays while another kit's manifest lists dispatch.
 - Runs the legacy cleanups.
 
 Legacy cleanup
@@ -315,6 +323,31 @@ Legacy cleanup
 Earlier installer locations
   Binaries in ``<CODEX_HOME>\slate-agent-kit\bin`` from the earlier Windows
   Codex installer are removed after the new registration succeeds.
+
+Retired servers
+  A server the previous manifest recorded and the descriptor no longer lists
+  (``aside`` from releases before 26.10.1) is retired on install and
+  configure, also with ``--binaries skip``. For Claude Code and Codex the
+  recorded servers are the manifest's registrations; for Kimi, whose manifest
+  records the plugin and not its servers, they are the ``mcpServers`` of the
+  installer's plugin; a server whose binary the manifest lists counts too. In
+  order: the configuration keys recorded for that server (those under
+  ``mcp_servers.<server>`` and the list entries ``mcp__<server>`` and
+  ``mcp__<server>__<tool>``) are restored, newest first, each only while it
+  holds what the installer wrote, and from a shared list only those entries;
+  the server is unregistered (``claude mcp remove <server> -s user``, ``codex
+  mcp remove <server>`` with ``CODEX_HOME``, or its entry and keyword removed
+  from ``kimi.plugin.json`` with ``SKILL.md`` rewritten); its binary is
+  removed unless another kit's manifest in any harness home lists it, and a
+  kept binary is reported and no longer recorded by this kit. The keys come
+  before the unregistration because ``codex mcp remove`` deletes the server's
+  whole table. A removal the CLI runs and refuses (it also refuses a server
+  that is not registered) is reported with its message and the command to run
+  by hand, and the registration is no longer recorded; a CLI that cannot run
+  keeps the registration and the binary recorded, prints the commands and
+  retries on the next run; a failed key restore or binary removal is a
+  problem. The manifest changes only for the parts that succeeded, and the
+  summary lists each server, its binary and each key before anything changes.
 
 Entry points
 ~~~~~~~~~~~~
@@ -360,9 +393,10 @@ Ownership and ordering
 The installer owns the kit-signed files, the entries it registers and the
 configuration keys it records in the manifest; the user owns everything with a
 ``-custom:`` signature and every key the manifest does not list. Steps run in
-the order legacy cleanup, stale files, binaries, payload, prefs, native
-configuration, server registration, manifest; a step that fails leaves the
-earlier steps' results in place and the manifest describing them.
+the order legacy cleanup, stale files, retired servers, binaries, payload,
+prefs renames, prefs, native configuration, server registration, manifest; a
+step that fails leaves the earlier steps' results in place and the manifest
+describing them.
 
 Compatibility
 -------------
@@ -377,10 +411,10 @@ a removed or renamed one is not.
 Conformance
 -----------
 ``cargo test -p slate-setup`` covers the descriptor, the manifest, the prefs
-parser and migration, the configuration edits for each harness, and the
-install, reinstall, upgrade-from-previous-release and uninstall flows in a
-scratch home with stand-in harness CLIs; the tests pass on Linux, macOS and
-Windows.
+parser, migration and rename, the configuration edits for each harness, the
+retirement of a recorded server on each harness, and the install, reinstall,
+upgrade-from-previous-release and uninstall flows in a scratch home with
+stand-in harness CLIs; the tests pass on Linux, macOS and Windows.
 
 References
 ----------

@@ -16,7 +16,7 @@ Each article states one norm and the test that decides whether it was kept. Arti
 - `{{DELEGATION_RULE_FILE}}`: subagents and the other ways work leaves the session.
 - `{{MODELS_RULE_FILE}}`: which model and effort a delegate, a dispatch step or a consultation runs on.
 - `{{PALETTE_RULE_FILE}}`: the palette document system, active only where `_palette/` exists.
-- `{{ASIDE_RULE_FILE}}`, `{{DISPATCH_RULE_FILE}}`: consulting another model family; handing a step to `dispatch`.
+- `{{CONSULT_RULE_FILE}}`, `{{DISPATCH_RULE_FILE}}`: consulting another model family; handing a step to `dispatch`.
 - `{{GIT_WORKFLOW_RULE_FILE}}`: the user's git preferences and destructive git.
 - `{{SURFACE_RULE_FILE}}`: the harness surface: how the rules load, and the harness defaults the user's preferences settle.
 - `{{HARNESS_RULES_DIR}}/{{KIT_PREFIX}}--*-prefs.md`: the user's levels, models and preferences.
@@ -60,7 +60,7 @@ Each article states one norm and the test that decides whether it was kept. Arti
 
 **§ 14 One writer per file.** No two delegates edit the same file; a shared file has one writer or the leader as merge owner. Worktrees prevent clobbering, not divergence, so the rule holds there. Test: two delegates' outputs touch one path.
 
-**§ 15 Delegates are bound.** (1) A delegate is bound by every article; it does not shrink scope, reinterpret a budget or substitute a design. (2) Forced off its approved scope, it stops and reports to its leader, who asks the user. (3) It may call the harness's native advisor; it consults aside, starts dispatch or starts a delegate of its own only when the user approved that for the delegation and its prompt says so. The prefs levels (§ 8) bind the leader and grant a delegate nothing. Test: a delegate's result differs from its approved scope without a report, or a delegate consulted aside, dispatched or delegated without a grant the user approved and its prompt carries.
+**§ 15 Delegates are bound.** (1) A delegate is bound by every article; it does not shrink scope, reinterpret a budget or substitute a design. (2) Forced off its approved scope, it stops and reports to its leader, who asks the user. (3) It may call the harness's native advisor; it consults another model family, starts dispatch or starts a delegate of its own only when the user approved that for the delegation and its prompt says so. The prefs levels (§ 8) bind the leader and grant a delegate nothing. Test: a delegate's result differs from its approved scope without a report, or a delegate consulted another model family, dispatched or delegated without a grant the user approved and its prompt carries.
 
 ## Part V — Verification and reporting
 

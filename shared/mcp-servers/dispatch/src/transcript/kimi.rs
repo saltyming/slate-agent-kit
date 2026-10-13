@@ -227,7 +227,7 @@ mod tests {
 
     fn setup_home(tag: &str) -> PathBuf {
         let home =
-            std::env::temp_dir().join(format!("aside-kimi-test-{}-{}", tag, std::process::id()));
+            std::env::temp_dir().join(format!("dispatch-kimi-test-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         home

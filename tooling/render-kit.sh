@@ -170,7 +170,7 @@ add_rule "$ROOT/shared/workflows/palette/rules.md" palette
 add_rule "$ROOT/shared/rules/implementing/delegation.md" "$delegation_name"
 add_rule "$ROOT/shared/rules/implementing/models.md" models
 add_rule "$ROOT/shared/rules/implementing/git.md" git-workflow
-add_rule "$ROOT/shared/rules/implementing/mcp/aside.md" aside
+add_rule "$ROOT/shared/rules/implementing/mcp/consult.md" consult
 add_rule "$ROOT/shared/rules/implementing/mcp/dispatch.md" dispatch
 
 skills=""
@@ -185,7 +185,7 @@ render "$ROOT/shared/workflows/memory/skills/memory-triage/SKILL.md" "$dist/skil
 skills="$skills \"memory-triage\","
 
 prefs=""
-for p in aside dispatch subagent git comment; do
+for p in consult dispatch subagent git comment; do
   render "$ROOT/shared/prefs/$p-prefs.md.tmpl" "$dist/prefs/$p-prefs.md"
   prefs="$prefs \"$p\","
 done
@@ -202,7 +202,7 @@ done
   echo "rules = [${rules%,} ]"
   echo "skills = [${skills%,} ]"
   echo "prefs = [${prefs%,} ]"
-  echo 'servers = [ "aside", "dispatch", "palette" ]'
+  echo 'servers = [ "dispatch", "palette" ]'
   echo "legacy = [ $legacy ]"
 } > "$dist/kit.toml"
 

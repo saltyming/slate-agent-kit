@@ -9,13 +9,13 @@ Records
 `RFC-0001 <rfc-0001-direction-autonomy-levels.rst>`_ Direction, autonomy and action levels
   Status: Accepted. Implementation: complete.
   Depends: none.
-  Linked from: RFC-0002 (Depends), RFC-0003 (Depends), RFC-0005 (Depends), RFC-0006 (Depends), RFC-0006 (link), RFC-0011 (Related), RFC-0017 (Depends), RFC-0017 (link), RFC-0018 (Depends).
+  Linked from: RFC-0002 (Depends), RFC-0003 (Depends), RFC-0005 (Depends), RFC-0006 (Depends), RFC-0006 (link), RFC-0011 (Related), RFC-0017 (Depends), RFC-0017 (link), RFC-0018 (Depends), RFC-0022 (Depends).
   Superseded by: none.
 
 `RFC-0002 <rfc-0002-installer-and-kit-layout.rst>`_ Installer and kit layout
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: RFC-0008 (Depends), RFC-0011 (Depends), RFC-0017 (Depends), RFC-0017 (link), RFC-0018 (Depends).
+  Linked from: RFC-0008 (Depends), RFC-0011 (Depends), RFC-0017 (Depends), RFC-0017 (link), RFC-0018 (Depends), RFC-0022 (Depends).
   Superseded by: none.
 
 `RFC-0003 <rfc-0003-palette-document-system.rst>`_ palette document system
@@ -51,8 +51,8 @@ Records
 `RFC-0008 <rfc-0008-shared-backend-execution.rst>`_ Shared backend execution layer
   Status: Accepted. Implementation: complete.
   Depends: RFC-0002.
-  Linked from: RFC-0011 (Depends), RFC-0011 (link), RFC-0014 (Depends), RFC-0014 (Supersedes), RFC-0014 (link), RFC-0016 (Depends).
-  Superseded by: RFC-0014 (in part: the guard as a re-invocation of the server binary that every ``main`` intercepts).
+  Linked from: RFC-0011 (Depends), RFC-0011 (link), RFC-0014 (Depends), RFC-0014 (Supersedes), RFC-0014 (link), RFC-0016 (Depends), RFC-0022 (Depends), RFC-0022 (Supersedes).
+  Superseded by: RFC-0014 (in part: the guard as a re-invocation of the server binary that every ``main`` intercepts), RFC-0022 (in part: aside as a separate server with its own capture policy, failure text and re-entry marker).
 
 `RFC-0009 <rfc-0009-record-header-rules.rst>`_ Record header rules and several active phases
   Status: Accepted. Implementation: complete.
@@ -87,7 +87,7 @@ Records
 `RFC-0014 <rfc-0014-guard-executable.rst>`_ The parent-death guard is its own executable
   Status: Accepted. Implementation: complete.
   Depends: RFC-0008.
-  Linked from: none.
+  Linked from: RFC-0022 (Related).
   Superseded by: none.
 
 `RFC-0015 <rfc-0015-benchmark-suite-committed.rst>`_ The benchmark suite is committed
@@ -129,5 +129,11 @@ Records
 `RFC-0021 <rfc-0021-generate-and-refresh-tools.rst>`_ Generation and derived header fields on demand
   Status: Accepted. Implementation: complete.
   Depends: RFC-0004, RFC-0019.
+  Linked from: none.
+  Superseded by: none.
+
+`RFC-0022 <rfc-0022-dispatch-absorbs-consultation.rst>`_ dispatch absorbs consultation; every run is asynchronous and waited on through the harness
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0008, RFC-0002, RFC-0001.
   Linked from: none.
   Superseded by: none.

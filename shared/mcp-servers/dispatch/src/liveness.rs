@@ -1,6 +1,6 @@
 //! Process liveness by pid, for boot and read-time reconciliation of stranded
-//! rows (`main.rs`) and for the executor's watchdog, which stops once the
-//! spawned process is gone.
+//! rows (`main.rs`), for `dispatch wait`'s orphan check (`wait.rs`) and for
+//! the executor's watchdog, which stops once the spawned process is gone.
 
 /// Whether process `pid` is running. On Unix, `kill(pid, 0)`: alive and
 /// signalable, or alive but owned by someone else (`EPERM`). On Windows, an

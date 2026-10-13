@@ -75,7 +75,7 @@ enum Step {
 
 fn prefs_title(name: &str) -> &'static str {
     match name {
-        "aside" => "aside: consultation from another model family",
+        "consult" => "consult: consultation from another model family",
         "dispatch" => "dispatch: handing execution steps to a backend",
         "subagent" => "subagents",
         "git" => "git",
@@ -177,7 +177,7 @@ fn ask_binaries(ui: &mut Ui, opts: &Options, choices: &mut Choices) -> Result<()
                 .ok_or_else(|| "choose prebuilt, build or skip".to_string())
         };
         let answer = ui.ask(&Question {
-            prompt: "Where do the aside, dispatch and palette binaries come from?".into(),
+            prompt: "Where do the dispatch and palette binaries come from?".into(),
             help: None,
             options: vec![
                 (
@@ -366,7 +366,7 @@ fn ask_prefs_file(
             allow_clear: schema::allows_blank(setting),
             validate: &validate,
         });
-        if st.name == "aside" && setting.key == "backend" {
+        if st.name == "consult" && setting.key == "backend" {
             backend = answer.clone();
         }
         // A value shown in place of one the file holds is written even when accepted as shown.

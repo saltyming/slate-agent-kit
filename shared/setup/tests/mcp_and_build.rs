@@ -57,7 +57,7 @@ fn mcp_installs_binaries_registers_every_harness_and_uninstalls() {
         ],
     );
     assert_eq!(code, 0, "{out}");
-    for name in ["aside", "dispatch", "palette"] {
+    for name in ["dispatch", "palette"] {
         assert!(
             sb.bin_dir.join(exe_name(&platform, name)).is_file(),
             "{name}"
@@ -66,14 +66,15 @@ fn mcp_installs_binaries_registers_every_harness_and_uninstalls() {
     let claude_home = sb.env.default_home(Harness::Claude);
     let settings = fs::read_to_string(claude_home.join("settings.json")).unwrap();
     assert!(
-        settings.contains("mcp__palette__palette_status"),
+        settings.contains("mcp__palette__palette_status")
+            && settings.contains("mcp__dispatch__dispatch_consult"),
         "{settings}"
     );
     let cfg: toml::Table =
         toml::from_str(&fs::read_to_string(codex_home.join("config.toml")).unwrap()).unwrap();
     assert_eq!(
-        cfg["mcp_servers"]["aside"]["tool_timeout_sec"].as_integer(),
-        Some(1800)
+        cfg["mcp_servers"]["dispatch"]["tools"]["dispatch_consult"]["approval_mode"].as_str(),
+        Some("approve")
     );
     assert!(
         sb.env
@@ -83,8 +84,8 @@ fn mcp_installs_binaries_registers_every_harness_and_uninstalls() {
     );
     assert_eq!(
         sb.added_servers().len(),
-        6,
-        "three servers for Claude and three for Codex"
+        4,
+        "two servers for Claude and two for Codex"
     );
     // The plugin version is the installer's own when there is no kit.
     assert!(
@@ -109,6 +110,11 @@ fn mcp_installs_binaries_registers_every_harness_and_uninstalls() {
     let removed = sb.removed_servers();
     assert!(removed.iter().filter(|s| s.as_str() == "palette").count() >= 2);
     assert!(!settings_has_palette(&claude_home.join("settings.json")));
+    assert!(
+        !fs::read_to_string(claude_home.join("settings.json"))
+            .unwrap()
+            .contains("mcp__dispatch__")
+    );
     let cfg_after: toml::Table =
         toml::from_str(&fs::read_to_string(codex_home.join("config.toml")).unwrap()).unwrap();
     assert_eq!(cfg_after, original);
@@ -124,7 +130,7 @@ fn mcp_installs_binaries_registers_every_harness_and_uninstalls() {
             .exists()
     );
     assert!(
-        sb.bin_dir.join(exe_name(&platform, "aside")).exists(),
+        sb.bin_dir.join(exe_name(&platform, "dispatch")).exists(),
         "mcp --uninstall does not remove binaries"
     );
 }
@@ -196,16 +202,7 @@ fn build_mode_runs_cargo_in_the_checkout_and_installs_what_it_built() {
         .into_iter()
         .filter(|c| c[0] == "build")
         .collect();
-    let servers = [
-        "build",
-        "--release",
-        "-p",
-        "aside",
-        "-p",
-        "dispatch",
-        "-p",
-        "palette",
-    ];
+    let servers = ["build", "--release", "-p", "dispatch", "-p", "palette"];
     if cfg!(windows) {
         assert_eq!(builds, [servers]);
     } else {
@@ -225,7 +222,7 @@ fn build_mode_runs_cargo_in_the_checkout_and_installs_what_it_built() {
             ]
         );
     }
-    for name in ["aside", "dispatch", "palette"] {
+    for name in ["dispatch", "palette"] {
         assert!(
             sb.bin_dir.join(exe_name(&platform, name)).is_file(),
             "{name}"
@@ -274,7 +271,7 @@ fn a_binary_shared_with_another_kit_stays_until_the_last_kit_is_gone() {
 
     let out = claude.run("uninstall", &[]);
     assert_eq!(out.code, 0, "{}", out.out);
-    for name in ["aside", "dispatch", "palette"] {
+    for name in ["dispatch", "palette"] {
         assert!(
             claude.bin_dir.join(exe_name(&platform, name)).exists(),
             "{name} is still listed by the Codex kit"
@@ -284,7 +281,7 @@ fn a_binary_shared_with_another_kit_stays_until_the_last_kit_is_gone() {
 
     let out = codex.run("uninstall", &[]);
     assert_eq!(out.code, 0, "{}", out.out);
-    for name in ["aside", "dispatch", "palette"] {
+    for name in ["dispatch", "palette"] {
         assert!(
             !claude.bin_dir.join(exe_name(&platform, name)).exists(),
             "{name}"
@@ -311,10 +308,11 @@ fn configure_migrates_old_prefs_after_confirmation() {
     let kit = sb.kit();
     fs::create_dir_all(home.join("rules")).unwrap();
     let old = fixture(&format!("old-prefs-claude/{kit}--aside-prefs.md"));
-    let dest = sb.prefs_path("aside");
-    fs::copy(old, &dest).unwrap();
-    let before = fs::read_to_string(&dest).unwrap();
-    // Declining keeps the old file and says so.
+    let old_dest = sb.prefs_path("aside");
+    let dest = sb.prefs_path("consult");
+    fs::copy(old, &old_dest).unwrap();
+    let before = fs::read_to_string(&old_dest).unwrap();
+    // Declining keeps the old layout and says so; the file still moves to its new name.
     let declined = sb.run_scripted(
         "configure",
         &[
@@ -326,7 +324,15 @@ fn configure_migrates_old_prefs_after_confirmation() {
         &format!("n\n{}", "\n".repeat(30)),
     );
     assert_eq!(declined.code, 0, "{}", declined.out);
-    assert_eq!(fs::read_to_string(&dest).unwrap(), before);
+    assert!(!old_dest.exists());
+    assert_eq!(
+        fs::read_to_string(&dest).unwrap(),
+        before.replace(
+            &format!("{kit}-custom:aside-prefs -->"),
+            &format!("{kit}-custom:consult-prefs -->")
+        ),
+        "only the signature line changed"
+    );
     assert!(declined.out.contains("keep old layout"), "{}", declined.out);
     // Accepting migrates it (y, then no review, then defaults).
     let accepted = sb.run_scripted(
@@ -349,6 +355,6 @@ fn configure_migrates_old_prefs_after_confirmation() {
             .any(|e| e
                 .file_name()
                 .to_string_lossy()
-                .contains("aside-prefs.md.bak-"))
+                .contains("consult-prefs.md.bak-"))
     );
 }

@@ -79,7 +79,7 @@ impl Sandbox {
 }
 
 /// How a spawned backend is kept from reaching back into the server that
-/// spawned it. The two codex variants apply to `Backend::Codex` only; the two
+/// spawned it. The three codex variants apply to `Backend::Codex` only; the two
 /// claude variants to `Backend::Claude` only. A variant of the other backend
 /// adds no isolation flag (a claude run then gets the `Permissions` mapping).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +90,35 @@ pub enum Isolation {
     /// Codex `-c mcp_servers.<name>.enabled=false` before `exec`: that one MCP
     /// server disabled, every other server kept.
     DisableMcpServer(String),
+    /// Codex `-c mcp_servers.<server>.command="<command>"` (when `command` is
+    /// set) and `-c mcp_servers.<server>.env.<var>="<value>"` before `exec`:
+    /// every MCP server kept, and the server `server` started with `var` set
+    /// to `value` in its environment. Codex starts its MCP servers with a
+    /// clean environment, so this is how a re-entry marker reaches a
+    /// codex-booted copy of the spawning server. The values are passed as TOML
+    /// strings (codex rejects an integer there). An override of `env` alone
+    /// creates a server entry with no transport when the user's configuration
+    /// does not register `server`, and codex then refuses to load its
+    /// configuration; setting `command` makes the entry complete either way,
+    /// and merges with a registered entry's other keys. Each tool in
+    /// `approve_tools` then gets `-c mcp_servers.<server>.tools.<tool>.
+    /// approval_mode="approve"`: under `-a never` codex refuses an MCP tool
+    /// call that needs approval, so only the listed tools can be called, and
+    /// a tool left out is refused by codex before it reaches the server.
+    ServerEnv {
+        /// The MCP server's name in the codex configuration, e.g. `dispatch`.
+        server: String,
+        /// The environment variable, e.g. `DISPATCH_REENTRY_DEPTH`.
+        var: String,
+        /// The variable's value, e.g. `1`.
+        value: String,
+        /// The server's executable, e.g. the absolute path of the running
+        /// server; `None` leaves the configured command in place.
+        command: Option<String>,
+        /// Tools of `server` pre-approved on the command line, rendered in
+        /// this order after the env key.
+        approve_tools: Vec<String>,
+    },
     /// Claude `--safe-mode --no-session-persistence --permission-mode plan
     /// --tools <list>`, the list joined with `,`; the sandbox adds nothing.
     SafeMode {
@@ -121,7 +150,7 @@ pub enum OutputMode {
 /// server refuses a request (see `reentry`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reentry {
-    /// The environment variable, e.g. `ASIDE_REENTRY_DEPTH`.
+    /// The environment variable, e.g. `DISPATCH_REENTRY_DEPTH`.
     pub name: String,
     /// The refusal ceiling; `1` allows no nesting.
     pub ceiling: u32,

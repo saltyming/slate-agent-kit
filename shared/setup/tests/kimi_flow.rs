@@ -55,24 +55,25 @@ fn install_and_uninstall_with_the_plugin_registry() {
         Some("13.0.0")
     );
     let servers = manifest.get("mcpServers").unwrap();
-    for name in ["aside", "dispatch", "palette"] {
+    for name in ["dispatch", "palette"] {
         let s = servers.get(name).unwrap_or_else(|| panic!("{name}"));
         let command = s.get("command").and_then(Json::as_str).unwrap();
         assert!(std::path::Path::new(command).is_file(), "{command}");
     }
+    assert!(servers.get("aside").is_none());
     assert_eq!(
         servers
-            .get("aside")
+            .get("dispatch")
             .unwrap()
             .get("env")
             .unwrap()
-            .get("ASIDE_HARNESS")
+            .get("SLATE_HARNESS")
             .and_then(Json::as_str),
         Some("kimi")
     );
     assert!(
         servers
-            .get("aside")
+            .get("dispatch")
             .unwrap()
             .get("env")
             .unwrap()
@@ -90,11 +91,9 @@ fn install_and_uninstall_with_the_plugin_registry() {
             .and_then(Json::as_str),
         Some(roots_arg.as_str())
     );
-    assert!(
-        fs::read_to_string(plugin.join("SKILL.md"))
-            .unwrap()
-            .contains("palette tools")
-    );
+    let skill = fs::read_to_string(plugin.join("SKILL.md")).unwrap();
+    assert!(skill.contains("palette tools"), "{skill}");
+    assert!(skill.contains("dispatch_consult"), "{skill}");
 
     // The registry keeps the other plugin and gains ours.
     let registry =
@@ -249,17 +248,6 @@ fn a_custom_home_passes_kimi_code_home_to_the_servers_and_missing_roots_are_warn
             .unwrap(),
     )
     .unwrap();
-    let aside_env = manifest
-        .get("mcpServers")
-        .unwrap()
-        .get("aside")
-        .unwrap()
-        .get("env")
-        .unwrap();
-    assert_eq!(
-        aside_env.get("KIMI_CODE_HOME").and_then(Json::as_str),
-        Some(custom.to_str().unwrap())
-    );
     let dispatch_env = manifest
         .get("mcpServers")
         .unwrap()

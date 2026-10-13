@@ -112,22 +112,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aside"
-version = "26.10.1"
-dependencies = [
- "agent-exec",
- "harness-log",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"

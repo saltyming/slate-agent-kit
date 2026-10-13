@@ -55,23 +55,29 @@ fn upgrading_from_the_earlier_layout_migrates_prefs_and_replaces_the_line_manife
         let out = sb.run("install", &["--roots", roots.as_str()]);
         assert_eq!(out.code, 0, "{harness:?}: {}", out.out);
 
-        // aside: proactive + claude advisor become level auto and backend claude; values carry over.
-        let aside = read(&sb.prefs_path("aside"));
+        // The old aside prefs are renamed to consult prefs and migrated: proactive + claude
+        // advisor become level auto and backend claude; values carry over.
+        assert!(!sb.prefs_path("aside").exists(), "{harness:?}");
+        let consult = read(&sb.prefs_path("consult"));
         assert!(
-            aside.contains("## Level\n\n**auto**\n"),
-            "{harness:?}: {aside}"
+            consult.starts_with(&format!("<!-- {kit}-custom:consult-prefs -->\n")),
+            "{harness:?}: {consult}"
         );
-        assert!(aside.contains("## Backend\n\n**claude**\n"));
-        assert!(aside.contains("## Codex model\n\n**model-a**\n"));
-        assert!(aside.contains("## Codex reasoning effort\n\n**high**\n"));
         assert!(
-            aside.contains("## Codex model fallback\n\n**model-b(high)**\n"),
-            "an unbolded fallback line survives: {aside}"
+            consult.contains("## Level\n\n**auto**\n"),
+            "{harness:?}: {consult}"
         );
-        assert!(aside.contains("## Claude model fallback\n\n**model-c2**\n"));
-        assert!(aside.contains("## Claude model\n\n**model-c**\n"));
-        assert!(aside.contains("## Claude reasoning effort\n\n**max**\n"));
-        assert!(aside.contains("My own aside note, kept verbatim."));
+        assert!(consult.contains("## Backend\n\n**claude**\n"));
+        assert!(consult.contains("## Codex model\n\n**model-a**\n"));
+        assert!(consult.contains("## Codex reasoning effort\n\n**high**\n"));
+        assert!(
+            consult.contains("## Codex model fallback\n\n**model-b(high)**\n"),
+            "an unbolded fallback line survives: {consult}"
+        );
+        assert!(consult.contains("## Claude model fallback\n\n**model-c2**\n"));
+        assert!(consult.contains("## Claude model\n\n**model-c**\n"));
+        assert!(consult.contains("## Claude reasoning effort\n\n**max**\n"));
+        assert!(consult.contains("My own aside note, kept verbatim."));
         // dispatch: proactive + auto becomes auto; granularity is dropped.
         let dispatch = read(&sb.prefs_path("dispatch"));
         assert!(dispatch.contains("## Level\n\n**auto**\n"), "{dispatch}");
@@ -103,8 +109,13 @@ fn upgrading_from_the_earlier_layout_migrates_prefs_and_replaces_the_line_manife
             .filter(|n| n.contains("-prefs.md.bak-"))
             .collect();
         assert_eq!(backups.len(), 4, "{harness:?}: {backups:?}");
-        let aside_backup = backups.iter().find(|b| b.contains("aside")).unwrap();
-        assert!(read(&home.join("rules").join(aside_backup)).contains("Auto-call policy"));
+        let consult_backup = backups.iter().find(|b| b.contains("consult")).unwrap();
+        assert!(read(&home.join("rules").join(consult_backup)).contains("Auto-call policy"));
+        let manifest = read(&home.join(format!(".{kit}-manifest.toml")));
+        assert!(
+            !manifest.contains("aside-prefs.md\""),
+            "{harness:?}: the manifest names the renamed file: {manifest}"
+        );
 
         // The stale rule is removed, the line manifest replaced by the TOML one.
         assert!(
@@ -132,8 +143,8 @@ fn migrating_old_values_of_a_backend_the_kit_lacks_warns_once_and_keeps_unknown_
         let server = ReleaseServer::start(&sb.env.platform(), None, true, true);
         sb.use_release(&server);
         install_old_state(&sb);
-        let path = sb.prefs_path("aside");
-        let mut old = read(&path);
+        let old_path = sb.prefs_path("aside");
+        let mut old = read(&old_path);
         if filled {
             old = old.replace(
                 "- legacy default model: ****",
@@ -141,7 +152,7 @@ fn migrating_old_values_of_a_backend_the_kit_lacks_warns_once_and_keeps_unknown_
             );
         }
         old.push_str("\n## My own section\n\nfirst line\nsecond line\n");
-        fs::write(&path, &old).unwrap();
+        fs::write(&old_path, &old).unwrap();
         let roots = sb.dir.path().to_string_lossy().into_owned();
         let out = sb.run("install", &["--roots", roots.as_str()]);
         assert_eq!(out.code, 0, "{}", out.out);
@@ -156,12 +167,12 @@ fn migrating_old_values_of_a_backend_the_kit_lacks_warns_once_and_keeps_unknown_
         } else {
             assert!(lines.is_empty(), "{}", out.out);
         }
-        let aside = read(&path);
+        let consult = read(&sb.prefs_path("consult"));
         assert!(
-            aside.ends_with("## My own section\n\nfirst line\nsecond line\n"),
-            "{aside}"
+            consult.ends_with("## My own section\n\nfirst line\nsecond line\n"),
+            "{consult}"
         );
-        assert!(!aside.contains("legacy-model"));
+        assert!(!consult.contains("legacy-model"));
     }
 }
 
@@ -180,7 +191,7 @@ fn a_checksum_mismatch_aborts_and_installs_nothing() {
     );
     assert!(out.out.contains("no binary was replaced"), "{}", out.out);
     assert!(out.out.contains("fix:"), "{}", out.out);
-    assert!(!sb.bin_dir.join(exe_name(&platform, "aside")).exists());
+    assert!(!sb.bin_dir.join(exe_name(&platform, "dispatch")).exists());
     assert!(sb.added_servers().is_empty(), "nothing is registered");
     assert!(
         !sb.home().join("CLAUDE.md").exists(),
@@ -213,7 +224,7 @@ fn a_missing_versioned_release_falls_back_to_the_latest_and_says_so() {
     assert!(
         requests
             .iter()
-            .any(|r| r.contains("/latest/download/aside-"))
+            .any(|r| r.contains("/latest/download/dispatch-"))
     );
 }
 
@@ -227,7 +238,7 @@ fn a_missing_checksum_file_warns_and_still_installs() {
     assert!(out.out.contains("no checksums.txt"), "{}", out.out);
     assert!(
         sb.bin_dir
-            .join(exe_name(&sb.env.platform(), "aside"))
+            .join(exe_name(&sb.env.platform(), "dispatch"))
             .is_file()
     );
 }
@@ -247,7 +258,7 @@ fn user_owned_files_are_never_overwritten() {
         "<!-- {kit}-custom:git-prefs -->\n# My git prefs\n\n## Commit signing\n\n**default**\n\n## Model attribution\n\n**on**\n\n## Commit message format\n\n**repository**\n\n## PR body format\n\n**repository**\n\n## Branch naming\n\n**repository**\n"
     );
     fs::write(&prefs, &mine).unwrap();
-    let rule = home.join("rules").join(format!("{kit}--aside.md"));
+    let rule = home.join("rules").join(format!("{kit}--consult.md"));
     fs::write(&rule, format!("<!-- {kit}-custom:mine -->\nMy rule\n")).unwrap();
     fs::write(
         home.join("skills/palette-init/SKILL.md"),
@@ -272,7 +283,7 @@ fn user_owned_files_are_never_overwritten() {
             "--custom-rules",
             custom_arg.as_str(),
             "--set",
-            "aside.level=auto",
+            "consult.level=auto",
         ],
     );
     assert_eq!(out.code, 0, "{}", out.out);
@@ -308,7 +319,7 @@ fn user_owned_files_are_never_overwritten() {
     );
     assert!(home.join("rules").join(format!("{kit}--ok.md")).is_file());
     // A value given with --set is applied to the file that exists, and only that value.
-    let after = read(&sb.prefs_path("aside"));
+    let after = read(&sb.prefs_path("consult"));
     assert!(after.contains("## Level\n\n**auto**\n"));
 
     // Uninstall keeps every user-owned file unless asked; --yes never removes them.
@@ -320,11 +331,11 @@ fn user_owned_files_are_never_overwritten() {
     assert!(home.join("skills/palette-init/SKILL.md").is_file());
 }
 
-/// An aside prefs file in the current layout whose backend and three settings belong to a
+/// A consult prefs file in the current layout whose backend and three settings belong to a
 /// backend the schema does not have.
-fn aside_prefs_with_unknown_backend(sb: &Sandbox) -> String {
+fn consult_prefs_with_unknown_backend(sb: &Sandbox) -> String {
     let template = read(&fixture(&format!(
-        "payload-{}/prefs/aside-prefs.md",
+        "payload-{}/prefs/consult-prefs.md",
         sb.harness.name()
     )));
     let mine = template
@@ -334,8 +345,8 @@ fn aside_prefs_with_unknown_backend(sb: &Sandbox) -> String {
             "## Legacy model\n\n**legacy-1**\n\n## Legacy reasoning effort\n\n**high**\n\n## Legacy model fallback\n\n**legacy-2**\n\n## Claude model\n",
         );
     assert!(mine.contains("**legacy**") && mine.contains("## Legacy model\n"));
-    fs::create_dir_all(sb.prefs_path("aside").parent().unwrap()).unwrap();
-    fs::write(sb.prefs_path("aside"), &mine).unwrap();
+    fs::create_dir_all(sb.prefs_path("consult").parent().unwrap()).unwrap();
+    fs::write(sb.prefs_path("consult"), &mine).unwrap();
     mine
 }
 
@@ -364,13 +375,13 @@ fn settings_of_a_backend_the_kit_lacks_are_reported_in_one_line_and_left_in_plac
             );
             assert_eq!(out.code, 0, "{}", out.out);
         }
-        let mine = aside_prefs_with_unknown_backend(&sb);
+        let mine = consult_prefs_with_unknown_backend(&sb);
         let out = sb.run(cmd, &["--binaries", "skip", "--roots", roots.as_str()]);
         assert_eq!(out.code, 0, "{cmd}: {}", out.out);
         let lines = legacy_lines(&out.out);
         assert_eq!(lines.len(), 1, "{cmd}: {}", out.out);
         for part in [
-            "aside",
+            "consult",
             "`legacy`",
             "Legacy model",
             "Legacy reasoning effort",
@@ -379,7 +390,7 @@ fn settings_of_a_backend_the_kit_lacks_are_reported_in_one_line_and_left_in_plac
             assert!(lines[0].contains(part), "{cmd}: {}", lines[0]);
         }
         assert_eq!(
-            read(&sb.prefs_path("aside")),
+            read(&sb.prefs_path("consult")),
             mine,
             "{cmd}: the user's file is kept byte for byte"
         );
@@ -390,8 +401,8 @@ fn settings_of_a_backend_the_kit_lacks_are_reported_in_one_line_and_left_in_plac
 fn a_backend_the_kit_lacks_counts_as_unset_when_the_values_are_changed() {
     let sb = Sandbox::new(Harness::Codex);
     let roots = sb.dir.path().to_string_lossy().into_owned();
-    aside_prefs_with_unknown_backend(&sb);
-    // Change the aside values, press Enter at level, backend and the three codex
+    consult_prefs_with_unknown_backend(&sb);
+    // Change the consult values, press Enter at level, backend and the three codex
     // questions, then take the defaults for everything after that.
     let out = sb.run_scripted(
         "install",
@@ -402,17 +413,17 @@ fn a_backend_the_kit_lacks_counts_as_unset_when_the_values_are_changed() {
     assert!(out.out.contains("Choice [codex]"), "{}", out.out);
     assert!(out.out.contains("codex model"), "{}", out.out);
     assert!(!out.out.contains("legacy model (blank"), "{}", out.out);
-    let aside = read(&sb.prefs_path("aside"));
-    assert!(aside.contains("## Backend\n\n**codex**\n"), "{aside}");
+    let consult = read(&sb.prefs_path("consult"));
+    assert!(consult.contains("## Backend\n\n**codex**\n"), "{consult}");
     assert!(
-        aside.contains("## Legacy model\n\n**legacy-1**\n"),
-        "the other backend's lines stay: {aside}"
+        consult.contains("## Legacy model\n\n**legacy-1**\n"),
+        "the other backend's lines stay: {consult}"
     );
     let lines = legacy_lines(&out.out);
     assert_eq!(lines.len(), 1, "{}", out.out);
     assert!(!lines[0].contains("`legacy`"), "{}", lines[0]);
     assert!(
-        out.out.contains("aside.backend: legacy -> codex"),
+        out.out.contains("consult.backend: legacy -> codex"),
         "{}",
         out.out
     );
@@ -428,7 +439,7 @@ fn uninstall_removes_user_owned_files_only_when_the_user_says_so() {
     // Interactive: the first question lists the user's files; answer yes, then confirm.
     let out = sb.run_scripted("uninstall", &[], "y\ny\n");
     assert_eq!(out.code, 0, "{}", out.out);
-    assert!(!sb.prefs_path("aside").exists());
+    assert!(!sb.prefs_path("consult").exists());
     assert!(!sb.prefs_path("git").exists());
     // Answering no keeps them.
     let mut sb = Sandbox::new(Harness::Codex);
@@ -437,7 +448,7 @@ fn uninstall_removes_user_owned_files_only_when_the_user_says_so() {
     sb.run("install", &[]);
     let out = sb.run_scripted("uninstall", &[], "n\ny\n");
     assert_eq!(out.code, 0, "{}", out.out);
-    assert!(sb.prefs_path("aside").is_file());
+    assert!(sb.prefs_path("consult").is_file());
 }
 
 #[test]
@@ -445,7 +456,7 @@ fn the_scripted_wizard_asks_conditional_validated_questions_and_confirms() {
     let sb = Sandbox::new(Harness::Codex);
     let roots = sb.dir.path().to_string_lossy().into_owned();
     // Questions in order (all Enter unless noted):
-    //  aside: level 3 (auto); backend "nope" (rejected) then 2 (claude);
+    //  consult: level 3 (auto); backend "nope" (rejected) then 2 (claude);
     //         claude model "cm", effort 9 (rejected) then 3 (high), fallback "a, b"
     //  dispatch: level, backend, model, effort, fallback (defaults)
     //  subagent: level, model "gpt-x", effort 5 (max)
@@ -475,12 +486,18 @@ fn the_scripted_wizard_asks_conditional_validated_questions_and_confirms() {
         out.out
     );
     assert!(out.out.contains("Not valid: `9`"), "{}", out.out);
-    let aside = read(&sb.prefs_path("aside"));
-    assert!(aside.contains("## Level\n\n**auto**\n"), "{aside}");
-    assert!(aside.contains("## Backend\n\n**claude**\n"));
-    assert!(aside.contains("## Claude model\n\n**cm**\n"));
-    assert!(aside.contains("## Claude reasoning effort\n\n**high**\n"));
-    assert!(aside.contains("## Claude model fallback\n\n**a, b**\n"));
+    assert!(
+        out.out
+            .contains("consult: consultation from another model family"),
+        "{}",
+        out.out
+    );
+    let consult = read(&sb.prefs_path("consult"));
+    assert!(consult.contains("## Level\n\n**auto**\n"), "{consult}");
+    assert!(consult.contains("## Backend\n\n**claude**\n"));
+    assert!(consult.contains("## Claude model\n\n**cm**\n"));
+    assert!(consult.contains("## Claude reasoning effort\n\n**high**\n"));
+    assert!(consult.contains("## Claude model fallback\n\n**a, b**\n"));
     assert!(
         !out.out.contains("codex model"),
         "questions for backends that were not chosen are not asked"
@@ -520,9 +537,9 @@ fn the_same_answers_produce_the_same_prefs_in_every_harness() {
                 "--binaries",
                 "skip",
                 "--set",
-                "aside.level=auto",
+                "consult.level=auto",
                 "--set",
-                "aside.backend=claude",
+                "consult.backend=claude",
                 "--set",
                 "dispatch.backend=opencode",
                 "--set",
@@ -534,7 +551,7 @@ fn the_same_answers_produce_the_same_prefs_in_every_harness() {
         assert_eq!(out.code, 0, "{harness:?}: {}", out.out);
         let kit = sb.kit();
         files.push(
-            ["aside", "dispatch", "subagent", "git", "comment"]
+            ["consult", "dispatch", "subagent", "git", "comment"]
                 .iter()
                 .map(|n| norm(&read(&sb.prefs_path(n))).replace(&kit, "KIT"))
                 .collect(),
@@ -583,7 +600,7 @@ fn a_real_process_run_resolves_home_and_defaults_from_its_environment() {
         String::from_utf8_lossy(&real.stderr)
     );
     assert!(sb.home().join("CLAUDE.md").is_file());
-    let bad = run(&["--set", "aside.level=sometimes", "--yes"]);
+    let bad = run(&["--set", "consult.level=sometimes", "--yes"]);
     assert_eq!(bad.status.code(), Some(2));
     assert!(
         String::from_utf8_lossy(&bad.stdout).contains("on-request, suggest, auto")
@@ -598,24 +615,24 @@ fn a_failing_registration_names_what_failed_the_state_and_the_fix() {
     sb.use_release(&server);
     sb.env
         .child_env
-        .insert("FAKE_CLI_FAIL".into(), "mcp add dispatch".into());
+        .insert("FAKE_CLI_FAIL".into(), "mcp add palette".into());
     let out = sb.run("install", &[]);
     assert_eq!(out.code, 1, "{}", out.out);
     assert!(
-        out.out.contains("`codex mcp add dispatch` failed"),
+        out.out.contains("`codex mcp add palette` failed"),
         "{}",
         out.out
     );
     assert!(
-        out.out.contains("registered before the failure: aside"),
+        out.out.contains("registered before the failure: dispatch"),
         "{}",
         out.out
     );
     assert!(out.out.contains("fix:"), "{}", out.out);
     // What was done before the failure is in the manifest, so uninstall can reverse it.
     let manifest = fs::read_to_string(sb.home().join(".codex-agent-kit-manifest.toml")).unwrap();
-    assert!(manifest.contains("server = \"aside\""), "{manifest}");
-    assert!(!manifest.contains("server = \"dispatch\""), "{manifest}");
+    assert!(manifest.contains("server = \"dispatch\""), "{manifest}");
+    assert!(!manifest.contains("server = \"palette\""), "{manifest}");
     assert!(sb.home().join("AGENTS.md").is_file());
 }
 
@@ -630,7 +647,7 @@ fn every_setting_of_the_real_prefs_templates_is_found_and_its_default_is_valid()
         eprintln!("skipped: {} does not exist", dir.display());
         return;
     }
-    for name in ["aside", "dispatch", "subagent", "git", "comment"] {
+    for name in ["consult", "dispatch", "subagent", "git", "comment"] {
         let template = fs::read_to_string(dir.join(format!("{name}-prefs.md.tmpl"))).unwrap();
         let rendered = template.replace("{{KIT_PREFIX}}", "some-kit");
         let doc = PrefsDoc::parse(&rendered);

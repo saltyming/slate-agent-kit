@@ -157,7 +157,9 @@ pub fn workslate_cleanup(
 
 /// Binaries the earlier Windows Codex installer put under `<home>/slate-agent-kit/bin`.
 ///
-/// Nothing is listed when that folder is also the binary folder in use.
+/// Nothing is listed when that folder is also the binary folder in use. The
+/// names are the servers that installer shipped, aside among them, which is
+/// why a retired server's name stays here.
 pub fn earlier_codex_binaries(home: &Path, bin_dir: &Path) -> Vec<PathBuf> {
     let dir = home.join("slate-agent-kit").join("bin");
     if crate::util::same_path(&dir, bin_dir) {

@@ -1,10 +1,11 @@
 //! Carrying out an install or configure plan.
 //!
-//! Owns the order of the steps (legacy cleanup, stale files, binaries, payload
-//! files, prefs and custom rules, server registration and native configuration),
-//! the recording of every change in the manifest, and the rule that the manifest
-//! is written even when a step fails, so uninstall can still reverse what
-//! happened. It does not decide what to do; `plan` did.
+//! Owns the order of the steps (legacy cleanup, stale files, retired servers,
+//! binaries, payload files, prefs renames, prefs and custom rules, server
+//! registration and native configuration), the recording of every change in
+//! the manifest, and the rule that the manifest is written even when a step
+//! fails, so uninstall can still reverse what happened. It does not decide
+//! what to do; `plan` did.
 //!
 //! Main entry points: [`apply`].
 
@@ -19,7 +20,9 @@ use crate::manifest::{EntryKind, Manifest};
 use crate::options::Kind;
 use crate::plan::{Content, Decision, FileAction, Plan, Role};
 use crate::prefs::Action as PrefsActionKind;
+use crate::prefs::rename;
 use crate::report::Report;
+use crate::retire;
 use crate::rules::CustomDecision;
 use crate::serve;
 use crate::ui::Ui;
@@ -95,6 +98,37 @@ fn write_file_action(
     Ok(())
 }
 
+/// Moves a prefs file from the name an earlier release gave it to `dest`, before
+/// anything writes `dest`, and records the move in the manifest and the report.
+fn rename_prefs(
+    kit: &Kit,
+    ui: &mut Ui,
+    from: &Path,
+    dest: &Path,
+    name: &str,
+    manifest: &mut Manifest,
+    report: &mut Report,
+) -> Result<()> {
+    let Some(old) = rename::earlier_name(name) else {
+        return Ok(());
+    };
+    let moved = rename::move_file(kit.name(), old, name, from, dest)?;
+    manifest.files.retain(|f| f.path != from);
+    manifest.record_file(dest, EntryKind::File, true);
+    ui.ok(&format!("renamed {} to {}", from.display(), dest.display()));
+    report.done(
+        "renamed",
+        format!("{} to {}", from.display(), dest.display()),
+    );
+    if !moved.signature_rewritten {
+        report.note(format!(
+            "{} did not start with the {old} prefs signature, so its first line was left as it is",
+            dest.display()
+        ));
+    }
+    Ok(())
+}
+
 fn run_steps(
     env: &Env,
     ui: &mut Ui,
@@ -125,6 +159,11 @@ fn run_steps(
         }
         manifest.files.retain(|f| &f.path != path);
         ui.ok(&format!("removed {} (no longer shipped)", path.display()));
+    }
+
+    if !plan.retire.is_empty() {
+        retire::apply(env, ui, kit, &plan.retire, manifest, report)?;
+        completed.push("retired servers".into());
     }
 
     if let Some(req) = &plan.binaries {
@@ -180,6 +219,9 @@ fn run_steps(
     ui.blank();
     ui.line("Prefs and custom rules");
     for p in &plan.prefs {
+        if let Some(from) = &p.rename_from {
+            rename_prefs(kit, ui, from, &p.dest, &p.plan.name, manifest, report)?;
+        }
         match (&p.plan.action, &p.plan.text) {
             (PrefsActionKind::Create | PrefsActionKind::Update, Some(text)) => {
                 write_atomic(&p.dest, text.as_bytes())?;
@@ -200,8 +242,8 @@ fn run_steps(
         if p.dest.exists() {
             manifest.record_file(&p.dest, EntryKind::File, true);
         }
-        for w in &p.plan.warnings {
-            report.note(w.clone());
+        for n in p.notes.iter().chain(&p.plan.warnings) {
+            report.note(n.clone());
         }
     }
     report.done(

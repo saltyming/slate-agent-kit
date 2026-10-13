@@ -2,7 +2,9 @@
 //!
 //! Owns resolving the harness home and binary folder, locating the manifest,
 //! the prefs files and the configuration file, and reading the state of the
-//! existing prefs files. It does not ask questions or change anything.
+//! existing prefs files, including a prefs file that still has the name an
+//! earlier release gave it. It does not ask questions or change anything: a
+//! file to be renamed is read under its new name here and moved by `apply`.
 //!
 //! Main entry points: [`Kit::open`], [`Kit::prefs_states`] and [`PrefsState`].
 
@@ -11,7 +13,7 @@ use crate::env::{Env, Harness};
 use crate::error::{Error, Result};
 use crate::manifest::Manifest;
 use crate::options::Options;
-use crate::prefs::{self, State, schema::ValidationCtx};
+use crate::prefs::{self, State, rename, schema::ValidationCtx};
 use crate::util::read_text_opt;
 use std::path::{Path, PathBuf};
 
@@ -45,6 +47,12 @@ pub struct PrefsState {
     pub existing: Option<String>,
     /// Its state.
     pub state: State,
+    /// The file under the name an earlier release gave it, when only that one
+    /// exists: `existing` is its text with the signature already rewritten, and
+    /// the apply step moves it to `dest` before anything else writes the file.
+    pub rename_from: Option<PathBuf>,
+    /// Facts for the summary, such as an old-named file that is ignored.
+    pub notes: Vec<String>,
 }
 
 /// Finds the payload folder: `--payload`, else `./dist`, else `dist/` beside the executable.
@@ -142,18 +150,44 @@ impl Kit {
     }
 
     /// Reads the state of every prefs file the kit ships.
+    ///
+    /// A file an earlier release named differently (the consult prefs were the
+    /// aside prefs) is read under its new name when only the old one exists, so
+    /// the wizard and the plan start from the user's values; when both exist,
+    /// the new one is used and the old one is reported and left alone.
     pub fn prefs_states(&self) -> Result<Vec<PrefsState>> {
         let old_manifest = self.prior.as_ref().is_some_and(|m| m.from_legacy);
         let mut out = Vec::new();
         for name in &self.payload.desc.prefs {
             let dest = self.prefs_dest(name);
             let template = self.payload.read(&self.payload.prefs_template(name))?;
-            let existing = read_text_opt(&dest)?;
+            let mut existing = read_text_opt(&dest)?;
+            let mut rename_from = None;
+            let mut notes = Vec::new();
+            if let Some(old) = rename::earlier_name(name) {
+                let src = self.prefs_dest(old);
+                if let Some(text) = read_text_opt(&src)? {
+                    if existing.is_some() {
+                        notes.push(format!(
+                            "{} and {} both exist: {} is used, and {} is left as it is and ignored",
+                            src.display(),
+                            dest.display(),
+                            dest.display(),
+                            src.display()
+                        ));
+                    } else {
+                        existing = Some(rename::renamed_text(self.name(), old, name, &text));
+                        rename_from = Some(src);
+                    }
+                }
+            }
+            // An earlier line-format manifest lists the file under the name it had then.
+            let listed_as = rename_from.as_ref().unwrap_or(&dest);
             let listed = old_manifest
                 && self
                     .prior
                     .as_ref()
-                    .is_some_and(|m| m.files.iter().any(|f| f.path == dest));
+                    .is_some_and(|m| m.files.iter().any(|f| &f.path == listed_as));
             let state = prefs::classify_state(name, existing.as_deref(), listed);
             out.push(PrefsState {
                 name: name.clone(),
@@ -161,6 +195,8 @@ impl Kit {
                 template,
                 existing,
                 state,
+                rename_from,
+                notes,
             });
         }
         Ok(out)

@@ -63,10 +63,10 @@ fn contract_one() -> u32 {
 }
 
 /// The servers the installer knows how to install and register.
-pub const KNOWN_SERVERS: [&str; 3] = ["aside", "dispatch", "palette"];
+pub const KNOWN_SERVERS: [&str; 2] = ["dispatch", "palette"];
 
 /// The prefs files the installer knows how to configure.
-pub const KNOWN_PREFS: [&str; 5] = ["aside", "dispatch", "subagent", "git", "comment"];
+pub const KNOWN_PREFS: [&str; 5] = ["consult", "dispatch", "subagent", "git", "comment"];
 
 impl Descriptor {
     /// Reads and validates `<payload>/kit.toml`.
@@ -248,8 +248,8 @@ primary = "CLAUDE.md"
 load = "rules-dir"
 rules = ["claude-agent-kit--a.md"]
 skills = ["palette-init"]
-prefs = ["aside", "git"]
-servers = ["aside", "dispatch", "palette"]
+prefs = ["consult", "git"]
+servers = ["dispatch", "palette"]
 legacy = ["workslate"]
 "#;
 
@@ -261,7 +261,7 @@ legacy = ["workslate"]
         fs::create_dir_all(dir.join("skills/palette-init")).unwrap();
         fs::write(dir.join("skills/palette-init/SKILL.md"), "x").unwrap();
         fs::create_dir_all(dir.join("prefs")).unwrap();
-        fs::write(dir.join("prefs/aside-prefs.md"), "x").unwrap();
+        fs::write(dir.join("prefs/consult-prefs.md"), "x").unwrap();
         fs::write(dir.join("prefs/git-prefs.md"), "x").unwrap();
     }
 
@@ -298,9 +298,28 @@ legacy = ["workslate"]
         let bad = KIT.replace("claude-agent-kit--a.md", "../evil.md");
         let d: Descriptor = toml::from_str(&bad).unwrap();
         assert!(d.validate().is_err());
-        let bad = KIT.replace("\"aside\", \"git\"", "\"aside\", \"nope\"");
+        let bad = KIT.replace("\"consult\", \"git\"", "\"consult\", \"nope\"");
         let d: Descriptor = toml::from_str(&bad).unwrap();
         assert!(d.validate().is_err());
+    }
+
+    #[test]
+    fn the_retired_aside_server_and_prefs_are_unknown() {
+        let d: Descriptor = toml::from_str(KIT).unwrap();
+        assert!(d.validate().is_ok());
+        assert_eq!(d.prefs, ["consult", "git"]);
+        assert_eq!(d.servers, ["dispatch", "palette"]);
+        let old_servers = KIT.replace(
+            "servers = [\"dispatch\", \"palette\"]",
+            "servers = [\"aside\", \"dispatch\", \"palette\"]",
+        );
+        let d: Descriptor = toml::from_str(&old_servers).unwrap();
+        let err = d.validate().unwrap_err().to_string();
+        assert!(err.contains("unknown server `aside`"), "{err}");
+        let old_prefs = KIT.replace("\"consult\", \"git\"", "\"aside\", \"git\"");
+        let d: Descriptor = toml::from_str(&old_prefs).unwrap();
+        let err = d.validate().unwrap_err().to_string();
+        assert!(err.contains("unknown prefs file `aside`"), "{err}");
     }
 
     #[test]

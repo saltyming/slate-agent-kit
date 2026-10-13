@@ -3,7 +3,7 @@
 //! Reads the newest **interactive** rollout for this project from
 //! `$CODEX_HOME/sessions` (discovery lives in the shared `harness-log`
 //! crate, which also excludes headless `codex exec` children — the runs
-//! aside and dispatch themselves spawn). Rollout events map to the unified
+//! dispatch itself spawns, consultations included). Rollout events map to the unified
 //! redaction contract; codex reasoning is API-encrypted and always rendered
 //! as a `[thinking]` placeholder.
 

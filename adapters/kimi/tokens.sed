@@ -7,10 +7,10 @@ s#{{PALETTE_RULE_FILE}}#kimi-agent-kit--palette.md#g
 s#{{DELEGATION_RULE_FILE}}#kimi-agent-kit--delegation.md#g
 s#{{MODELS_RULE_FILE}}#kimi-agent-kit--models.md#g
 s#{{GIT_WORKFLOW_RULE_FILE}}#kimi-agent-kit--git-workflow.md#g
-s#{{ASIDE_RULE_FILE}}#kimi-agent-kit--aside.md#g
+s#{{CONSULT_RULE_FILE}}#kimi-agent-kit--consult.md#g
 s#{{SURFACE_RULE_FILE}}#kimi-agent-kit--kimi-surface.md#g
 s#{{DISPATCH_RULE_FILE}}#kimi-agent-kit--dispatch.md#g
-s#{{ASIDE_PREFS_FILE}}#kimi-agent-kit--aside-prefs.md#g
+s#{{CONSULT_PREFS_FILE}}#kimi-agent-kit--consult-prefs.md#g
 s#{{DISPATCH_PREFS_FILE}}#kimi-agent-kit--dispatch-prefs.md#g
 s#{{GIT_PREFS_FILE}}#kimi-agent-kit--git-prefs.md#g
 s#{{COMMENT_PREFS_FILE}}#kimi-agent-kit--comment-prefs.md#g

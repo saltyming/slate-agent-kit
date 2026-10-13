@@ -1,7 +1,7 @@
 #!/bin/sh
 # install-mcp.sh - thin wrapper that builds slate-setup and runs `slate-setup mcp`.
 #
-# It installs the shared MCP servers (aside, dispatch, palette), plus the
+# It installs the shared MCP servers (dispatch, palette), plus the
 # agent-guard helper beside them on Linux and macOS, and registers the servers
 # with Claude Code, Codex and Kimi Code. Every step lives in slate-setup;
 # this script only translates its documented options and environment variables.
@@ -13,7 +13,7 @@ usage() {
   cat <<'USAGE'
 Usage: tooling/install-mcp.sh [options]
 
-Build and install the shared Slate MCP servers (aside, dispatch, palette) and,
+Build and install the shared Slate MCP servers (dispatch, palette) and,
 on Linux and macOS, the agent-guard helper the servers start backends through
 (not a server: it is installed beside them and never registered), then register
 the servers for one or more harnesses. All work is done by `slate-setup mcp`.
@@ -56,8 +56,8 @@ Environment:
   PLATFORM                Override the auto-detected release platform triple
   SLATE_SETUP             Use this slate-setup binary instead of building one
 
-Transcript forwarding (aside) reads each harness's own session log natively;
-the installer only pins which harness via ASIDE_HARNESS.
+Transcript forwarding (dispatch consultations) reads each harness's own session
+log natively; the installer only pins which harness via SLATE_HARNESS.
 USAGE
 }
 

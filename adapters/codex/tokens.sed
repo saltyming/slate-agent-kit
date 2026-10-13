@@ -7,10 +7,10 @@ s#{{PALETTE_RULE_FILE}}#codex-agent-kit--palette.md#g
 s#{{DELEGATION_RULE_FILE}}#codex-agent-kit--delegation.md#g
 s#{{MODELS_RULE_FILE}}#codex-agent-kit--models.md#g
 s#{{GIT_WORKFLOW_RULE_FILE}}#codex-agent-kit--git-workflow.md#g
-s#{{ASIDE_RULE_FILE}}#codex-agent-kit--aside.md#g
+s#{{CONSULT_RULE_FILE}}#codex-agent-kit--consult.md#g
 s#{{SURFACE_RULE_FILE}}#codex-agent-kit--codex-surface.md#g
 s#{{DISPATCH_RULE_FILE}}#codex-agent-kit--dispatch.md#g
-s#{{ASIDE_PREFS_FILE}}#codex-agent-kit--aside-prefs.md#g
+s#{{CONSULT_PREFS_FILE}}#codex-agent-kit--consult-prefs.md#g
 s#{{DISPATCH_PREFS_FILE}}#codex-agent-kit--dispatch-prefs.md#g
 s#{{GIT_PREFS_FILE}}#codex-agent-kit--git-prefs.md#g
 s#{{COMMENT_PREFS_FILE}}#codex-agent-kit--comment-prefs.md#g

@@ -1,1 +1,1 @@
-In Claude Code, a backgrounded `Agent` or `Workflow` call notifies the session when it completes; dispatch does not. The follow-up is `ScheduleWakeup`, inside `/loop` or not: an interval matched to the run's expected duration and a prompt naming the run to check.
+In Claude Code the means is `Bash` with `run_in_background: true`, which re-invokes the session when the command exits; run the `wait` line without `--timeout`. A backgrounded `Agent` or `Workflow` call notifies the same way.

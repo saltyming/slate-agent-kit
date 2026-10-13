@@ -1,5 +1,5 @@
 //! Prefs files: the settings schema, the line-preserving document, migration,
-//! and the plan for one file.
+//! the rename of files whose name changed, and the plan for one file.
 //!
 //! Owns turning "template + existing file + answers" into the text to write and
 //! the value changes to show, for all five prefs files and all three harnesses
@@ -14,6 +14,7 @@
 
 pub mod doc;
 pub mod migrate;
+pub mod rename;
 pub mod schema;
 
 use crate::error::{Error, Result};
@@ -470,9 +471,9 @@ mod tests {
 
     #[test]
     fn legacy_state_rules() {
-        let old_aside = "## Auto-call policy\n\n**proactive**\n";
+        let old_consult = "## Auto-call policy\n\n**proactive**\n";
         assert_eq!(
-            classify_state("aside", Some(old_aside), false),
+            classify_state("consult", Some(old_consult), false),
             State::Legacy
         );
         assert_eq!(
@@ -493,7 +494,14 @@ mod tests {
             migrate: false,
             ..Input::default()
         };
-        let p = plan_file("aside", Some(old), "unused", State::Legacy, &input, &ctx());
+        let p = plan_file(
+            "consult",
+            Some(old),
+            "unused",
+            State::Legacy,
+            &input,
+            &ctx(),
+        );
         // The template is checked first, so use a valid one for this scenario.
         assert!(p.is_err());
     }
@@ -514,11 +522,11 @@ mod tests {
         assert!(p.text.unwrap().contains("**off**"));
     }
 
-    const ASIDE_TEMPLATE: &str = "<!-- k-custom:aside-prefs -->\n# Aside\n\n## Level\n\n**suggest**\n\n## Backend\n\n**codex**\n\n## Codex model\n\n****\n\n## Codex reasoning effort\n\n****\n\n## Codex model fallback\n\n****\n\n## Claude model\n\n****\n\n## Claude reasoning effort\n\n****\n\n## Claude model fallback\n\n****\n\n## Notes\n\nx\n";
+    const CONSULT_TEMPLATE: &str = "<!-- k-custom:consult-prefs -->\n# Consult\n\n## Level\n\n**suggest**\n\n## Backend\n\n**codex**\n\n## Codex model\n\n****\n\n## Codex reasoning effort\n\n****\n\n## Codex model fallback\n\n****\n\n## Claude model\n\n****\n\n## Claude reasoning effort\n\n****\n\n## Claude model fallback\n\n****\n\n## Notes\n\nx\n";
 
     /// The template with `backend` set to a name the schema lacks and that backend's settings added.
-    fn aside_with_unknown_backend() -> String {
-        ASIDE_TEMPLATE
+    fn consult_with_unknown_backend() -> String {
+        CONSULT_TEMPLATE
             .replace("## Backend\n\n**codex**", "## Backend\n\n**legacy**")
             .replace(
                 "## Claude model\n",
@@ -528,11 +536,11 @@ mod tests {
 
     #[test]
     fn a_backend_the_schema_lacks_is_reported_once_and_the_file_is_kept() {
-        let existing = aside_with_unknown_backend().replace('\n', "\r\n");
+        let existing = consult_with_unknown_backend().replace('\n', "\r\n");
         let p = plan_file(
-            "aside",
+            "consult",
             Some(&existing),
-            ASIDE_TEMPLATE,
+            CONSULT_TEMPLATE,
             State::Current,
             &Input::default(),
             &ctx(),
@@ -554,20 +562,20 @@ mod tests {
 
     #[test]
     fn a_backend_the_schema_lacks_counts_as_unset() {
-        let existing = aside_with_unknown_backend();
+        let existing = consult_with_unknown_backend();
         let v = current_values(
-            "aside",
+            "consult",
             Some(&existing),
-            ASIDE_TEMPLATE,
+            CONSULT_TEMPLATE,
             State::Current,
             &ctx(),
         );
         assert_eq!(v["backend"], "codex");
         assert_eq!(
             treated_as_unset(
-                "aside",
+                "consult",
                 Some(&existing),
-                ASIDE_TEMPLATE,
+                CONSULT_TEMPLATE,
                 State::Current,
                 &ctx()
             ),
@@ -575,9 +583,9 @@ mod tests {
         );
         // Writing a backend keeps the other backend's lines and reports only them.
         let p = plan_file(
-            "aside",
+            "consult",
             Some(&existing),
-            ASIDE_TEMPLATE,
+            CONSULT_TEMPLATE,
             State::Current,
             &values(&[("backend", "codex")]),
             &ctx(),
@@ -590,9 +598,9 @@ mod tests {
         assert!(!p.warnings[0].contains("Backend"), "{:?}", p.warnings);
         // A file without such values has no warning and nothing treated as unset.
         let p = plan_file(
-            "aside",
-            Some(ASIDE_TEMPLATE),
-            ASIDE_TEMPLATE,
+            "consult",
+            Some(CONSULT_TEMPLATE),
+            CONSULT_TEMPLATE,
             State::Current,
             &Input::default(),
             &ctx(),
@@ -601,9 +609,9 @@ mod tests {
         assert!(p.warnings.is_empty(), "{:?}", p.warnings);
         assert!(
             treated_as_unset(
-                "aside",
-                Some(ASIDE_TEMPLATE),
-                ASIDE_TEMPLATE,
+                "consult",
+                Some(CONSULT_TEMPLATE),
+                CONSULT_TEMPLATE,
                 State::Current,
                 &ctx()
             )

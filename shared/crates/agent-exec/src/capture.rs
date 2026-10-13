@@ -53,7 +53,8 @@ pub struct CapturePolicy {
 }
 
 impl CapturePolicy {
-    /// aside's policy: stdout the first 50 KB by character, stderr the last
+    /// The consultation policy (dispatch's `consult` kind): stdout the first
+    /// 50 KB by character, stderr the last
     /// 2 KB by character, and on a non-zero exit stdout the first 2 KB by
     /// character (the CLIs that print their error on stdout print it first).
     pub fn aside() -> Self {

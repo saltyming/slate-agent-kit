@@ -1,14 +1,17 @@
 //! Re-entry depth markers: keep a spawned backend from recursing into the
 //! server that spawned it.
 //!
-//! A server names an environment variable (aside `ASIDE_REENTRY_DEPTH`,
-//! dispatch `DISPATCH_REENTRY_DEPTH`) and a ceiling. A top-level call has the
+//! A server names an environment variable (dispatch
+//! `DISPATCH_REENTRY_DEPTH`) and a ceiling. A top-level call has the
 //! variable unset (depth 0). Every process the server spawns — the backend and
 //! the `--version` probe — carries the server's depth plus one ([`stamp`]),
 //! and the child inherits it down its whole process tree, including any copy
 //! of the server the backend boots from its own configuration. That copy sees
-//! the marker and refuses the request ([`refused`]). This is defense in depth;
-//! the primary guarantee is the backend's isolation flags.
+//! the marker and refuses the request ([`refused`]). Codex starts its MCP
+//! servers with a clean environment, so for a codex backend the marker reaches
+//! a booted copy only when the server passes it on the command line with
+//! `Isolation::ServerEnv`. This is defense in depth; the primary guarantee is
+//! the backend's isolation flags.
 //!
 //! Parsing fails closed: unset or empty is depth 0, while a malformed or
 //! non-Unicode value is past every ceiling (`u32::MAX`), so a corrupt marker

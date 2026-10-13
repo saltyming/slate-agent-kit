@@ -45,7 +45,7 @@ preamble
 
 implementing rules
   The rule files that say how the articles are applied: execution,
-  delegation, models, git, aside, dispatch, palette and each harness's
+  delegation, models, git, consultation, dispatch, palette and each harness's
   surface rule. They load with the constitution.
 
 contract number
@@ -120,8 +120,8 @@ team
   no equivalent.
 
 consultation
-  A read-only request for an opinion (aside, or the harness's own advisor). A
-  consultation is not delegation.
+  A read-only request for an opinion (``dispatch_consult``, or the harness's
+  own advisor). A consultation is not delegation.
 
 Documents
 ---------

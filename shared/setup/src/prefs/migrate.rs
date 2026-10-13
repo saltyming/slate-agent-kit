@@ -21,13 +21,14 @@ pub const PRESERVED_SECTIONS: [&str; 2] = ["Notes", "Repository overrides"];
 
 /// Old-layout sections a migration reads or drops, per file; they are not appended.
 ///
-/// The aside and dispatch list lines are read wherever they are, but the old
+/// The consult and dispatch list lines are read wherever they are, but the old
 /// layout keeps them under the per-backend and `Default backend / model /
 /// effort` sections named here; `Default granularity` has no new setting and is
-/// dropped.
+/// dropped. The old consult file is the one earlier releases named aside; the
+/// rename to consult happens before the migration reads it.
 pub fn consumed_sections(file: &str) -> &'static [&'static str] {
     match file {
-        "aside" => &[
+        "consult" => &[
             "Preferred third-party advisor",
             "Default models (per backend)",
             "Default reasoning effort (per backend)",
@@ -44,20 +45,20 @@ pub fn consumed_sections(file: &str) -> &'static [&'static str] {
     }
 }
 
-/// Old aside list-item labels after the backend name, with the key each one maps to.
-const ASIDE_LIST_LABELS: [(&str, &str); 3] = [
+/// Old consult list-item labels after the backend name, with the key each one maps to.
+const CONSULT_LIST_LABELS: [(&str, &str); 3] = [
     ("default model", "model"),
     ("default reasoning effort", "effort"),
     ("default model fallback", "fallback"),
 ];
 
-/// True when an aside or dispatch file still has the pre-`level` layout.
+/// True when a consult or dispatch file still has the pre-`level` layout.
 ///
 /// Files with an unchanged layout (git, comment) cannot be recognised by content;
 /// the caller treats them as old when an old-format manifest lists them.
 pub fn is_legacy_format(file: &str, doc: &PrefsDoc) -> bool {
     match file {
-        "aside" => {
+        "consult" => {
             (doc.has_heading("Auto-call policy")
                 || doc.has_heading("Preferred third-party advisor"))
                 && !doc.has_heading("Level")
@@ -70,14 +71,20 @@ pub fn is_legacy_format(file: &str, doc: &PrefsDoc) -> bool {
 /// The values a migration carries over, keyed by `<key>` within the file.
 type Values = BTreeMap<String, String>;
 
-fn aside_values(old: &PrefsDoc, warnings: &mut Vec<String>) -> Values {
+fn consult_values(old: &PrefsDoc, warnings: &mut Vec<String>) -> Values {
     let mut out = Values::new();
     let policy = old.get("Auto-call policy");
     let advisor = old.inline_value("Preferred third-party advisor");
-    report_unreadable(old, "aside", "Auto-call policy", policy.as_ref(), warnings);
     report_unreadable(
         old,
-        "aside",
+        "consult",
+        "Auto-call policy",
+        policy.as_ref(),
+        warnings,
+    );
+    report_unreadable(
+        old,
+        "consult",
         "Preferred third-party advisor",
         advisor.as_ref(),
         warnings,
@@ -87,7 +94,7 @@ fn aside_values(old: &PrefsDoc, warnings: &mut Vec<String>) -> Values {
         Some("proactive") => Some("auto"),
         Some(other) => {
             warnings.push(format!(
-                "aside: unknown Auto-call policy `{other}`; level left at the default"
+                "consult: unknown Auto-call policy `{other}`; level left at the default"
             ));
             None
         }
@@ -95,7 +102,7 @@ fn aside_values(old: &PrefsDoc, warnings: &mut Vec<String>) -> Values {
     };
     let mut advisor_warning = None;
     match advisor.as_deref() {
-        Some(b) if schema::ASIDE_BACKENDS.contains(&b) => {
+        Some(b) if schema::CONSULT_BACKENDS.contains(&b) => {
             out.insert("backend".into(), b.into());
         }
         Some("none") => {
@@ -106,7 +113,7 @@ fn aside_values(old: &PrefsDoc, warnings: &mut Vec<String>) -> Values {
         Some(other) => {
             advisor_warning = Some(warnings.len());
             warnings.push(format!(
-                "aside: unknown preferred advisor `{other}`; backend left at the default"
+                "consult: unknown preferred advisor `{other}`; backend left at the default"
             ));
         }
     }
@@ -123,17 +130,17 @@ fn aside_values(old: &PrefsDoc, warnings: &mut Vec<String>) -> Values {
         // One line per file: join the advisor warning when there is one.
         match advisor_warning {
             Some(i) => warnings[i] = format!("{}; {clause}", warnings[i]),
-            None => warnings.push(format!("aside: {clause}")),
+            None => warnings.push(format!("consult: {clause}")),
         }
     }
     if let Some(l) = level {
         out.insert("level".into(), l.into());
     }
-    for b in schema::ASIDE_BACKENDS {
-        for (label, key) in ASIDE_LIST_LABELS {
+    for b in schema::CONSULT_BACKENDS {
+        for (label, key) in CONSULT_LIST_LABELS {
             read_list_line(
                 old,
-                "aside",
+                "consult",
                 &format!("{b} {label}"),
                 &format!("{b}.{key}"),
                 &mut out,
@@ -144,13 +151,13 @@ fn aside_values(old: &PrefsDoc, warnings: &mut Vec<String>) -> Values {
     out
 }
 
-/// Backends named by old aside list items that the schema lacks and whose value is not blank, in file order.
+/// Backends named by old consult list items that the schema lacks and whose value is not blank, in file order.
 ///
 /// A value that cannot be read counts as not blank.
 fn unknown_backends_with_values(old: &PrefsDoc) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for label in old.list_labels() {
-        let backend = ASIDE_LIST_LABELS.iter().find_map(|(suffix, _)| {
+        let backend = CONSULT_LIST_LABELS.iter().find_map(|(suffix, _)| {
             label
                 .trim_end()
                 .strip_suffix(suffix)?
@@ -161,7 +168,9 @@ fn unknown_backends_with_values(old: &PrefsDoc) -> Vec<String> {
             continue;
         };
         let blank = old.list_value(label).is_some_and(|v| v.trim().is_empty());
-        if !schema::ASIDE_BACKENDS.contains(&backend) && !blank && !out.iter().any(|b| b == backend)
+        if !schema::CONSULT_BACKENDS.contains(&backend)
+            && !blank
+            && !out.iter().any(|b| b == backend)
         {
             out.push(backend.to_string());
         }
@@ -276,7 +285,7 @@ pub fn migrate(file: &str, old_text: &str, template_text: &str, ctx: &Validation
     let old = PrefsDoc::parse(old_text);
     let mut warnings = Vec::new();
     let values = match file {
-        "aside" => aside_values(&old, &mut warnings),
+        "consult" => consult_values(&old, &mut warnings),
         "dispatch" => dispatch_values(&old, &mut warnings),
         _ => unchanged_values(file, &old),
     };
@@ -319,7 +328,7 @@ mod tests {
     use super::*;
     use crate::env::Harness;
 
-    const ASIDE_TEMPLATE: &str = "<!-- k-custom:aside-prefs -->\n# Aside Preferences\n\n## Level\n\n**suggest**\n\n## Backend\n\n**codex**\n\n## Codex model\n\n****\n\n## Codex reasoning effort\n\n****\n\n## Codex model fallback\n\n****\n\n## Claude model\n\n****\n\n## Claude reasoning effort\n\n****\n\n## Claude model fallback\n\n****\n\n## Notes\n\nnew default notes\n\n## Repository overrides\n\nnew default overrides\n";
+    const CONSULT_TEMPLATE: &str = "<!-- k-custom:consult-prefs -->\n# Consult Preferences\n\n## Level\n\n**suggest**\n\n## Backend\n\n**codex**\n\n## Codex model\n\n****\n\n## Codex reasoning effort\n\n****\n\n## Codex model fallback\n\n****\n\n## Claude model\n\n****\n\n## Claude reasoning effort\n\n****\n\n## Claude model fallback\n\n****\n\n## Notes\n\nnew default notes\n\n## Repository overrides\n\nnew default overrides\n";
 
     const OLD_ASIDE: &str = "<!-- claude-agent-kit-custom:aside-prefs -->\n# Aside Preferences\n\n## Preferred third-party advisor\n\nDefault backend when Claude Code decides to ask a cross-family advisor: **codex**\n\nValid values: `none` | `codex`\n\n## Default models (per backend)\n\n- codex default model: **gpt-6-astra**\n- legacy default model: ****\n- claude default model: **opus**\n\n## Default reasoning effort (per backend)\n\n- codex default reasoning effort: **high**   (`low`)\n- legacy default reasoning effort: ****\n- claude default reasoning effort: **max**\n\n## Default model fallback chain (per backend)\n\n- codex default model fallback: **gpt-6-sol(high)**   (comma-separated)\n- legacy default model fallback: ****\n- claude default model fallback: ****\n\n## Auto-call policy\n\n**proactive**\n\n## Notes\n\nMy own note.\n";
 
@@ -329,14 +338,17 @@ mod tests {
 
     #[test]
     fn detects_old_layouts() {
-        assert!(is_legacy_format("aside", &PrefsDoc::parse(OLD_ASIDE)));
-        assert!(!is_legacy_format("aside", &PrefsDoc::parse(ASIDE_TEMPLATE)));
+        assert!(is_legacy_format("consult", &PrefsDoc::parse(OLD_ASIDE)));
+        assert!(!is_legacy_format(
+            "consult",
+            &PrefsDoc::parse(CONSULT_TEMPLATE)
+        ));
         assert!(!is_legacy_format("git", &PrefsDoc::parse(OLD_ASIDE)));
     }
 
     #[test]
-    fn aside_values_and_level_are_mapped() {
-        let m = migrate("aside", OLD_ASIDE, ASIDE_TEMPLATE, &ctx());
+    fn old_aside_values_and_level_are_mapped() {
+        let m = migrate("consult", OLD_ASIDE, CONSULT_TEMPLATE, &ctx());
         assert!(m.warnings.is_empty(), "{:?}", m.warnings);
         let d = PrefsDoc::parse(&m.text);
         assert_eq!(d.get("Level").as_deref(), Some("auto"));
@@ -355,11 +367,11 @@ mod tests {
             m.text
                 .contains("## Repository overrides\n\nnew default overrides\n")
         );
-        assert!(m.text.starts_with("<!-- k-custom:aside-prefs -->\n"));
+        assert!(m.text.starts_with("<!-- k-custom:consult-prefs -->\n"));
     }
 
     #[test]
-    fn aside_policy_and_advisor_table() {
+    fn old_aside_policy_and_advisor_table() {
         for (policy, advisor, level, backend) in [
             ("conservative", "codex", "on-request", "codex"),
             ("preference-only", "claude", "on-request", "claude"),
@@ -369,7 +381,7 @@ mod tests {
             let old = format!(
                 "## Preferred third-party advisor\n\nDefault backend when Claude Code decides to ask a cross-family advisor: **{advisor}**\n\n## Auto-call policy\n\n**{policy}**\n"
             );
-            let m = migrate("aside", &old, ASIDE_TEMPLATE, &ctx());
+            let m = migrate("consult", &old, CONSULT_TEMPLATE, &ctx());
             let d = PrefsDoc::parse(&m.text);
             assert_eq!(d.get("Level").as_deref(), Some(level), "{policy}/{advisor}");
             assert_eq!(
@@ -383,7 +395,7 @@ mod tests {
     #[test]
     fn list_lines_of_a_backend_the_schema_lacks_are_not_carried_over() {
         let old = "## Preferred third-party advisor\n\nDefault backend when X decides to ask: **legacy**\n\n## Default models (per backend)\n\n- codex default model: **model-a**\n- legacy default model: **model-l**\n\n## Default reasoning effort (per backend)\n\n- legacy default reasoning effort: **high**\n\n## Default model fallback chain (per backend)\n\n- legacy default model fallback: model-m   (comma-separated; blank = none)\n\n## Auto-call policy\n\n**proactive**\n";
-        let m = migrate("aside", old, ASIDE_TEMPLATE, &ctx());
+        let m = migrate("consult", old, CONSULT_TEMPLATE, &ctx());
         // The advisor value and the list values are reported in one line.
         assert_eq!(m.warnings.len(), 1, "{:?}", m.warnings);
         assert!(
@@ -410,10 +422,10 @@ mod tests {
     #[test]
     fn non_blank_values_of_a_backend_the_schema_lacks_are_reported_in_one_line() {
         let old = old_aside_with_legacy_lines("**model-l**", "**high**", "model-m");
-        let m = migrate("aside", &old, ASIDE_TEMPLATE, &ctx());
+        let m = migrate("consult", &old, CONSULT_TEMPLATE, &ctx());
         assert_eq!(m.warnings.len(), 1, "{:?}", m.warnings);
         assert!(
-            m.warnings[0].starts_with("aside: values for `legacy` ")
+            m.warnings[0].starts_with("consult: values for `legacy` ")
                 && m.warnings[0].contains("backup"),
             "{:?}",
             m.warnings
@@ -432,7 +444,7 @@ mod tests {
             .replace("   (`low` / `medium`)", "")
             .replace("   (comma-separated; blank = none)", "");
         for old in [bold, bare] {
-            let m = migrate("aside", &old, ASIDE_TEMPLATE, &ctx());
+            let m = migrate("consult", &old, CONSULT_TEMPLATE, &ctx());
             assert!(m.warnings.is_empty(), "{old}: {:?}", m.warnings);
         }
     }
@@ -447,13 +459,13 @@ mod tests {
             &format!("{own}\n{other}\n## Auto-call policy\n"),
         );
         for (old, eol) in [(lf.clone(), "\n"), (lf.replace('\n', "\r\n"), "\r\n")] {
-            let m = migrate("aside", &old, ASIDE_TEMPLATE, &ctx());
+            let m = migrate("consult", &old, CONSULT_TEMPLATE, &ctx());
             assert!(m.warnings.is_empty(), "{:?}", m.warnings);
             // Each section keeps its body up to the next old heading, trailing blank line included.
             let tail = format!("{own}\n{other}\n").replace('\n', eol);
             assert!(m.text.ends_with(&tail), "{eol:?}: {}", m.text);
             // Consumed old sections are not appended, and Notes stays at the template's heading.
-            for consumed in consumed_sections("aside") {
+            for consumed in consumed_sections("consult") {
                 assert!(!m.text.contains(consumed), "{consumed}: {}", m.text);
             }
             let notes = m.text.find("## Notes").unwrap();
@@ -474,7 +486,7 @@ mod tests {
             // (a) no final newline, (b) a final newline, (c) a trailing blank line.
             for ending in ["", "\n", "\n\n"] {
                 let old = format!("{base}My own note.{ending}").replace('\n', eol);
-                let m = migrate("aside", &old, ASIDE_TEMPLATE, &ctx());
+                let m = migrate("consult", &old, CONSULT_TEMPLATE, &ctx());
                 let boundary = "\n## Notes\n\nMy own note.\n\n## Repository overrides\n\nnew default overrides\n"
                     .replace('\n', eol);
                 assert!(
@@ -557,7 +569,7 @@ mod tests {
     #[test]
     fn unbolded_fallback_lines_survive_migration() {
         let old = "## Preferred third-party advisor\n\nDefault backend when X decides to ask: **codex**\n\n## Default models (per backend)\n\n- codex default model: **model-a**\n\n## Default reasoning effort (per backend)\n\n- codex default reasoning effort: **high**   (`low` / `medium`)\n\n## Default model fallback chain (per backend)\n\n- codex default model fallback: model-b(high), model-c   (comma-separated; blank = none)\n- legacy default model fallback: ****   (comma-separated; blank = none)\n- claude default model fallback: model-d  (comma-separated; blank = none)\n\n## Auto-call policy\n\n**proactive**\n";
-        let m = migrate("aside", old, ASIDE_TEMPLATE, &ctx());
+        let m = migrate("consult", old, CONSULT_TEMPLATE, &ctx());
         assert!(m.warnings.is_empty(), "{:?}", m.warnings);
         let d = PrefsDoc::parse(&m.text);
         assert_eq!(
@@ -581,7 +593,7 @@ mod tests {
     #[test]
     fn a_value_that_cannot_be_read_is_reported_not_dropped() {
         let old = "## Preferred third-party advisor\n\nDefault backend: codex\n\n## Default model fallback chain (per backend)\n\n- codex default model fallback: **unterminated\n\n## Auto-call policy\n\nproactive without bold\n";
-        let m = migrate("aside", old, ASIDE_TEMPLATE, &ctx());
+        let m = migrate("consult", old, CONSULT_TEMPLATE, &ctx());
         assert_eq!(m.warnings.len(), 3, "{:?}", m.warnings);
         assert!(
             m.warnings
@@ -599,7 +611,7 @@ mod tests {
     #[test]
     fn invalid_old_values_fall_back_and_are_reported() {
         let old = "## Preferred third-party advisor\n\nDefault backend when X decides to ask: **codex**\n\n## Default reasoning effort (per backend)\n\n- codex default reasoning effort: **turbo**\n\n## Auto-call policy\n\n**whatever**\n";
-        let m = migrate("aside", old, ASIDE_TEMPLATE, &ctx());
+        let m = migrate("consult", old, CONSULT_TEMPLATE, &ctx());
         assert_eq!(m.warnings.len(), 2, "{:?}", m.warnings);
         let d = PrefsDoc::parse(&m.text);
         assert_eq!(d.get("Codex reasoning effort").as_deref(), Some(""));
@@ -609,7 +621,7 @@ mod tests {
     #[test]
     fn crlf_files_stay_crlf() {
         let old = OLD_ASIDE.replace('\n', "\r\n");
-        let m = migrate("aside", &old, ASIDE_TEMPLATE, &ctx());
+        let m = migrate("consult", &old, CONSULT_TEMPLATE, &ctx());
         assert_eq!(m.text.matches('\n').count(), m.text.matches("\r\n").count());
         assert!(m.text.contains("## Notes\r\n\r\nMy own note.\r\n"));
     }

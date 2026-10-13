@@ -2,31 +2,24 @@
 //! `config.toml` edits that make the servers usable.
 //!
 //! Owns the `codex mcp add/remove` command lines and the format-preserving
-//! edits: aside's `tool_timeout_sec` and approval mode, the code-mode namespace
-//! lists, per-tool approvals for palette's read-only tools, and the subagent
-//! default model. It does not edit the `[mcp_servers.*]` tables' contents that
-//! `codex mcp add` writes.
+//! edits: per-tool approvals for dispatch's consultation and read tools and for
+//! palette's read-only tools, and the subagent default model. It does not edit
+//! the `[mcp_servers.*]` tables' contents that `codex mcp add` writes.
 //!
 //! Main entry points: [`register`], [`unregister`], [`config_edits`],
 //! [`add_args`] and [`remove_args`].
 
 use super::{
-    Ctx, EditOutcome, Outcome, SubagentPrefs, arg_quote, env_prefix, run_cli, server_binary,
-    server_env, stderr_text,
+    Ctx, DISPATCH_PREAPPROVED_TOOLS, EditOutcome, Outcome, SubagentPrefs, arg_quote, env_prefix,
+    run_cli, server_binary, server_env, stderr_text,
 };
-use crate::config::{ConfigDoc, Desired, TomlDoc, apply_desired, list_add, set_value};
+use crate::config::{ConfigDoc, Desired, TomlDoc, apply_desired, set_value};
 use crate::env::{Env, Harness};
 use crate::error::{Error, Result};
 use crate::json::Json;
 use crate::manifest::{Manifest, Registration};
 use crate::ui::Ui;
 use std::path::Path;
-
-/// The tool-call timeout aside needs: a consultation blocks for the whole backend run.
-pub const ASIDE_TOOL_TIMEOUT_SEC: i64 = 1800;
-
-/// The MCP tool namespace Codex derives from the server name `aside`.
-pub const ASIDE_NAMESPACE: &str = "mcp__aside";
 
 /// `codex mcp remove <server>`.
 pub fn remove_args(server: &str) -> Vec<String> {
@@ -155,6 +148,8 @@ pub fn unregister(env: &Env, ui: &mut Ui, home: &Path, servers: &[String]) -> Re
         let res = run_cli(env, &program, &remove_args(s), &home_env, &[])?;
         if res.status.success() {
             out.servers_done.push(s.clone());
+        } else {
+            out.refused.push((s.clone(), stderr_text(&res)));
         }
     }
     Ok(out)
@@ -179,52 +174,31 @@ fn atomic<T>(doc: &mut TomlDoc, edit: impl FnOnce(&mut TomlDoc) -> Result<T>) ->
     Ok(value)
 }
 
-/// Lists an MCP tool namespace in `[features.code_mode]` so Codex hands the
-/// tools to the model as plain blocking calls.
+/// Pre-approves `tools` of `server` as `[mcp_servers.<server>.tools.<tool>] approval_mode = "approve"`.
 ///
-/// Since Codex 0.144 the model reaches MCP tools from inside a code-mode `exec`
-/// cell, which yields after `yield_time_ms` and leaves the model to poll. An
-/// aside call blocks for the whole backend run, so the model would see "still
-/// running" over and over and give up on an answer that was about to arrive.
-/// Both lists are required: `excluded_tool_namespaces` alone drops the tools
-/// from the model's view. Other entries are kept.
-fn add_code_mode_namespace(
-    doc: &mut TomlDoc,
-    file: &Path,
-    namespace: &str,
-) -> Result<Vec<crate::config::Change>> {
-    match doc.kind_at(&["features"]) {
-        None | Some("table") => {}
-        Some(other) => {
-            return Err(Error::config(format!(
-                "`features` in {} is a {other}, not a table, so [features.code_mode] cannot be added",
-                file.display()
-            )));
+/// Only when `codex mcp add` wrote the server's table: a `tools` table on its
+/// own would be a server Codex cannot start. A headless `codex exec` has nobody
+/// to approve an MCP call, so an unapproved one comes back as "user cancelled
+/// MCP tool call"; the server-level approval stays at Codex's default.
+fn approve_tools(doc: &mut TomlDoc, server: &str, tools: &[&str], out: &mut EditOutcome) {
+    if !matches!(doc.get(&["mcp_servers", server]), Ok(Some(Json::Object(_)))) {
+        return;
+    }
+    let res = atomic(doc, |d| {
+        let mut c = Vec::new();
+        for t in tools {
+            c.extend(set_value(
+                d,
+                &["mcp_servers", server, "tools", t, "approval_mode"],
+                Json::str("approve"),
+            )?);
         }
+        Ok(c)
+    });
+    match res {
+        Ok(c) => out.changes.extend(c),
+        Err(e) => out.refusals.push(e),
     }
-    match doc.kind_at(&["features", "code_mode"]) {
-        None | Some("table") => {}
-        Some(other) => {
-            return Err(Error::config(format!(
-                "[features] in {} sets a scalar `code_mode` ({other}), which collides with the [features.code_mode] table aside needs",
-                file.display()
-            ))
-            .with_state("the file was not changed by this step")
-            .with_fix(format!("remove the `code_mode = ...` line under [features] in {} and re-run `slate-setup configure`", file.display())));
-        }
-    }
-    let items = vec![namespace.to_string()];
-    let mut changes = Vec::new();
-    for key in ["excluded_tool_namespaces", "direct_only_tool_namespaces"] {
-        let path = ["features", "code_mode", key];
-        changes.extend(list_add(doc, &path, &items).map_err(|e| {
-            e.with_fix(format!(
-                "make `{key}` under [features.code_mode] in {} a list of strings and re-run",
-                file.display()
-            ))
-        })?);
-    }
-    Ok(changes)
 }
 
 /// Edits `config.toml`. Each group is applied on its own; a refused group leaves the file as it was for that group.
@@ -237,64 +211,15 @@ pub fn config_edits(
     let mut out = EditOutcome::default();
     let manages = |s: &str| opts.servers.iter().any(|x| x == s);
 
-    if manages("aside")
-        && matches!(
-            doc.get(&["mcp_servers", "aside"]),
-            Ok(Some(Json::Object(_)))
-        )
-    {
-        let res = atomic(doc, |d| {
-            let mut c = Vec::new();
-            // Every aside call blocks for the whole backend run, which would trip Codex's per-call timeout.
-            c.extend(set_value(
-                d,
-                &["mcp_servers", "aside", "tool_timeout_sec"],
-                Json::Number(ASIDE_TOOL_TIMEOUT_SEC.to_string()),
-            )?);
-            // A headless `codex exec` has nobody to approve an MCP call; it comes back as "user cancelled MCP tool call".
-            // Every aside tool is a read-only advisor, so pre-approving them is safe.
-            c.extend(set_value(
-                d,
-                &["mcp_servers", "aside", "default_tools_approval_mode"],
-                Json::str("approve"),
-            )?);
-            Ok(c)
-        });
-        match res {
-            Ok(c) => out.changes.extend(c),
-            Err(e) => out.refusals.push(e),
-        }
+    if manages("dispatch") {
+        approve_tools(doc, "dispatch", &DISPATCH_PREAPPROVED_TOOLS, &mut out);
     }
 
     if manages("palette")
-        && matches!(
-            doc.get(&["mcp_servers", "palette"]),
-            Ok(Some(Json::Object(_)))
-        )
         && let Some(tools) = opts.palette_tools
     {
-        let res = atomic(doc, |d| {
-            let mut c = Vec::new();
-            for t in tools {
-                c.extend(set_value(
-                    d,
-                    &["mcp_servers", "palette", "tools", t, "approval_mode"],
-                    Json::str("approve"),
-                )?);
-            }
-            Ok(c)
-        });
-        match res {
-            Ok(c) => out.changes.extend(c),
-            Err(e) => out.refusals.push(e),
-        }
-    }
-
-    if manages("aside") {
-        match atomic(doc, |d| add_code_mode_namespace(d, file, ASIDE_NAMESPACE)) {
-            Ok(c) => out.changes.extend(c),
-            Err(e) => out.refusals.push(e),
-        }
+        let tools: Vec<&str> = tools.iter().map(String::as_str).collect();
+        approve_tools(doc, "palette", &tools, &mut out);
     }
 
     let Some(sub) = &opts.subagent else {
@@ -335,7 +260,7 @@ mod tests {
     use super::*;
     use crate::harness::test_ctx;
 
-    const CONFIG: &str = "# my codex config\nmodel = \"gpt-6\"  # main model\n\n[mcp_servers.aside]\ncommand = \"/b/aside\"\nargs = []\n\n[mcp_servers.aside.env]\nASIDE_HARNESS = \"codex\"\n\n[mcp_servers.palette]\ncommand = \"/b/palette\"\n\n[features.code_mode]\nexcluded_tool_namespaces = [\"mcp__other\"]\n\n[tui]\ntheme = \"dark\" # keep\n";
+    const CONFIG: &str = "# my codex config\nmodel = \"gpt-6\"  # main model\n\n[mcp_servers.dispatch]\ncommand = \"/b/dispatch\"\nargs = []\n\n[mcp_servers.dispatch.env]\nSLATE_HARNESS = \"codex\"\n\n[mcp_servers.palette]\ncommand = \"/b/palette\"\n\n[features.code_mode]\nexcluded_tool_namespaces = [\"mcp__other\"]\n\n[tui]\ntheme = \"dark\" # keep\n";
 
     fn opts<'a>(
         servers: &'a [String],
@@ -350,12 +275,12 @@ mod tests {
     }
 
     fn servers() -> Vec<String> {
-        vec!["aside".into(), "dispatch".into(), "palette".into()]
+        vec!["dispatch".into(), "palette".into()]
     }
 
     #[test]
     fn add_and_remove_command_lines() {
-        assert_eq!(remove_args("aside"), ["mcp", "remove", "aside"]);
+        assert_eq!(remove_args("dispatch"), ["mcp", "remove", "dispatch"]);
         let a = add_args(
             "dispatch",
             Path::new("/b/dispatch"),
@@ -376,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn edits_set_aside_keys_namespaces_and_palette_approvals_and_keep_the_rest() {
+    fn edits_approve_dispatch_and_palette_tools_and_keep_the_rest() {
         let file = Path::new("config.toml");
         let mut doc = TomlDoc::parse(CONFIG).unwrap();
         let tools = vec!["palette_read".to_string()];
@@ -388,31 +313,48 @@ mod tests {
             &Manifest::new("k"),
         );
         assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        assert_eq!(out.changes.len(), DISPATCH_PREAPPROVED_TOOLS.len() + 1);
         let text = doc.render();
         assert!(text.starts_with("# my codex config\nmodel = \"gpt-6\"  # main model\n"));
-        assert!(text.contains("tool_timeout_sec = 1800"));
-        assert!(text.contains("default_tools_approval_mode = \"approve\""));
-        assert!(text.contains("excluded_tool_namespaces = [\"mcp__other\", \"mcp__aside\"]"));
-        assert!(text.contains("direct_only_tool_namespaces = [\"mcp__aside\"]"));
-        assert!(
-            text.contains("[mcp_servers.palette.tools.palette_read]")
-                || text.contains("palette_read")
-        );
-        assert!(text.contains("approval_mode = \"approve\""));
         assert!(text.contains("theme = \"dark\" # keep"));
-        // The [mcp_servers.aside.env] table stays intact and after the direct keys.
-        let timeout = text.find("tool_timeout_sec").unwrap();
-        let env_table = text.find("[mcp_servers.aside.env]").unwrap();
-        assert!(timeout < env_table);
-        // Re-parse to prove the result is valid TOML with the right values.
-        let parsed: toml::Table = toml::from_str(&text).unwrap();
-        assert_eq!(
-            parsed["mcp_servers"]["aside"]["tool_timeout_sec"].as_integer(),
-            Some(1800)
+        for t in DISPATCH_PREAPPROVED_TOOLS {
+            assert!(
+                text.contains(&format!(
+                    "[mcp_servers.dispatch.tools.{t}]\napproval_mode = \"approve\"\n"
+                )),
+                "{t}: {text}"
+            );
+        }
+        assert!(
+            text.contains(
+                "[mcp_servers.palette.tools.palette_read]\napproval_mode = \"approve\"\n"
+            ),
+            "{text}"
         );
+        // Nothing else is written: no timeout, no server-level approval, no namespaces.
+        assert!(!text.contains("tool_timeout_sec"), "{text}");
+        assert!(!text.contains("default_tools_approval_mode"), "{text}");
+        assert!(!text.contains("direct_only_tool_namespaces"), "{text}");
+        let parsed: toml::Table = toml::from_str(&text).unwrap();
+        let dispatch = parsed["mcp_servers"]["dispatch"].as_table().unwrap();
+        assert_eq!(dispatch["env"]["SLATE_HARNESS"].as_str(), Some("codex"));
+        let mut approved: Vec<&str> = dispatch["tools"]
+            .as_table()
+            .unwrap()
+            .iter()
+            .filter(|(_, v)| v["approval_mode"].as_str() == Some("approve"))
+            .map(|(k, _)| k.as_str())
+            .collect();
+        approved.sort_unstable();
+        let mut want = DISPATCH_PREAPPROVED_TOOLS;
+        want.sort_unstable();
+        assert_eq!(approved, want);
         assert_eq!(
-            parsed["mcp_servers"]["palette"]["tools"]["palette_read"]["approval_mode"].as_str(),
-            Some("approve")
+            parsed["features"]["code_mode"]["excluded_tool_namespaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
         );
     }
 
@@ -440,60 +382,34 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_code_mode_table_is_created_at_the_end() {
+    fn approvals_are_not_written_without_a_registered_table() {
         let file = Path::new("config.toml");
-        let mut doc =
-            TomlDoc::parse("model = \"x\"\n\n[mcp_servers.aside]\ncommand = \"a\"\n").unwrap();
+        let mut doc = TomlDoc::parse("model = \"x\"\n").unwrap();
         let s = servers();
-        config_edits(
-            &mut doc,
-            file,
-            &opts(&s, None, SubagentPrefs::default()),
-            &Manifest::new("k"),
-        );
-        let text = doc.render();
-        assert!(text.contains("[features.code_mode]\nexcluded_tool_namespaces = [\"mcp__aside\"]\ndirect_only_tool_namespaces = [\"mcp__aside\"]\n"), "{text}");
-        assert!(
-            !text.contains("[features]\n"),
-            "the implicit parent table has no header: {text}"
-        );
-    }
-
-    #[test]
-    fn multiline_namespace_arrays_are_extended_not_refused() {
-        let file = Path::new("config.toml");
-        let src = "[features.code_mode]\nexcluded_tool_namespaces = [\n  \"mcp__other\",  # why\n  \"mcp__two\",\n]\n";
-        let mut doc = TomlDoc::parse(src).unwrap();
-        let s = servers();
+        let tools = vec!["t".to_string()];
         let out = config_edits(
             &mut doc,
             file,
-            &opts(&s, None, SubagentPrefs::default()),
+            &opts(&s, Some(&tools), SubagentPrefs::default()),
             &Manifest::new("k"),
         );
-        assert!(out.refusals.is_empty());
-        let text = doc.render();
-        assert!(text.contains("\"mcp__other\",  # why"), "{text}");
-        assert!(text.contains("mcp__aside"));
-        let parsed: toml::Table = toml::from_str(&text).unwrap();
-        let list = parsed["features"]["code_mode"]["excluded_tool_namespaces"]
-            .as_array()
-            .unwrap();
-        assert_eq!(list.len(), 3);
+        assert!(out.changes.is_empty());
+        assert_eq!(doc.render(), "model = \"x\"\n");
     }
 
     #[test]
-    fn a_scalar_code_mode_is_refused_and_the_other_edits_still_apply() {
+    fn a_table_that_is_not_a_table_is_refused_and_the_other_edits_still_apply() {
         let file = Path::new("/h/config.toml");
-        let src = "[mcp_servers.aside]\ncommand = \"a\"\n\n[features]\ncode_mode = true\n";
+        let src = "[mcp_servers.dispatch]\ncommand = \"d\"\ntools = 3\n\n[mcp_servers.palette]\ncommand = \"p\"\n";
         let mut doc = TomlDoc::parse(src).unwrap();
         let s = servers();
+        let tools = vec!["palette_read".to_string()];
         let out = config_edits(
             &mut doc,
             file,
             &opts(
                 &s,
-                None,
+                Some(&tools),
                 SubagentPrefs {
                     model: "gpt-6-astra".into(),
                     effort: "high".into(),
@@ -501,65 +417,14 @@ mod tests {
             ),
             &Manifest::new("k"),
         );
-        assert_eq!(out.refusals.len(), 1);
-        let msg = out.refusals[0].to_string();
-        assert!(msg.contains("scalar `code_mode`"), "{msg}");
-        assert!(
-            out.refusals[0]
-                .fix
-                .as_deref()
-                .unwrap()
-                .contains("remove the `code_mode = ...` line")
-        );
+        assert_eq!(out.refusals.len(), 1, "{:?}", out.refusals);
         let text = doc.render();
         assert!(
-            text.contains("code_mode = true"),
-            "the scalar is never dropped: {text}"
+            text.contains("tools = 3"),
+            "the dispatch group is left as it was: {text}"
         );
-        assert!(!text.contains("excluded_tool_namespaces"));
-        assert!(text.contains("tool_timeout_sec = 1800"));
+        assert!(text.contains("[mcp_servers.palette.tools.palette_read]"));
         assert!(text.contains("default_subagent_model = \"gpt-6-astra\""));
-        assert!(text.contains("default_subagent_reasoning_effort = \"high\""));
-    }
-
-    #[test]
-    fn inline_code_mode_tables_are_edited_in_place() {
-        let file = Path::new("config.toml");
-        let mut doc = TomlDoc::parse("[features]\ncode_mode = { yield_time_ms = 5000 }\n").unwrap();
-        let s = servers();
-        let out = config_edits(
-            &mut doc,
-            file,
-            &opts(&s, None, SubagentPrefs::default()),
-            &Manifest::new("k"),
-        );
-        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-        let parsed: toml::Table = toml::from_str(&doc.render()).unwrap();
-        assert_eq!(
-            parsed["features"]["code_mode"]["yield_time_ms"].as_integer(),
-            Some(5000)
-        );
-        assert_eq!(
-            parsed["features"]["code_mode"]["excluded_tool_namespaces"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn aside_keys_are_not_created_without_a_registered_table() {
-        let file = Path::new("config.toml");
-        let mut doc = TomlDoc::parse("model = \"x\"\n").unwrap();
-        let s = servers();
-        config_edits(
-            &mut doc,
-            file,
-            &opts(&s, None, SubagentPrefs::default()),
-            &Manifest::new("k"),
-        );
-        assert!(!doc.render().contains("tool_timeout_sec"));
     }
 
     #[test]
@@ -600,7 +465,15 @@ mod tests {
         env.set_var("SLATE_PLATFORM", "x86_64-unknown-linux-gnu");
         let out = register(&env, &mut ui, &ctx).unwrap();
         assert!(out.registered.is_empty());
-        assert!(out.manual[0].starts_with("CODEX_HOME=/h/.codex /definitely/not/there mcp add aside --env ASIDE_HARNESS=codex -- "), "{:?}", out.manual);
+        let state = Path::new("/h/.codex").join("slate-agent-kit");
+        assert!(
+            out.manual[0].starts_with(&format!(
+                "CODEX_HOME=/h/.codex /definitely/not/there mcp add dispatch --env SLATE_AGENT_STATE_HOME={} --env SLATE_HARNESS=codex -- ",
+                state.display()
+            )),
+            "{:?}",
+            out.manual
+        );
         env.set_var("SLATE_PLATFORM", "x86_64-pc-windows-msvc");
         let ps = register(&env, &mut ui, &ctx).unwrap();
         assert!(

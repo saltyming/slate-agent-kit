@@ -228,7 +228,7 @@ mod tests {
             "--roots",
             "/w",
             "--set",
-            "aside.level=auto",
+            "consult.level=auto",
             "--set",
             "git.signing=default",
             "--yes",
@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(o.payload, Some(PathBuf::from("/k/dist")));
         assert_eq!(o.binaries, Some(Mode::Skip));
         assert!(o.yes && o.dry_run);
-        assert_eq!(o.set["aside"]["level"], "auto");
+        assert_eq!(o.set["consult"]["level"], "auto");
         assert_eq!(o.set["git"]["signing"], "default");
         assert_eq!(o.custom_rules, Some(PathBuf::from("/rules")));
     }
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn bad_values_are_usage_errors() {
         assert!(matches!(
-            p(&["install", "--set", "aside.level"]),
+            p(&["install", "--set", "consult.level"]),
             Err(ParseExit::Usage(_))
         ));
         assert!(matches!(

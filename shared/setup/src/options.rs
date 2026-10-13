@@ -100,21 +100,23 @@ mod tests {
             ("git", "commit-format", "<type>: a=b")
         );
         let mut o = Options::default();
-        o.add_set("aside.codex.model=gpt-6").unwrap();
-        o.add_set("aside.level=auto").unwrap();
-        assert_eq!(o.set["aside"]["codex.model"], "gpt-6");
-        assert_eq!(o.set["aside"].len(), 2);
+        o.add_set("consult.codex.model=gpt-6").unwrap();
+        o.add_set("consult.level=auto").unwrap();
+        assert_eq!(o.set["consult"]["codex.model"], "gpt-6");
+        assert_eq!(o.set["consult"].len(), 2);
     }
 
     #[test]
     fn bad_set_arguments_name_the_problem() {
         assert!(
-            parse_set("aside.level")
+            parse_set("consult.level")
                 .unwrap_err()
                 .to_string()
                 .contains("<file>.<key>=<value>")
         );
-        let e = parse_set("aside.nope=1").unwrap_err().to_string();
-        assert!(e.contains("unknown prefs key") && e.contains("aside.level"));
+        let e = parse_set("consult.nope=1").unwrap_err().to_string();
+        assert!(e.contains("unknown prefs key") && e.contains("consult.level"));
+        let e = parse_set("aside.level=auto").unwrap_err().to_string();
+        assert!(e.contains("unknown prefs key `aside.level`"), "{e}");
     }
 }

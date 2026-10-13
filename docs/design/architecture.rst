@@ -9,10 +9,10 @@ Purpose and scope
 
 slate-agent-kit is the single source of the agent kits for Claude Code, Codex
 and Kimi Code: their rules, skills, document templates and prefs templates;
-the shared MCP servers (aside, dispatch, palette); and the installer. Each
-harness kit is a git submodule under ``kits/`` whose installable content is
-rendered from this repository. The kits do not vendor slate; synchronization
-is driven from here.
+the shared MCP servers (dispatch, palette); and the installer. Each harness
+kit is a git submodule under ``kits/`` whose installable content is rendered
+from this repository. The kits do not vendor slate; synchronization is driven
+from here.
 
 Architecture
 ------------
@@ -27,10 +27,9 @@ Sources
 ``shared/rules/implementing/``
   The implementing rules: execution, delegation, model choice and git, which
   hold only what the articles do not imply, and under ``mcp/`` when to
-  consult (aside) and when to dispatch. The model-choice file,
-  ``models.md``, carries the choice rules common to the harnesses and takes
-  its table of the harness vendor's own models from the ``models-table``
-  insert.
+  consult and when to dispatch. The model-choice file, ``models.md``, carries
+  the choice rules common to the harnesses and takes its table of the harness
+  vendor's own models from the ``models-table`` insert.
 
 ``shared/workflows/palette/``
   The palette rule, the palette skills, and the document templates, which are
@@ -58,11 +57,12 @@ Sources
   backend's own output).
 
 ``shared/mcp-servers/``
-  The Rust MCP servers: aside (consultation, on codex and claude), dispatch
-  (external execution, on codex, claude and opencode) and palette (document
-  reads, checks and writes). aside and dispatch run codex and claude through
-  agent-exec and differ in the parameters they pass; dispatch's opencode
-  runner is its own and reports through agent-exec's event types.
+  The Rust MCP servers: dispatch (consultation on codex and claude; external
+  execution on codex, claude and opencode; every run asynchronous with a
+  ``wait`` subcommand) and palette (document reads, checks and writes).
+  dispatch runs codex and claude through agent-exec with parameters that
+  differ by kind; its opencode runner is its own and reports through
+  agent-exec's event types.
 
 ``shared/setup/``
   The Rust installer, ``slate-setup``.
@@ -113,7 +113,11 @@ Execution and concurrency
 -------------------------
 
 - Each harness session starts its own stdio MCP server processes.
-- dispatch allows one active run per working directory unless told otherwise.
+- Every dispatch run, a consultation or an execution, returns an id at once;
+  the harness waits on it by running ``dispatch wait`` with its own
+  background means, so no tool call blocks for a backend's run.
+- dispatch allows one active execution per working directory unless told
+  otherwise; a consultation takes no slot.
 - The palette server serializes writes to one project with a lock and applies
   each write to every affected file or to none.
 - The installer replaces a binary by renaming a new file over it, so a server
@@ -135,8 +139,9 @@ Interfaces and dependencies
 ---------------------------
 
 - The installer's contract is ``spec/installer.rst`` and ``spec/prefs.rst``; the
-  palette server's is ``spec/palette-server.rst``; the backend execution
-  layer's is ``spec/agent-exec.rst``; what each harness supports is
+  dispatch server's is ``spec/dispatch-server.rst``; the palette server's is
+  ``spec/palette-server.rst``; the backend execution layer's is
+  ``spec/agent-exec.rst``; what each harness supports is
   `spec/support-matrix.rst <../spec/support-matrix.rst>`_.
 - The Rust crates use ``rmcp`` for MCP over stdio and cross-build for every
   Linux target with cargo-zigbuild; the shared crates carry no C dependency,

@@ -1,5 +1,6 @@
 //! Claude Code: MCP server registration through the `claude` CLI, and the
-//! `settings.json` edits (palette read-only permissions, subagent model).
+//! `settings.json` edits (permissions for dispatch's consultation and read
+//! tools and for palette's read-only tools, subagent model).
 //!
 //! Owns the `claude mcp add/remove` command lines, the rule for which config
 //! folder the CLI acts on, and the JSON edits. It does not edit `.claude.json`
@@ -9,8 +10,8 @@
 //! [`cli_scope`] and [`CliScope`].
 
 use super::{
-    Ctx, EditOutcome, Outcome, SubagentPrefs, arg_quote, env_prefix, run_cli, server_binary,
-    server_env, stderr_text,
+    Ctx, DISPATCH_PREAPPROVED_TOOLS, EditOutcome, Outcome, SubagentPrefs, arg_quote, env_prefix,
+    run_cli, server_binary, server_env, stderr_text,
 };
 use crate::config::{ConfigDoc, Desired, JsonDoc, apply_desired, list_add};
 use crate::env::{Env, Harness};
@@ -200,6 +201,8 @@ pub fn unregister(env: &Env, ui: &mut Ui, home: &Path, servers: &[String]) -> Re
         let res = run_cli(env, &program, &remove_args(s), &[], &scope_env(scope))?;
         if res.status.success() {
             out.servers_done.push(s.clone());
+        } else {
+            out.refused.push((s.clone(), stderr_text(&res)));
         }
     }
     Ok(out)
@@ -210,32 +213,47 @@ pub fn palette_permission_entries(tools: &[String]) -> Vec<String> {
     tools.iter().map(|t| format!("mcp__palette__{t}")).collect()
 }
 
-/// Edits `settings.json`: palette read-only permissions and the subagent default model.
+/// `permissions.allow` entries for dispatch's consultation and read tools.
+pub fn dispatch_permission_entries() -> Vec<String> {
+    DISPATCH_PREAPPROVED_TOOLS
+        .iter()
+        .map(|t| format!("mcp__dispatch__{t}"))
+        .collect()
+}
+
+/// Edits `settings.json`: the dispatch and palette permissions and the subagent default model.
 ///
-/// `palette_tools` is `None` when the palette server is not registered.
+/// `palette_tools` is `None` when the palette server is not registered;
+/// `dispatch` is true when the dispatch server is. Both permission sets go into
+/// `permissions.allow` in one edit, so the manifest holds one record for the key.
 pub fn settings_edits(
     doc: &mut JsonDoc,
     file: &Path,
     palette_tools: Option<&[String]>,
+    dispatch: bool,
     subagent: Option<&SubagentPrefs>,
     manifest: &Manifest,
 ) -> EditOutcome {
     let mut out = EditOutcome::default();
+    let mut entries = Vec::new();
+    if dispatch {
+        entries.extend(dispatch_permission_entries());
+    }
     if let Some(tools) = palette_tools {
-        let entries = palette_permission_entries(tools);
-        if !entries.is_empty() {
-            let mut work = doc.clone();
-            match list_add(&mut work, &["permissions", "allow"], &entries) {
-                Ok(Some(c)) => {
-                    *doc = work;
-                    out.changes.push(c);
-                }
-                Ok(None) => {}
-                Err(e) => out.refusals.push(e.with_fix(format!(
-                    "make `permissions.allow` in {} an array and re-run",
-                    file.display()
-                ))),
+        entries.extend(palette_permission_entries(tools));
+    }
+    if !entries.is_empty() {
+        let mut work = doc.clone();
+        match list_add(&mut work, &["permissions", "allow"], &entries) {
+            Ok(Some(c)) => {
+                *doc = work;
+                out.changes.push(c);
             }
+            Ok(None) => {}
+            Err(e) => out.refusals.push(e.with_fix(format!(
+                "make `permissions.allow` in {} an array and re-run",
+                file.display()
+            ))),
         }
     }
     let Some(subagent) = subagent else {
@@ -300,8 +318,8 @@ mod tests {
     #[test]
     fn add_and_remove_command_lines() {
         assert_eq!(
-            remove_args("aside"),
-            ["mcp", "remove", "aside", "-s", "user"]
+            remove_args("dispatch"),
+            ["mcp", "remove", "dispatch", "-s", "user"]
         );
         let a = add_args(
             "dispatch",
@@ -352,7 +370,7 @@ mod tests {
         let mut ui = Ui::captured(crate::ui::new_sink());
         let out = register(&env, &mut ui, &ctx).unwrap();
         assert!(out.registered.is_empty());
-        assert_eq!(out.manual.len(), 3);
+        assert_eq!(out.manual.len(), 2);
         // The prefix takes the form of the platform's shell.
         env.set_var("SLATE_PLATFORM", "x86_64-unknown-linux-gnu");
         let posix = register(&env, &mut ui, &ctx).unwrap();
@@ -361,8 +379,11 @@ mod tests {
         let ps = register(&env, &mut ui, &ctx).unwrap();
         assert!(ps.manual[0].starts_with("$env:CLAUDE_CONFIG_DIR='/elsewhere'; "));
         assert!(
-            out.manual[0]
-                .contains("mcp add aside -s user --transport stdio -e ASIDE_HARNESS=claude -- ")
+            out.manual[0].contains(
+                "mcp add dispatch -s user --transport stdio -e SLATE_AGENT_STATE_HOME=/elsewhere -e SLATE_HARNESS=claude -- "
+            ),
+            "{:?}",
+            out.manual
         );
         assert!(out.notes[0].contains("does not document"));
     }
@@ -390,6 +411,7 @@ mod tests {
             &mut doc,
             file,
             Some(&tools),
+            true,
             Some(&SubagentPrefs {
                 model: "sonnet".into(),
                 effort: "high".into(),
@@ -398,8 +420,29 @@ mod tests {
         );
         assert!(out.refusals.is_empty());
         assert_eq!(out.changes.len(), 2);
+        // One record for permissions.allow holds the dispatch and the palette entries.
+        let allow = &out.changes[0];
+        assert_eq!(allow.path, ["permissions", "allow"]);
+        let mut want = dispatch_permission_entries();
+        want.extend(palette_permission_entries(&tools));
+        assert_eq!(allow.added, want);
+        assert_eq!(
+            want[..5],
+            [
+                "mcp__dispatch__dispatch_consult",
+                "mcp__dispatch__dispatch_status",
+                "mcp__dispatch__dispatch_list",
+                "mcp__dispatch__dispatch_logs",
+                "mcp__dispatch__dispatch_backends"
+            ]
+        );
         let text = doc.render_original();
         assert!(text.contains("\"mcp__palette__palette_status\""));
+        assert!(text.contains("\"mcp__dispatch__dispatch_consult\""));
+        assert!(
+            !text.contains("dispatch_submit"),
+            "submitting keeps its prompt"
+        );
         assert!(text.contains("\"CLAUDE_CODE_SUBAGENT_MODEL\": \"sonnet\""));
         assert!(text.contains("\"FOO\": \"1\""));
         assert!(text.contains("\"hooks\": {}"));
@@ -420,13 +463,13 @@ mod tests {
             model: "haiku".into(),
             effort: String::new(),
         };
-        let out = settings_edits(&mut doc, file, None, Some(&on), &manifest);
+        let out = settings_edits(&mut doc, file, None, false, Some(&on), &manifest);
         for c in &out.changes {
             manifest.record_config(c.record(file));
         }
         assert!(doc.render_original().contains("haiku"));
         let off = SubagentPrefs::default();
-        let out = settings_edits(&mut doc, file, None, Some(&off), &manifest);
+        let out = settings_edits(&mut doc, file, None, false, Some(&off), &manifest);
         assert_eq!(out.undone.len(), 1);
         assert_eq!(doc.render_original(), "{}\n");
     }
@@ -458,6 +501,7 @@ mod tests {
             &mut doc,
             file,
             Some(&tools),
+            true,
             Some(&SubagentPrefs {
                 model: "opus".into(),
                 effort: String::new(),

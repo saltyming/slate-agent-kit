@@ -199,7 +199,7 @@ fn render(o: &Value) -> Option<(&'static str, String)> {
             format!("[result] {}", oneline(field_str(p, "output"), 200))
         }
         // MCP and built-in function tools. codex splits an MCP tool's full name
-        // into `namespace` ("mcp__aside") and `name` ("aside_codex").
+        // into `namespace` ("mcp__dispatch") and `name` ("dispatch_consult").
         ("response_item", "function_call") => {
             let name = field_str(p, "name");
             let tool = match field_str(p, "namespace") {
@@ -506,7 +506,7 @@ pub fn curate_claude(jsonl: &str, kinds: &[String], elide_prompt: Option<&str>) 
 
 /// Snapshot the set of rollout files that exist right now. Taken **before** spawning
 /// a codex child so the post-spawn search can require a *new* file and never match a
-/// pre-existing session (e.g. an `aside` run) that merely shares the cwd.
+/// pre-existing session (e.g. a consultation) that merely shares the cwd.
 pub fn session_snapshot() -> HashSet<PathBuf> {
     snapshot_in(&codex_home().join("sessions"))
 }
@@ -563,7 +563,7 @@ fn locate_new_in(
 /// Find the rollout this task produced by its embedded nonce: the newest rollout
 /// matching `working_dir` whose opening events include a user message containing
 /// the nonce's full marker (`render::nonce_marker`). Positive identity — survives a
-/// concurrent same-cwd codex (e.g. `aside`) that a snapshot / time gate alone could
+/// concurrent same-cwd codex (e.g. a consultation) that a snapshot / time gate alone could
 /// not distinguish.
 pub fn locate_by_nonce(working_dir: &Path, nonce: &str) -> Option<(PathBuf, String)> {
     if nonce.is_empty() {
@@ -709,8 +709,8 @@ mod tests {
     #[test]
     fn curate_renders_function_calls() {
         let sample = r#"
-{"type":"response_item","payload":{"type":"function_call","name":"aside_claude","namespace":"mcp__aside","arguments":"{\"question\":\"is this right?\"}","call_id":"c1"}}
-{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"m1","server":"aside","tool":"aside_claude","arguments":{},"status":"completed"}}}
+{"type":"response_item","payload":{"type":"function_call","name":"dispatch_consult","namespace":"mcp__dispatch","arguments":"{\"question\":\"is this right?\"}","call_id":"c1"}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"m1","server":"dispatch","tool":"dispatch_consult","arguments":{},"status":"completed"}}}
 {"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"Wall time: 5 seconds\nOutput:"},{"type":"input_text","text":"looks right"}]}}
 {"type":"response_item","payload":{"type":"function_call","name":"wait","arguments":"{\"ms\":10}","call_id":"c2"}}
 {"type":"response_item","payload":{"type":"function_call_output","call_id":"c2","output":"done waiting"}}
@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(
             r.lines,
             vec![
-                "[tool] mcp__aside__aside_claude: {\"question\":\"is this right?\"}",
+                "[tool] mcp__dispatch__dispatch_consult: {\"question\":\"is this right?\"}",
                 "[tool] wait: {\"ms\":10}",
             ],
         );
@@ -917,7 +917,7 @@ mod tests {
         let root = test_root("locate-new");
         let day = root.join("2026/06/27");
         let stale = write_rollout(&day, "stale-aaa", "/w", "old prompt");
-        // snapshot taken "before spawn" sees only the pre-existing (aside) rollout
+        // snapshot taken "before spawn" sees only the pre-existing rollout
         let snapshot: HashSet<PathBuf> = [stale.clone()].into_iter().collect();
         let fresh = write_rollout(&day, "fresh-bbb", "/w", "new prompt");
 

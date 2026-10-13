@@ -1,18 +1,24 @@
-//! dispatch — hierarchical delegation MCP server.
+//! dispatch — delegation and consultation MCP server.
 //!
-//! Where `aside` asks another model family for *judgment* (read-only), dispatch
-//! hands another agent *execution*: it runs a coding-agent backend as a headless, WRITE-CAPABLE
-//! subprocess that modifies files in a target directory, so a planning agent can
-//! offload individual plan steps and keep working. MCP calls are request/response
-//! but a delegated run takes minutes, so the model is submit → poll → cancel:
-//! `dispatch_submit` returns an id immediately and the run continues detached.
+//! dispatch runs one backend CLI per run, in two kinds. An *execution*
+//! (`dispatch_submit`) runs a coding-agent backend as a headless, WRITE-CAPABLE
+//! subprocess that modifies files in a target directory, so a planning agent
+//! can offload individual plan steps and keep working. A *consultation*
+//! (`dispatch_consult`) asks another model family a read-only question with the
+//! harness's redacted transcript (`consult.rs`, `transcript/`). MCP calls are
+//! request/response but a run takes minutes, so every run is asynchronous:
+//! the tool returns an id and a `wait` command line immediately, the run
+//! continues detached, and `dispatch wait <id>` (`wait.rs`, the binary's CLI
+//! mode) blocks another process until the run is terminal.
 //!
 //! Safety is split: the server enforces mechanical invariants the model cannot
-//! talk its way past (working_dir containment, sandbox ceiling, one-active-run
-//! per dir); the *when to ask the user* policy lives in the harness-rendered
-//! dispatch rule and preferences file.
+//! talk its way past (working_dir containment, sandbox ceiling, one active
+//! execution per dir, re-entry per kind); the *when to ask the user* policy
+//! lives in the harness-rendered dispatch and consultation rules and their
+//! preferences files.
 
 mod backend;
+mod consult;
 mod executor;
 mod lenient;
 mod liveness;
@@ -21,6 +27,8 @@ mod params;
 mod render;
 mod rollout;
 mod store;
+mod transcript;
+mod wait;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -43,8 +51,10 @@ use serde_json::{Value, json};
 use backend::Backend;
 use liveness::process_alive;
 use params::{
-    BackendsParams, CancelParams, ListParams, LogsParams, StatusParams, SteerParams, SubmitParams,
+    BackendsParams, CancelParams, ConsultParams, ListParams, LogsParams, StatusParams, SteerParams,
+    SubmitParams,
 };
+use store::Kind;
 
 /// How long `dispatch_steer` waits for the parent run to actually terminate after
 /// cancel before giving up (so the working_dir is free for the resume run).
@@ -78,19 +88,28 @@ struct Dispatch {
     backend_versions: Arc<HashMap<String, Option<String>>>,
     /// Per-project state directory (dispatch.db plus dispatch-owned logs).
     state_dir: PathBuf,
+    /// The server's canonical directory: where a consultation runs, and the
+    /// directory its transcript is located for.
+    cwd: PathBuf,
+    /// The user's home directory, for locating the harness transcript.
+    home: PathBuf,
+    /// The absolute path of this binary, as the `wait` command line names it.
+    wait_exe: String,
+    /// The absolute path of `dispatch.db`, as the `wait` command line names it.
+    db_path: PathBuf,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl Dispatch {
     #[tool(
-        description = "Delegate ONE execution step to a coding-agent backend (codex, opencode, or claude) running headless and WRITE-CAPABLE in `working_dir` — it may modify files there. Runs ASYNCHRONOUSLY: returns a task id immediately; poll dispatch_status(id) for progress and the result. Provide a structured spec — objective (required), working_dir (required, absolute), and optional target_files / constraints / acceptance — plus optional free-form context / details; the server renders them into the backend prompt. working_dir is rejected unless it canonicalizes within the project root (widen with the DISPATCH_EXTRA_ROOTS env var). sandbox defaults to workspace-write; danger-full-access is rejected unless the server enables it. One active run per working_dir unless allow_concurrent=true. model_fallback: an optional ordered list of models tried in turn on a transient backend error (rate limit, quota, model unavailable) — dispatch_status reports final_model/fallback_history when a retry occurred; not honored by dispatch_steer. Watchdog: a fresh codex submit whose backend log never associates within ~30s (DISPATCH_RESTART_UNASSOCIATED_SECS; 0=off) AND whose working_dir shows no writes is killed and auto-resubmitted ONCE as a fresh task — the old row goes interrupted with restarted_as pointing at the successor. POLICY: initiate dispatch according to the harness-rendered dispatch preferences file (`conservative` / `preference-only` / `proactive`) — under `proactive` + `auto`, submit directly for suitable steps; this policy governs dispatch specifically and is not subject to the general write-capable delegation propose-and-wait default used elsewhere. APPROVAL: before the FIRST dispatch in a session, confirm working_dir + the step scope + the approval granularity (per-step vs batch) with the user when approval mode is ask; skip that confirmation only when approval mode is auto."
+        description = "Delegate ONE execution step to a coding-agent backend (codex, opencode, or claude) running headless and WRITE-CAPABLE in `working_dir` — it may modify files there. Runs ASYNCHRONOUSLY: returns a task id and a `wait` command line immediately; run that command with the harness's background means to block until the run is terminal (exit 0 terminal, 2 still active at --timeout, 3 unknown id, 1 error), then read the result with dispatch_status(id). Provide a structured spec — objective (required), working_dir (required, absolute), and optional target_files / constraints / acceptance — plus optional free-form context / details; the server renders them into the backend prompt. working_dir is rejected unless it canonicalizes within the project root (widen with the DISPATCH_EXTRA_ROOTS env var). sandbox defaults to workspace-write; danger-full-access is rejected unless the server enables it. One active run per working_dir unless allow_concurrent=true. model_fallback: an optional ordered list of models tried in turn on a transient backend error (rate limit, quota, model unavailable) — dispatch_status reports final_model/fallback_history when a retry occurred; not honored by dispatch_steer. Watchdog: a fresh codex submit whose backend log never associates within ~30s (DISPATCH_RESTART_UNASSOCIATED_SECS; 0=off) AND whose working_dir shows no writes is killed and auto-resubmitted ONCE as a fresh task — the old row goes interrupted with restarted_as pointing at the successor. POLICY: initiate dispatch according to the harness-rendered dispatch preferences file (`conservative` / `preference-only` / `proactive`) — under `proactive` + `auto`, submit directly for suitable steps; this policy governs dispatch specifically and is not subject to the general write-capable delegation propose-and-wait default used elsewhere. APPROVAL: before the FIRST dispatch in a session, confirm working_dir + the step scope + the approval granularity (per-step vs batch) with the user when approval mode is ask; skip that confirmation only when approval mode is auto."
     )]
     async fn dispatch_submit(
         &self,
         Parameters(p): Parameters<SubmitParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Some(refusal) = reentry_refusal() {
+        if let Some(refusal) = reentry_refusal(Kind::Execute) {
             return Ok(refusal);
         }
         if p.objective.trim().is_empty() {
@@ -157,6 +176,7 @@ impl Dispatch {
                 model_fallback: model_fallback_json,
                 allow_concurrent,
                 restart_of: None,
+                kind: Kind::Execute,
             };
             let enforce_dir = if allow_concurrent {
                 None
@@ -186,6 +206,7 @@ impl Dispatch {
 
         let job = executor::Job {
             id: id.clone(),
+            kind: executor::JobKind::Execute,
             backend,
             working_dir: canon,
             sandbox: sandbox.clone(),
@@ -206,17 +227,170 @@ impl Dispatch {
 
         Ok(json_ok(json!({
             "id": id,
+            "kind": Kind::Execute.as_str(),
             "status": store::STATUS_QUEUED,
             "backend": backend.as_str(),
             "working_dir": canon_str,
             "sandbox": sandbox,
             "plan_id": nonempty(p.plan_id),
-            "note": "running asynchronously — poll dispatch_status(id); cancel with dispatch_cancel(id)",
+            "wait": self.wait_command(&id),
+            "note": "running asynchronously — run the `wait` command with the harness's background means, then read the result with dispatch_status(id); cancel with dispatch_cancel(id)",
         })))
     }
 
     #[tool(
-        description = "Get the status and (when terminal) the captured result / error of a dispatched task by id. Compact by default: the accepted spec, the rendered prompt, and argv are OMITTED so repeated polling of a long run doesn't re-echo the whole spec every call — pass include_spec=true to include them (e.g. to read the accepted spec of a task this session did not submit). Statuses: queued, running, succeeded, failed, cancelled, interrupted. ACTIVE tasks also report child_process_alive, log_associated, and log_last_write_age_seconds. Read these carefully before judging a run stuck: a LIVE process with a quiet/old log is INCONCLUSIVE — the backend may be inside a long-running tool or MCP call (e.g. a multi-minute cross-family consultation at high reasoning effort) that emits no log events until it returns. Do not cancel or steer on silence alone; child_process_alive=false, or an interrupted/failed status, is the real failure signal. An interrupted row that the server auto-restarted carries restarted_as (the successor id); the successor carries restart_of."
+        description = "Ask another model family (OpenAI's codex CLI by default, or Anthropic's claude CLI with backend=\"claude\") a READ-ONLY question for an independent second opinion. Runs ASYNCHRONOUSLY like dispatch_submit: returns an id and a `wait` command line immediately; run that command with the harness's background means, then read the reply from dispatch_status(id) (`result` once succeeded, `error` once failed). A consultation is stopped only with dispatch_cancel(id). include_transcript defaults to true — the current harness conversation is read from the harness's own session log (Claude Code project transcripts, Codex rollouts, Kimi Code wire logs) when the consultation is submitted and forwarded in REDACTED form (text passes; tool_use / tool_result / thinking blocks become placeholders); a missing transcript is a note in the reply, never a failure. The backend runs in the server's directory with no MCP server of its own: codex under `-s read-only` with `exec --ignore-user-config`, claude in safe-mode with `--permission-mode plan` and only `Read,Grep,Glob,WebFetch` — it may read files but never writes or runs shells. PREFER passing file paths in `question` / `context` and letting the backend read them (cheaper, avoids the transcript's 100 KB cap); embed an excerpt only to focus on a line range or for transient tool output not on disk. Frame the question as an assessment to check, not a conclusion to confirm. model_fallback: an optional ordered list of models retried in turn on a transient backend error; the reply notes when a fallback model answered. A consultation takes no working_dir slot and is accepted even inside a dispatch-spawned backend. Costs third-party API quota."
+    )]
+    async fn dispatch_consult(
+        &self,
+        Parameters(p): Parameters<ConsultParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Some(refusal) = reentry_refusal(Kind::Consult) {
+            return Ok(refusal);
+        }
+        if p.question.trim().is_empty() {
+            return Ok(err_struct(ErrCode::InvalidParams, "question is required"));
+        }
+        let backend = match Backend::parse(p.backend.as_deref().unwrap_or("")) {
+            Some(Backend::Opencode) => {
+                return Ok(err_struct(
+                    ErrCode::InvalidParams,
+                    "a consultation runs on codex or claude; opencode serves executions only",
+                ));
+            }
+            Some(b) => b,
+            None => {
+                return Ok(err_struct(
+                    ErrCode::UnknownBackend,
+                    format!(
+                        "unknown backend {:?}; a consultation runs on codex or claude",
+                        p.backend.as_deref().unwrap_or("")
+                    ),
+                ));
+            }
+        };
+
+        let include_transcript = p.include_transcript.unwrap_or(true);
+        let (transcript_text, transcript_note) = if include_transcript {
+            let (cwd, home, tail) = (self.cwd.clone(), self.home.clone(), p.transcript_tail);
+            // The readers do blocking file IO over logs of up to many MB.
+            let rendered = tokio::task::spawn_blocking(move || {
+                transcript::render_transcript(&cwd, &home, tail)
+            })
+            .await;
+            match rendered {
+                Ok(transcript::TranscriptOutcome::Ok { rendered }) => (Some(rendered), None),
+                Ok(transcript::TranscriptOutcome::Unavailable(reason)) => {
+                    (None, Some(consult::transcript_note(&reason)))
+                }
+                Err(e) => (
+                    None,
+                    Some(consult::transcript_note(&format!(
+                        "the transcript reader failed: {e}"
+                    ))),
+                ),
+            }
+        } else {
+            (None, None)
+        };
+        let prompt = consult::compose_prompt(
+            p.context.as_deref(),
+            transcript_text.as_deref(),
+            &p.question,
+        );
+        let spec_json = serde_json::to_string(&json!({
+            "question": p.question,
+            "context": p.context,
+            "include_transcript": include_transcript,
+            "transcript_tail": p.transcript_tail,
+            "transcript_note": transcript_note,
+        }))
+        .unwrap_or_else(|_| "{}".to_string());
+        let model_fallback = p.model_fallback.clone().filter(|v| !v.is_empty());
+        let model_fallback_json = model_fallback
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
+        let cwd_str = self.cwd.to_string_lossy().to_string();
+        let sandbox = agent_exec::Sandbox::ReadOnly.as_str().to_string();
+
+        let id = {
+            let mut conn = match self.lock_db() {
+                Ok(c) => c,
+                Err(e) => return Ok(e),
+            };
+            let new = store::NewTask {
+                plan_id: None,
+                backend: backend.as_str().to_string(),
+                working_dir: cwd_str,
+                title: nonempty(p.title.clone()),
+                spec_json,
+                prompt: prompt.clone(),
+                model: nonempty(p.model.clone()),
+                reasoning_effort: nonempty(p.reasoning_effort.clone()),
+                sandbox: sandbox.clone(),
+                parent_id: None,
+                nonce: None,
+                rollout_start_line: None,
+                model_fallback: model_fallback_json,
+                allow_concurrent: false,
+                restart_of: None,
+                kind: Kind::Consult,
+            };
+            // A consultation takes no working-dir slot: no guard on insert.
+            match store::insert_queued(&mut conn, &new, self.owner_pid, &self.owner_instance, None)
+            {
+                Ok(store::InsertOutcome::Created(id)) => id,
+                Ok(store::InsertOutcome::Conflict(existing)) => {
+                    return Ok(err_struct(
+                        ErrCode::DbError,
+                        format!("unexpected working-dir conflict with {existing}"),
+                    ));
+                }
+                Err(e) => return Ok(err_struct(ErrCode::DbError, format!("db error: {e}"))),
+            }
+        };
+
+        let job = executor::Job {
+            id: id.clone(),
+            kind: executor::JobKind::Consult {
+                transcript_note: transcript_note.clone(),
+                log_marker: consult::question_section(&p.question),
+            },
+            backend,
+            working_dir: self.cwd.clone(),
+            sandbox: sandbox.clone(),
+            model: nonempty(p.model.clone()),
+            reasoning_effort: nonempty(p.reasoning_effort.clone()),
+            skip_git_repo_check: false,
+            prompt,
+            backend_version: self.backend_version(backend),
+            state_dir: self.state_dir.clone(),
+            resume_session: None,
+            nonce: None,
+            rollout_path: None,
+            model_fallback: model_fallback.clone(),
+            allow_concurrent: false,
+            restart_of: None,
+        };
+        executor::spawn(self.db.clone(), self.registry.clone(), job);
+
+        Ok(json_ok(json!({
+            "id": id,
+            "kind": Kind::Consult.as_str(),
+            "status": store::STATUS_QUEUED,
+            "backend": backend.as_str(),
+            "model": nonempty(p.model),
+            "reasoning_effort": nonempty(p.reasoning_effort),
+            "model_fallback": model_fallback,
+            "include_transcript": include_transcript,
+            "transcript_note": transcript_note,
+            "wait": self.wait_command(&id),
+            "note": "consulting asynchronously — run the `wait` command with the harness's background means, then read the reply from dispatch_status(id); stop it only with dispatch_cancel(id)",
+        })))
+    }
+
+    #[tool(
+        description = "Get the status and (when terminal) the captured result / error of a run of either kind by id. For a consultation, `result` is the reply: a [backend] header, the reply text, and the truncation, fallback and transcript notes that apply; a failed consultation carries the backend's failure text in `error`. Compact by default: the accepted spec, the rendered prompt, and argv are OMITTED so repeated polling of a long run doesn't re-echo the whole spec every call — pass include_spec=true to include them (e.g. to read the accepted spec of a task this session did not submit). Statuses: queued, running, succeeded, failed, cancelled, interrupted. ACTIVE tasks also report child_process_alive, log_associated, and log_last_write_age_seconds. Read these carefully before judging a run stuck: a LIVE process with a quiet/old log is INCONCLUSIVE — the backend may be inside a long-running tool or MCP call (e.g. a multi-minute consultation at high reasoning effort) that emits no log events until it returns. Do not cancel or steer on silence alone; child_process_alive=false, or an interrupted/failed status, is the real failure signal. An interrupted row that the server auto-restarted carries restarted_as (the successor id); the successor carries restart_of."
     )]
     async fn dispatch_status(
         &self,
@@ -251,17 +425,34 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "List dispatched tasks (insertion order), optionally filtered by plan_id and/or status. The captured result is omitted here — use dispatch_status(id) for a task's output."
+        description = "List runs (insertion order), optionally filtered by plan_id, status and/or kind (execute / consult). The captured result is omitted here — use dispatch_status(id) for a run's output."
     )]
     async fn dispatch_list(
         &self,
         Parameters(p): Parameters<ListParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let kind = match nonempty_ref(&p.kind) {
+            None => None,
+            Some(k) => match Kind::parse(k) {
+                Some(k) => Some(k),
+                None => {
+                    return Ok(err_struct(
+                        ErrCode::InvalidParams,
+                        format!("invalid kind {k:?}; allowed: execute, consult"),
+                    ));
+                }
+            },
+        };
         let conn = match self.lock_db() {
             Ok(c) => c,
             Err(e) => return Ok(e),
         };
-        match store::list(&conn, nonempty_ref(&p.plan_id), nonempty_ref(&p.status)) {
+        match store::list(
+            &conn,
+            nonempty_ref(&p.plan_id),
+            nonempty_ref(&p.status),
+            kind,
+        ) {
             Ok(rows) => {
                 let tasks: Vec<Value> = rows.iter().map(|r| r.to_json(false, false)).collect();
                 Ok(json_ok(json!({ "count": tasks.len(), "tasks": tasks })))
@@ -271,7 +462,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "Cancel a running dispatch by id, or every active step of a plan by plan_id (pass exactly one). Fires the cancellation token; the backend's process group is killed and the task transitions to cancelled. A task owned by a different session's server cannot be cancelled from here."
+        description = "Cancel an active run of either kind by id, or every active step of a plan by plan_id (pass exactly one). Fires the cancellation token; the backend's process group is killed and the run transitions to cancelled. This is the only way to stop a consultation once submitted. A run owned by a different session's server cannot be cancelled from here."
     )]
     async fn dispatch_cancel(
         &self,
@@ -356,7 +547,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "List which backend CLIs (codex, opencode, claude) are available on PATH, with their --version output, plus this server's containment configuration (project_root, extra_roots). Call this when you're unsure a dispatch backend is installed on this machine, or to check why a working_dir is being rejected."
+        description = "List which backend CLIs (codex, opencode, claude) are available on PATH, with their --version output and the run kinds each serves (codex and claude: execute and consult; opencode: execute), plus this server's containment configuration (project_root, extra_roots). Call this when you're unsure a backend is installed on this machine, or to check why a working_dir is being rejected."
     )]
     async fn dispatch_backends(
         &self,
@@ -374,6 +565,7 @@ impl Dispatch {
                         "available": true,
                         "path": path.display().to_string(),
                         "version": ver,
+                        "kinds": kinds_served(*b),
                     })
                 }
                 None => json!({
@@ -381,6 +573,7 @@ impl Dispatch {
                     "available": false,
                     "path": null,
                     "version": null,
+                    "kinds": kinds_served(*b),
                 }),
             };
             report.push(entry);
@@ -395,7 +588,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "Show a curated, live-updating timeline of what a delegated run is doing. Codex logs are read from codex's rollout; OpenCode logs are dispatch-owned normalized JSONL; Claude logs are read from the session file under ~/.claude/projects (the session id is pinned at spawn). Noise (system prompts, token counts, encrypted codex reasoning, raw tool-call output) is filtered out; signal (user/backend messages, tool-call invocations, file edits, lifecycle, and plaintext OpenCode/Claude reasoning) is kept, and never truncated per-field — only the total response is size-capped (see line_start/line_end). Works WHILE the task is still running. Page with line_start/line_end (1-based; omitted = the tail) to avoid output limits — total_lines tells you how to page. kinds filters categories (lifecycle/messages/tools/edits/reasoning/tool_results; by default codex excludes reasoning while opencode and claude include it; tool_results — raw tool-call output — is excluded by default for every backend, request it explicitly). raw=true returns the underlying JSONL. A quiet log on a RUNNING task is INCONCLUSIVE, not a hang: backends sit silent for minutes inside long tool/MCP calls (e.g. an aside consultation at high reasoning effort). Judge liveness by dispatch_status's child_process_alive + log_last_write_age_seconds, not by log silence."
+        description = "Show a curated, live-updating timeline of what a delegated run is doing. Codex logs are read from codex's rollout; OpenCode logs are dispatch-owned normalized JSONL; Claude logs are read from the session file under ~/.claude/projects (the session id is pinned at spawn). Noise (system prompts, token counts, encrypted codex reasoning, raw tool-call output) is filtered out; signal (user/backend messages, tool-call invocations, file edits, lifecycle, and plaintext OpenCode/Claude reasoning) is kept, and never truncated per-field — only the total response is size-capped (see line_start/line_end). Works WHILE the task is still running. Page with line_start/line_end (1-based; omitted = the tail) to avoid output limits — total_lines tells you how to page. kinds filters categories (lifecycle/messages/tools/edits/reasoning/tool_results; by default codex excludes reasoning while opencode and claude include it; tool_results — raw tool-call output — is excluded by default for every backend, request it explicitly). raw=true returns the underlying JSONL. A consultation shows its backend's own session log when one was located (a codex consultation's rollout); otherwise the response says that a consultation has no live log (a claude consultation keeps none) and its reply comes from dispatch_status. A quiet log on a RUNNING task is INCONCLUSIVE, not a hang: backends sit silent for minutes inside long tool/MCP calls (e.g. a consultation at high reasoning effort). Judge liveness by dispatch_status's child_process_alive + log_last_write_age_seconds, not by log silence."
     )]
     async fn dispatch_logs(
         &self,
@@ -424,6 +617,12 @@ impl Dispatch {
         };
         let rollout_path = match self.resolve_rollout(&row) {
             Some(p) => p,
+            None if row.kind() == Kind::Consult => {
+                return Ok(json_ok(json!({
+                    "id": id, "kind": row.kind, "status": row.status, "session_pending": false, "log": "",
+                    "note": "a consultation has no live log: no backend session log was located for it (a claude consultation keeps none). Its reply is returned by dispatch_status once the run is terminal.",
+                })));
+            }
             None => {
                 return Ok(json_ok(json!({
                     "id": id, "status": row.status, "session_pending": true, "log": "",
@@ -479,13 +678,14 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "Interrupt a delegated task and steer it with a NEW instruction, continuing the SAME backend session (its accumulated context + the files it already wrote are preserved when the backend supports sessions). If the task is still running it is cancelled first; then the backend resumes the session with your instruction. Creates a new linked task (parent_id = the steered task) so the turn history shows in dispatch_list. Returns the new id — poll dispatch_status / dispatch_logs. Use this for mid-flight 'no, do it this way instead' redirection. Inherits the parent task's allow_concurrent by default; pass allow_concurrent to override the one-run-per-working_dir guard for the resumed run — needed to steer a task in a directory that has OTHER concurrent runs (allow_concurrent=false re-enforces the guard even if the parent bypassed it)."
+        description = "Interrupt a delegated task and steer it with a NEW instruction, continuing the SAME backend session (its accumulated context + the files it already wrote are preserved when the backend supports sessions). If the task is still running it is cancelled first; then the backend resumes the session with your instruction. Creates a new linked task (parent_id = the steered task) so the turn history shows in dispatch_list. Returns the new id and a `wait` command line, as dispatch_submit does. A consultation cannot be steered (invalid_params); submit a new one instead. Use this for mid-flight 'no, do it this way instead' redirection. Inherits the parent task's allow_concurrent by default; pass allow_concurrent to override the one-run-per-working_dir guard for the resumed run — needed to steer a task in a directory that has OTHER concurrent runs (allow_concurrent=false re-enforces the guard even if the parent bypassed it)."
     )]
     async fn dispatch_steer(
         &self,
         Parameters(p): Parameters<SteerParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Some(refusal) = reentry_refusal() {
+        // A steer starts a new execution run, so it is refused where a submit is.
+        if let Some(refusal) = reentry_refusal(Kind::Execute) {
             return Ok(refusal);
         }
         let id = p.id.trim();
@@ -515,6 +715,15 @@ impl Dispatch {
             }
             Err(e) => return Ok(err_struct(ErrCode::DbError, format!("db error: {e}"))),
         };
+        if parent.kind() == Kind::Consult {
+            return Ok(err_struct(
+                ErrCode::InvalidParams,
+                format!(
+                    "{id} is a consultation; a consultation keeps no resumable session and cannot \
+                     be steered — submit a new dispatch_consult instead"
+                ),
+            ));
+        }
         let session_id = match self.resolve_session_id(&parent) {
             Some(s) => s,
             None => {
@@ -611,6 +820,7 @@ impl Dispatch {
                 // Persist the *effective* value so a chain of steers keeps inheriting.
                 allow_concurrent: eff_allow_concurrent,
                 restart_of: None,
+                kind: Kind::Execute,
             };
             match store::insert_queued(
                 &mut conn,
@@ -648,6 +858,7 @@ impl Dispatch {
 
         let job = executor::Job {
             id: new_id.clone(),
+            kind: executor::JobKind::Execute,
             backend: Backend::parse(&parent.backend).unwrap_or(Backend::Codex),
             working_dir: PathBuf::from(&parent.working_dir),
             sandbox: eff_sandbox.clone(),
@@ -677,7 +888,8 @@ impl Dispatch {
             "model": eff_model,
             "reasoning_effort": eff_effort,
             "allow_concurrent": eff_allow_concurrent,
-            "note": "steering: the backend session was resumed with your new instruction (it inherits the echoed sandbox/model/reasoning_effort/allow_concurrent unless you overrode them) — poll dispatch_status / dispatch_logs",
+            "wait": self.wait_command(&new_id),
+            "note": "steering: the backend session was resumed with your new instruction (it inherits the echoed sandbox/model/reasoning_effort/allow_concurrent unless you overrode them) — run the `wait` command with the harness's background means, then read dispatch_status / dispatch_logs",
         })))
     }
 }
@@ -685,6 +897,12 @@ impl Dispatch {
 // ── guards + helpers (non-tool impl) ──────────────────────
 
 impl Dispatch {
+    /// The command line that blocks until run `id` is terminal: this binary's
+    /// absolute path, `wait <id>` and `--db` with the store's absolute path.
+    fn wait_command(&self, id: &str) -> String {
+        wait_command_line(&self.wait_exe, id, &self.db_path)
+    }
+
     fn backend_version(&self, backend: Backend) -> Option<String> {
         self.backend_versions
             .get(backend.as_str())
@@ -763,6 +981,16 @@ impl Dispatch {
     /// It never returns a bare cwd guess: with nothing matching it returns None (fail
     /// closed) rather than hand back another session's rollout.
     fn resolve_rollout(&self, row: &store::TaskRow) -> Option<String> {
+        if row.kind() == Kind::Consult {
+            // Only the association the executor recorded, checked against its
+            // session id; never re-located. A consultation runs in the server's
+            // directory with no nonce, where a cwd guess could claim another
+            // run's rollout.
+            let p = row.rollout_path.as_deref()?;
+            let sid = row.session_id.as_deref().filter(|s| !s.is_empty())?;
+            return (Path::new(p).exists() && rollout::rollout_has_session_id(Path::new(p), sid))
+                .then(|| p.to_string());
+        }
         if let Some(p) = row.rollout_path.as_ref()
             && Path::new(p).exists()
             && self.rollout_is_ours(row, Path::new(p))
@@ -1029,27 +1257,106 @@ fn err_struct(code: ErrCode, msg: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![Content::text(body)])
 }
 
-/// Refuse the call if this dispatch server is itself running inside a
-/// dispatch-spawned backend (the `DISPATCH_REENTRY_DEPTH` env marker is present).
-/// Returns the structured refusal so `dispatch_submit` / `dispatch_steer` can
-/// short-circuit before any enqueue or spawn — which is what stops
-/// `backend → dispatch → backend → …` recursion. A dispatch backend consulting
-/// *aside* is deliberately unaffected (that path uses a separate marker).
-fn reentry_refusal() -> Option<CallToolResult> {
-    let depth = agent_exec::reentry::depth(backend::REENTRY_ENV);
-    if depth >= backend::REENTRY_CEILING {
+/// Refuse a request of `kind` if this dispatch server is itself running inside
+/// a dispatch-spawned backend (the `DISPATCH_REENTRY_DEPTH` env marker is
+/// present). An execution (`dispatch_submit`, and `dispatch_steer`, which starts
+/// a new execution run) is refused, so the handler short-circuits before any
+/// enqueue or spawn — which is what stops `backend → dispatch → backend → …`
+/// recursion. A consultation is accepted at any depth: its backend runs with
+/// no MCP server, so nothing it starts can reach dispatch again.
+fn reentry_refusal(kind: Kind) -> Option<CallToolResult> {
+    reentry_refusal_at(kind, agent_exec::reentry::depth(backend::REENTRY_ENV))
+}
+
+/// Pure core of `reentry_refusal` at a given server depth.
+fn reentry_refusal_at(kind: Kind, depth: u32) -> Option<CallToolResult> {
+    if kind == Kind::Execute && depth >= backend::REENTRY_CEILING {
         Some(err_struct(
             ErrCode::Reentrant,
             format!(
                 "this dispatch server is running inside a dispatch-spawned backend ({}={}); \
-                 nested dispatch runs are refused to prevent recursive backend spawning. Do the \
-                 work in the current backend session instead.",
+                 nested executions (dispatch_submit, dispatch_steer) are refused to prevent \
+                 recursive backend spawning. Do the work in the current backend session \
+                 instead; dispatch_consult stays available.",
                 backend::REENTRY_ENV,
                 depth
             ),
         ))
     } else {
         None
+    }
+}
+
+/// The run kinds `backend` serves: codex and claude both kinds, opencode
+/// executions only.
+fn kinds_served(backend: Backend) -> Vec<&'static str> {
+    match backend {
+        Backend::Codex | Backend::Claude => vec![Kind::Execute.as_str(), Kind::Consult.as_str()],
+        Backend::Opencode => vec![Kind::Execute.as_str()],
+    }
+}
+
+/// `<exe> wait <id> --db <db>`: the command line a harness runs to block on a
+/// run. Both paths are absolute, because the harness's shell carries neither
+/// the server's state home nor its binary folder; each is double-quoted when
+/// it holds whitespace or a shell-special character, so the line survives sh,
+/// zsh, pwsh and cmd.
+fn wait_command_line(exe: &str, id: &str, db: &Path) -> String {
+    format!(
+        "{} wait {id} --db {}",
+        shell_word(exe),
+        shell_word(&path_text(db))
+    )
+}
+
+/// The absolute path of the running binary, canonicalized, as text for a
+/// command line or a configuration value; `dispatch` when it cannot be read.
+fn current_exe_path() -> String {
+    std::env::current_exe()
+        .and_then(|p| p.canonicalize())
+        .map(|p| path_text(&p))
+        .unwrap_or_else(|_| "dispatch".to_string())
+}
+
+/// A path as text, without the `\\?\` verbatim prefix Windows'
+/// `canonicalize` adds (a shell or a user reading the line expects a plain
+/// drive or UNC path).
+fn path_text(p: &Path) -> String {
+    let text = p.display().to_string();
+    if cfg!(windows) {
+        strip_verbatim(&text)
+    } else {
+        text
+    }
+}
+
+/// `\\?\C:\x` → `C:\x`; `\\?\UNC\server\share` → `\\server\share`; any other
+/// text unchanged.
+fn strip_verbatim(text: &str) -> String {
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => match rest.strip_prefix(r"UNC\") {
+            Some(unc) => format!(r"\\{unc}"),
+            None => rest.to_string(),
+        },
+        None => text.to_string(),
+    }
+}
+
+/// `word` as one shell word: unchanged when it holds only characters no
+/// supported shell treats specially, else wrapped in double quotes. A
+/// backslash is the path separator on Windows and stays bare there; elsewhere
+/// it is special. A word containing `"` cannot be quoted this way and is
+/// wrapped as is.
+fn shell_word(word: &str) -> String {
+    let special = |c: char| {
+        c.is_whitespace() || "\"'`$!&|;<>()*?[]{}#^%".contains(c) || (c == '\\' && !cfg!(windows))
+    };
+    // `~` expands only at the start of a word (Windows short names such as
+    // `RUNNER~1` carry it mid-path).
+    if !word.is_empty() && !word.starts_with('~') && !word.chars().any(special) {
+        word.to_string()
+    } else {
+        format!("\"{word}\"")
     }
 }
 
@@ -1308,30 +1615,50 @@ fn reconcile(conn: &rusqlite::Connection) {
 impl ServerHandler for Dispatch {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Hierarchical delegation tools. Where `aside` asks another model family for a \
-             read-only second opinion, `dispatch` hands a coding-agent backend (codex, opencode, or claude) an \
-             execution task: the backend runs headless and WRITE-CAPABLE, modifying \
-             files under a target directory. Delegation is ASYNCHRONOUS — dispatch_submit returns \
-             a task id immediately and the run continues in the background; poll dispatch_status, \
-             enumerate with dispatch_list, and stop a run with dispatch_cancel. The server enforces \
-             hard guards a misbehaving model cannot bypass: working_dir must canonicalize within \
-             the project root (or a DISPATCH_EXTRA_ROOTS-allowlisted root), the sandbox ceiling \
-             blocks danger-full-access unless DISPATCH_ALLOW_DANGER is set, and only one run is \
-             allowed per working_dir unless allow_concurrent. SUPERVISION: poll dispatch_status \
-             for the current snapshot and (when terminal) the captured result; dispatch_logs \
-             shows a live curated timeline; dispatch_steer interrupts a run and resumes the SAME \
-             backend session with a new instruction (turn granularity — prior context and files \
-             written are preserved). A quiet log on a live process is INCONCLUSIVE (long MCP/tool \
-             calls emit nothing until they return) — judge by child_process_alive and \
+            "Delegation and consultation tools. dispatch runs one backend CLI per run, in two \
+             kinds. An EXECUTION (dispatch_submit) hands a coding-agent backend (codex, opencode, \
+             or claude) a task: the backend runs headless and WRITE-CAPABLE, modifying files \
+             under a target directory. A CONSULTATION (dispatch_consult) asks another model \
+             family (codex or claude) a read-only question for an independent second opinion: \
+             the backend runs in the server's directory with no MCP server of its own (codex \
+             `-s read-only` with `exec --ignore-user-config`; claude safe-mode + \
+             `--permission-mode plan` + `--tools Read,Grep,Glob,WebFetch`), so it can read files \
+             but never write, and never instruct it to call MCP tools. include_transcript \
+             defaults to true: the current conversation is forwarded in REDACTED form (text \
+             passes; tool_use / tool_result / thinking blocks become placeholders). PREFER passing \
+             file paths in `question` / `context` over embedding their content; embed an excerpt \
+             only to focus on a line range or for transient tool output that is not on disk. \
+             FRAME QUESTIONS AS ASSESSMENTS, not confirmations: state your own diagnosis as a \
+             hypothesis to check, never as settled fact. One question per consultation; \
+             consolidate related questions; configure model_fallback instead of re-asking after a \
+             transient failure. Every run is ASYNCHRONOUS: dispatch_submit and dispatch_consult \
+             return an id and a `wait` command line immediately. Run that command with the \
+             harness's background means: it blocks until the run is terminal and exits 0 \
+             (terminal), 2 (still active at --timeout; run it again), 3 (unknown id) or 1 (usage \
+             or store error), printing one line with the id, kind and status. Then read the \
+             result or reply with dispatch_status. dispatch_list enumerates runs (filter by \
+             kind); dispatch_cancel stops a run of either kind and is the only way to stop a \
+             consultation once submitted. The server enforces hard guards a misbehaving model \
+             cannot bypass: working_dir must canonicalize within the project root (or a \
+             DISPATCH_EXTRA_ROOTS-allowlisted root), the sandbox ceiling blocks danger-full-access \
+             unless DISPATCH_ALLOW_DANGER is set, only one execution is allowed per working_dir \
+             unless allow_concurrent (consultations take no slot), and a dispatch server inside a \
+             dispatch-spawned backend refuses dispatch_submit and dispatch_steer but accepts \
+             dispatch_consult. SUPERVISION of an execution: dispatch_status gives the current \
+             snapshot and (when terminal) the captured result; dispatch_logs shows a live curated \
+             timeline; dispatch_steer interrupts a run and resumes the SAME backend session with \
+             a new instruction (turn granularity — prior context and files written are \
+             preserved). A quiet log on a live process is INCONCLUSIVE (long MCP/tool calls emit \
+             nothing until they return) — judge by child_process_alive and \
              log_last_write_age_seconds in dispatch_status, never by silence alone. `succeeded` \
              means exit 0, not that the change is correct — review the captured result. A fresh \
-             codex submit whose log never associates within ~30s with no working-dir writes is \
+             codex execution whose log never associates within ~30s with no working-dir writes is \
              auto-restarted once (restart_of/restarted_as link the pair; \
-             DISPATCH_RESTART_UNASSOCIATED_SECS tunes, 0 disables). The behavioral dispatch \
-             policy — when to initiate dispatch (a `proactive` prefs policy means submitting \
-             directly, without a propose-and-wait step), and whether to confirm working_dir, \
-             step scope, and approval granularity before the first dispatch of a session — lives \
-             in the harness-rendered dispatch rule and dispatch preferences file.",
+             DISPATCH_RESTART_UNASSOCIATED_SECS tunes, 0 disables). Each run consumes the user's \
+             backend quota. The behavioral policy — when to dispatch or consult, the preferred \
+             backend, models and effort, and whether to confirm working_dir, step scope, and \
+             approval granularity before the first dispatch of a session — lives in the \
+             harness-rendered dispatch and consultation rules and their preferences files.",
         )
     }
 
@@ -1363,8 +1690,13 @@ impl ServerHandler for Dispatch {
 
 // ── main ──────────────────────────────────────────────────
 
-/// Boots Tokio and runs the server.
+/// Runs `dispatch wait …` when the first argument is `wait` (before any
+/// runtime, tracing or store setup), else boots Tokio and runs the server.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|a| a == "wait") {
+        std::process::exit(wait::main(&args[2..]));
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -1382,6 +1714,7 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
 
     let cwd = std::env::current_dir()?;
     let project_root = resolve_project_root(&cwd);
+    let canonical_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
     if project_root.is_none() {
         tracing::warn!(
             "no project root: cwd {} is not a plausible project directory and no \
@@ -1400,6 +1733,12 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;")?;
     store::init(&conn)?;
     reconcile(&conn);
+    // The `wait` command line names the store by an absolute path; the file
+    // exists now, so canonicalizing it resolves a relative DISPATCH_STATE_DIR.
+    let db_path = db_path
+        .canonicalize()
+        .or_else(|_| std::path::absolute(&db_path))
+        .unwrap_or(db_path);
 
     let owner_pid = std::process::id() as i64;
     let nanos = std::time::SystemTime::now()
@@ -1423,6 +1762,10 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
         owner_instance,
         backend_versions: Arc::new(backend_versions),
         state_dir,
+        cwd: canonical_cwd,
+        home: home_dir().unwrap_or_else(std::env::temp_dir),
+        wait_exe: current_exe_path(),
+        db_path,
         tool_router: Dispatch::tool_router(),
     };
 
@@ -1581,5 +1924,278 @@ mod tests {
         // Explicit steer value overrides the parent (both directions).
         assert!(effective_allow_concurrent(Some(true), false));
         assert!(!effective_allow_concurrent(Some(false), true));
+    }
+
+    // ── kinds, re-entry and the wait field ────────────────
+
+    fn error_code(r: &CallToolResult) -> Option<String> {
+        if r.is_error != Some(true) {
+            return None;
+        }
+        let text = r.content[0].as_text().map(|t| t.text.clone())?;
+        let v: Value = serde_json::from_str(&text).ok()?;
+        v["error"]["code"].as_str().map(str::to_string)
+    }
+
+    fn body(r: &CallToolResult) -> Value {
+        assert_ne!(r.is_error, Some(true), "unexpected error: {:?}", r.content);
+        let text = r.content[0].as_text().map(|t| t.text.clone()).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    /// A server over an in-memory store, with nothing spawned.
+    fn test_server() -> Dispatch {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        store::init(&conn).unwrap();
+        let cwd = std::env::temp_dir();
+        Dispatch {
+            db: Arc::new(StdMutex::new(conn)),
+            registry: Arc::new(StdMutex::new(HashMap::new())),
+            project_root: Some(cwd.clone()),
+            extra_roots: Arc::new(Vec::new()),
+            allow_danger: false,
+            owner_pid: std::process::id() as i64,
+            owner_instance: "test".into(),
+            backend_versions: Arc::new(HashMap::new()),
+            state_dir: cwd.join("dispatch-test-state"),
+            cwd: cwd.clone(),
+            home: cwd.clone(),
+            wait_exe: current_exe_path(),
+            db_path: cwd.join("dispatch-test-state").join("dispatch.db"),
+            tool_router: Dispatch::tool_router(),
+        }
+    }
+
+    fn insert(server: &Dispatch, kind: Kind, backend: &str) -> String {
+        let new = store::NewTask {
+            plan_id: None,
+            backend: backend.into(),
+            working_dir: server.cwd.to_string_lossy().into_owned(),
+            title: None,
+            spec_json: "{}".into(),
+            prompt: "p".into(),
+            model: None,
+            reasoning_effort: None,
+            sandbox: "read-only".into(),
+            parent_id: None,
+            nonce: None,
+            rollout_start_line: None,
+            model_fallback: None,
+            allow_concurrent: false,
+            restart_of: None,
+            kind,
+        };
+        let mut conn = server.db.lock().unwrap();
+        match store::insert_queued(&mut conn, &new, server.owner_pid, "test", None).unwrap() {
+            store::InsertOutcome::Created(id) => id,
+            store::InsertOutcome::Conflict(o) => panic!("conflict with {o}"),
+        }
+    }
+
+    #[test]
+    fn reentry_refuses_executions_and_accepts_consultations_inside_a_backend() {
+        // dispatch_submit and dispatch_steer both ask for an execution.
+        for depth in [1, 2, u32::MAX] {
+            let refused = reentry_refusal_at(Kind::Execute, depth).expect("refused");
+            assert_eq!(error_code(&refused).as_deref(), Some("reentrant"));
+            assert!(reentry_refusal_at(Kind::Consult, depth).is_none());
+        }
+        assert!(reentry_refusal_at(Kind::Execute, 0).is_none());
+        assert!(reentry_refusal_at(Kind::Consult, 0).is_none());
+    }
+
+    #[test]
+    fn the_tools_a_backend_may_call_are_tools_of_this_server() {
+        let router = Dispatch::tool_router();
+        for tool in backend::BACKEND_APPROVED_TOOLS {
+            assert!(router.get(tool).is_some(), "{tool} is not a dispatch tool");
+        }
+        for tool in ["dispatch_submit", "dispatch_steer"] {
+            assert!(router.get(tool).is_some());
+            assert!(!backend::BACKEND_APPROVED_TOOLS.contains(&tool));
+        }
+    }
+
+    #[test]
+    fn backends_report_the_kinds_they_serve() {
+        assert_eq!(kinds_served(Backend::Codex), vec!["execute", "consult"]);
+        assert_eq!(kinds_served(Backend::Claude), vec!["execute", "consult"]);
+        assert_eq!(kinds_served(Backend::Opencode), vec!["execute"]);
+    }
+
+    #[test]
+    fn the_wait_command_quotes_paths_with_a_space() {
+        let dir = std::env::temp_dir().join("dispatch test state");
+        let exe = path_text(&dir.join("bin").join("dispatch"));
+        let db = dir.join("dispatch.db");
+        assert_eq!(
+            wait_command_line(&exe, "d-1", &db),
+            format!("\"{exe}\" wait d-1 --db \"{}\"", path_text(&db))
+        );
+        // A path with no special character stays bare.
+        let plain = Path::new("state").join("RUNNER~1").join("dispatch.db");
+        assert_eq!(
+            wait_command_line("dispatch", "d-2", &plain),
+            format!("dispatch wait d-2 --db {}", plain.display())
+        );
+        assert_eq!(shell_word("a$b"), "\"a$b\"");
+        assert_eq!(shell_word("~x"), "\"~x\"");
+        assert_eq!(shell_word(""), "\"\"");
+    }
+
+    #[test]
+    fn a_verbatim_prefix_is_stripped() {
+        let sep = r"\";
+        let drive = ["C:", "Users", "u", "dispatch.exe"].join(sep);
+        assert_eq!(strip_verbatim(&format!(r"\\?\{drive}")), drive);
+        let unc = ["server", "share", "dispatch.db"].join(sep);
+        assert_eq!(
+            strip_verbatim(&format!(r"\\?\UNC\{unc}")),
+            format!(r"\\{unc}")
+        );
+        assert_eq!(strip_verbatim(&drive), drive);
+        let unix = Path::new("/").join("usr").join("bin").join("dispatch");
+        assert_eq!(
+            strip_verbatim(&unix.display().to_string()),
+            unix.display().to_string()
+        );
+        if cfg!(windows) {
+            assert!(!path_text(&std::env::temp_dir().canonicalize().unwrap()).starts_with(r"\\?\"));
+        }
+    }
+
+    #[test]
+    fn the_wait_command_names_this_binary_the_id_and_the_store() {
+        let server = test_server();
+        let line = server.wait_command("d-7");
+        assert_eq!(
+            line,
+            format!(
+                "{} wait d-7 --db {}",
+                server.wait_exe,
+                server.db_path.display()
+            )
+        );
+        let exe = Path::new(&server.wait_exe);
+        assert!(exe.is_absolute(), "{line}");
+        assert_eq!(
+            exe.canonicalize().ok(),
+            std::env::current_exe().and_then(|p| p.canonicalize()).ok()
+        );
+        assert_eq!(
+            server.db_path.file_name().and_then(|n| n.to_str()),
+            Some("dispatch.db")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_consultation_cannot_be_steered() {
+        let server = test_server();
+        let id = insert(&server, Kind::Consult, "codex");
+        let r = server
+            .dispatch_steer(Parameters(SteerParams {
+                id: id.clone(),
+                instruction: "again".into(),
+                ..SteerParams::default()
+            }))
+            .await
+            .unwrap();
+        // Inside a dispatch-spawned backend the re-entry refusal comes first.
+        let expected = if agent_exec::reentry::depth(backend::REENTRY_ENV) >= 1 {
+            "reentrant"
+        } else {
+            "invalid_params"
+        };
+        assert_eq!(error_code(&r).as_deref(), Some(expected));
+    }
+
+    #[tokio::test]
+    async fn consult_refuses_opencode_and_an_empty_question() {
+        let server = test_server();
+        let ask = |question: &str, backend: Option<&str>| ConsultParams {
+            question: question.into(),
+            backend: backend.map(str::to_string),
+            include_transcript: Some(false),
+            ..ConsultParams::default()
+        };
+        for p in [ask("why?", Some("opencode")), ask("  ", None)] {
+            let r = server.dispatch_consult(Parameters(p)).await.unwrap();
+            assert_eq!(error_code(&r).as_deref(), Some("invalid_params"));
+        }
+        let r = server
+            .dispatch_consult(Parameters(ask("why?", Some("nope"))))
+            .await
+            .unwrap();
+        assert_eq!(error_code(&r).as_deref(), Some("unknown_backend"));
+        // Nothing was enqueued.
+        let rows = store::list(&server.db.lock().unwrap(), None, None, None).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_kind_and_status_shows_it() {
+        let server = test_server();
+        let exec = insert(&server, Kind::Execute, "codex");
+        let consult = insert(&server, Kind::Consult, "claude");
+        let ids = |v: Value| -> Vec<String> {
+            v["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let list = |kind: Option<&str>| ListParams {
+            kind: kind.map(str::to_string),
+            ..ListParams::default()
+        };
+        let all = server.dispatch_list(Parameters(list(None))).await.unwrap();
+        assert_eq!(ids(body(&all)), vec![exec.clone(), consult.clone()]);
+        let c = server
+            .dispatch_list(Parameters(list(Some("consult"))))
+            .await
+            .unwrap();
+        assert_eq!(ids(body(&c)), vec![consult.clone()]);
+        let e = server
+            .dispatch_list(Parameters(list(Some("execute"))))
+            .await
+            .unwrap();
+        assert_eq!(ids(body(&e)), vec![exec]);
+        let bad = server
+            .dispatch_list(Parameters(list(Some("other"))))
+            .await
+            .unwrap();
+        assert_eq!(error_code(&bad).as_deref(), Some("invalid_params"));
+
+        let st = server
+            .dispatch_status(Parameters(StatusParams {
+                id: consult,
+                include_spec: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(body(&st)["kind"], json!("consult"));
+    }
+
+    #[tokio::test]
+    async fn logs_of_a_consultation_without_a_located_log_say_so() {
+        let server = test_server();
+        let id = insert(&server, Kind::Consult, "claude");
+        let r = server
+            .dispatch_logs(Parameters(LogsParams {
+                id: id.clone(),
+                ..LogsParams::default()
+            }))
+            .await
+            .unwrap();
+        let v = body(&r);
+        assert_eq!(v["kind"], json!("consult"));
+        assert_eq!(v["log"], json!(""));
+        assert!(
+            v["note"]
+                .as_str()
+                .unwrap()
+                .starts_with("a consultation has no live log")
+        );
     }
 }

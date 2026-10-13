@@ -1,0 +1,1 @@
+In Claude Code the native advisor is the built-in `advisor()` tool, which forwards the full, unredacted transcript and takes no parameters; its own instructions decide when it is called. When both are used in one turn, consult first and read the reply, so `advisor()` also sees the exchange.

@@ -38,7 +38,7 @@ impl Harness {
         }
     }
 
-    /// The name used in descriptors and in `ASIDE_HARNESS`.
+    /// The name used in descriptors and in `SLATE_HARNESS`.
     pub fn name(self) -> &'static str {
         match self {
             Harness::Claude => "claude",

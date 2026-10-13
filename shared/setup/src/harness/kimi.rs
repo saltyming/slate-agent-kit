@@ -3,11 +3,13 @@
 //!
 //! Owns the plugin folder `<home>/plugins/managed/slate-agent-kit-mcp/`
 //! (`kimi.plugin.json` and `SKILL.md`), the `plugins/installed.json` entry
-//! that keeps every other entry, and the `[secondary_model]` edits with the
-//! alias check. Kimi has no CLI to call.
+//! that keeps every other entry, the removal of servers a new kit no longer
+//! lists from the plugin, and the `[secondary_model]` edits with the alias
+//! check. Kimi has no CLI to call.
 //!
-//! Main entry points: [`register`], [`unregister`], [`config_edits`],
-//! [`update_registry`], [`remove_from_registry`] and [`plugin_root`].
+//! Main entry points: [`register`], [`unregister`], [`plugin_servers`],
+//! [`retire_from_plugin`], [`config_edits`], [`update_registry`],
+//! [`remove_from_registry`] and [`plugin_root`].
 
 use super::{Ctx, EditOutcome, Outcome, SubagentPrefs, server_binary, server_env};
 use crate::config::{Desired, TomlDoc, apply_desired};
@@ -80,7 +82,7 @@ pub fn plugin_manifest(env: &Env, ctx: &Ctx) -> Json {
         ),
         (
             "keywords",
-            strings(&["slate-agent-kit", "mcp", "aside", "dispatch", "palette"]),
+            strings(&["slate-agent-kit", "mcp", "dispatch", "palette"]),
         ),
         ("mcpServers", Json::Object(servers)),
         (
@@ -90,7 +92,7 @@ pub fn plugin_manifest(env: &Env, ctx: &Ctx) -> Json {
                 (
                     "shortDescription",
                     Json::str(
-                        "aside read-only consultation, dispatch execution delegation and palette planning documents.",
+                        "dispatch execution delegation and read-only consultation, and palette planning documents.",
                     ),
                 ),
                 ("developerName", Json::str("Slate Agent Kit")),
@@ -109,11 +111,9 @@ pub fn plugin_skill(servers: &[String]) -> String {
             .to_string(),
         String::new(),
     ];
-    if has("aside") {
-        lines.push("- aside tools are read-only consultation tools.".into());
-    }
     if has("dispatch") {
         lines.push("- dispatch tools are write-capable execution delegation tools and follow the dispatch level in the dispatch prefs.".into());
+        lines.push("- dispatch_consult asks another model family a read-only question through dispatch and follows the consultation level in the consult prefs.".into());
     }
     if has("palette") {
         lines.push("- palette tools read and write the project's planning documents; the read-only ones are safe to call freely.".into());
@@ -122,11 +122,11 @@ pub fn plugin_skill(servers: &[String]) -> String {
     lines.push("Expected MCP tool prefixes are harness-generated from this plugin id and server name, for example:".into());
     lines.push(String::new());
     for (server, tool) in [
-        ("aside", "aside_list"),
-        ("aside", "aside_codex"),
-        ("aside", "aside_claude"),
+        ("dispatch", "dispatch_consult"),
         ("dispatch", "dispatch_submit"),
         ("dispatch", "dispatch_status"),
+        ("palette", "palette_status"),
+        ("palette", "palette_lint"),
     ] {
         if has(server) {
             lines.push(format!("- `mcp__plugin-{PLUGIN_ID}_{server}__{tool}`"));
@@ -299,6 +299,62 @@ pub fn unregister(ui: &mut Ui, home: &Path, registry_created: bool) -> Result<Ou
     Ok(out)
 }
 
+/// The servers the plugin in `home` exposes, from its `kimi.plugin.json`; empty when it cannot be read.
+pub fn plugin_servers(home: &Path) -> Vec<String> {
+    let path = plugin_root(home).join("kimi.plugin.json");
+    let Ok(Some(text)) = read_text_opt(&path) else {
+        return Vec::new();
+    };
+    match Json::parse(&text) {
+        Ok(j) => match j.get("mcpServers") {
+            Some(Json::Object(members)) => members.iter().map(|(k, _)| k.clone()).collect(),
+            _ => Vec::new(),
+        },
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Removes `servers` from the plugin in `home`: their `mcpServers` entries and
+/// keywords, and their lines in `SKILL.md`. Every other entry stays as it is.
+///
+/// Returns the servers that were removed; nothing is written when the plugin
+/// has none of them.
+pub fn retire_from_plugin(home: &Path, servers: &[String]) -> Result<Vec<String>> {
+    let root = plugin_root(home);
+    let path = root.join("kimi.plugin.json");
+    let Some(text) = read_text_opt(&path)? else {
+        return Ok(Vec::new());
+    };
+    let mut j = Json::parse(&text).map_err(|e| {
+        Error::config(format!("{} could not be read: {e}", path.display()))
+            .with_state("the plugin still lists the retired servers")
+            .with_fix("re-run `slate-setup install`, which writes the plugin again")
+    })?;
+    let mut removed = Vec::new();
+    if let Some(Json::Object(members)) = j.get_mut("mcpServers") {
+        members.retain(|(k, _)| {
+            let retire = servers.contains(k);
+            if retire {
+                removed.push(k.clone());
+            }
+            !retire
+        });
+    }
+    if removed.is_empty() {
+        return Ok(removed);
+    }
+    if let Some(list) = j.get_mut("keywords").and_then(Json::as_array_mut) {
+        list.retain(|v| !v.as_str().is_some_and(|s| removed.iter().any(|r| r == s)));
+    }
+    let remaining: Vec<String> = match j.get("mcpServers") {
+        Some(Json::Object(members)) => members.iter().map(|(k, _)| k.clone()).collect(),
+        _ => Vec::new(),
+    };
+    write_atomic(&path, j.to_pretty(&detect_indent(&text)).as_bytes())?;
+    write_atomic(&root.join("SKILL.md"), plugin_skill(&remaining).as_bytes())?;
+    Ok(removed)
+}
+
 /// The aliases under `[models]` of a Kimi configuration.
 pub fn model_aliases(doc: &TomlDoc) -> Vec<String> {
     doc.keys_at(&["models"])
@@ -400,25 +456,26 @@ mod tests {
         );
         assert_eq!(m.get("version").and_then(Json::as_str), Some("13.0.0"));
         let servers = m.get("mcpServers").unwrap();
-        let aside = servers.get("aside").unwrap();
+        assert!(servers.get("aside").is_none());
+        let dispatch = servers.get("dispatch").unwrap();
         assert_eq!(
-            aside
+            dispatch
                 .get("env")
                 .unwrap()
-                .get("ASIDE_HARNESS")
+                .get("SLATE_HARNESS")
                 .and_then(Json::as_str),
             Some("kimi")
         );
         assert_eq!(
-            aside
+            dispatch
                 .get("env")
                 .unwrap()
                 .get("KIMI_CODE_HOME")
                 .and_then(Json::as_str),
             Some("/x/kimi")
         );
-        assert_eq!(aside.get("args"), Some(&Json::Array(vec![])));
-        let cwd = aside.get("cwd").and_then(Json::as_str).unwrap();
+        assert_eq!(dispatch.get("args"), Some(&Json::Array(vec![])));
+        let cwd = dispatch.get("cwd").and_then(Json::as_str).unwrap();
         assert!(
             Path::new(cwd).ends_with(
                 Path::new("plugins")
@@ -469,12 +526,82 @@ mod tests {
         assert!(
             m.get("mcpServers")
                 .unwrap()
-                .get("aside")
+                .get("dispatch")
                 .unwrap()
                 .get("env")
                 .unwrap()
                 .get("KIMI_CODE_HOME")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn the_plugin_skill_names_consultation_through_dispatch() {
+        let text = plugin_skill(&["dispatch".to_string(), "palette".to_string()]);
+        assert!(!text.contains("aside"), "{text}");
+        for tool in [
+            "dispatch_consult",
+            "dispatch_submit",
+            "dispatch_status",
+            "palette_status",
+        ] {
+            let server = tool.split('_').next().unwrap();
+            assert!(
+                text.contains(&format!("`mcp__plugin-{PLUGIN_ID}_{server}__{tool}`")),
+                "{tool}: {text}"
+            );
+        }
+        assert!(text.contains("consult prefs"), "{text}");
+        let only_palette = plugin_skill(&["palette".to_string()]);
+        assert!(!only_palette.contains("dispatch"), "{only_palette}");
+    }
+
+    #[test]
+    fn retiring_a_server_rewrites_the_plugin_to_the_remaining_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let root = plugin_root(home);
+        let old = "{\n    \"name\": \"slate-agent-kit-mcp\",\n    \"keywords\": [\"mcp\", \"aside\", \"dispatch\"],\n    \"mcpServers\": {\n        \"aside\": {\"command\": \"/b/aside\"},\n        \"dispatch\": {\"command\": \"/b/dispatch\", \"env\": {\"X\": \"1\"}},\n        \"palette\": {\"command\": \"/b/palette\"}\n    }\n}\n";
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("kimi.plugin.json"), old).unwrap();
+        std::fs::write(root.join("SKILL.md"), "old text naming aside\n").unwrap();
+        assert_eq!(plugin_servers(home), ["aside", "dispatch", "palette"]);
+        let removed = retire_from_plugin(home, &["aside".to_string()]).unwrap();
+        assert_eq!(removed, ["aside"]);
+        assert_eq!(plugin_servers(home), ["dispatch", "palette"]);
+        let text = std::fs::read_to_string(root.join("kimi.plugin.json")).unwrap();
+        assert!(!text.contains("aside"), "{text}");
+        assert!(
+            text.contains("\"X\": \"1\""),
+            "the other entries stay: {text}"
+        );
+        assert!(
+            text.starts_with("{\n    \"name\""),
+            "the indentation is kept: {text}"
+        );
+        let skill = std::fs::read_to_string(root.join("SKILL.md")).unwrap();
+        assert!(
+            !skill.contains("aside") && skill.contains("dispatch_consult"),
+            "{skill}"
+        );
+        // A second run finds nothing to remove and writes nothing.
+        std::fs::write(root.join("SKILL.md"), "untouched\n").unwrap();
+        assert!(
+            retire_from_plugin(home, &["aside".to_string()])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("SKILL.md")).unwrap(),
+            "untouched\n"
+        );
+        // No plugin at all is not an error.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(plugin_servers(empty.path()).is_empty());
+        assert!(
+            retire_from_plugin(empty.path(), &["aside".to_string()])
+                .unwrap()
+                .is_empty()
         );
     }
 

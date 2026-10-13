@@ -56,11 +56,11 @@ fn install_reinstall_configure_uninstall() {
         "--roots",
         roots_arg.as_str(),
         "--set",
-        "aside.level=auto",
+        "consult.level=auto",
         "--set",
-        "aside.backend=claude",
+        "consult.backend=claude",
         "--set",
-        "aside.claude.model=model-c",
+        "consult.claude.model=model-c",
         "--set",
         "subagent.model=sonnet",
         "--set",
@@ -95,7 +95,7 @@ fn install_reinstall_configure_uninstall() {
     );
     for rule in [
         "claude-agent-kit--task-execution.md",
-        "claude-agent-kit--aside.md",
+        "claude-agent-kit--consult.md",
     ] {
         assert_eq!(
             read(&home.join("rules").join(rule)),
@@ -106,19 +106,19 @@ fn install_reinstall_configure_uninstall() {
     assert!(home.join("skills/palette-init/notes/extra.md").is_file());
 
     // Prefs.
-    let aside = read(&sb.prefs_path("aside"));
-    assert!(aside.contains("## Level\n\n**auto**\n"), "{aside}");
-    assert!(aside.contains("## Backend\n\n**claude**\n"));
-    assert!(aside.contains("## Claude model\n\n**model-c**\n"));
+    let consult = read(&sb.prefs_path("consult"));
+    assert!(consult.contains("## Level\n\n**auto**\n"), "{consult}");
+    assert!(consult.contains("## Backend\n\n**claude**\n"));
+    assert!(consult.contains("## Claude model\n\n**model-c**\n"));
     assert!(
-        aside.contains("## Codex model\n\n****\n"),
+        consult.contains("## Codex model\n\n****\n"),
         "only the chosen backend changes"
     );
     assert!(read(&sb.prefs_path("git")).contains("## Commit signing\n\n**no-gpg-sign**\n"));
     assert!(read(&sb.prefs_path("subagent")).contains("## Default model\n\n**sonnet**\n"));
 
     // Binaries.
-    for name in ["aside", "dispatch", "palette"] {
+    for name in ["dispatch", "palette"] {
         assert!(
             sb.bin_dir.join(exe_name(&platform, name)).is_file(),
             "{name}"
@@ -130,22 +130,17 @@ fn install_reinstall_configure_uninstall() {
     // Registration through the CLI.
     let added = sb.added_servers();
     let names: Vec<_> = added.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, ["aside", "dispatch", "palette"]);
-    assert_eq!(added[0].1, ["ASIDE_HARNESS=claude"]);
-    assert!(
-        added[1]
-            .1
-            .contains(&format!("SLATE_AGENT_STATE_HOME={}", home.display())),
-        "{:?}",
-        added[1].1
-    );
-    assert!(
-        added[1]
-            .1
-            .contains(&format!("DISPATCH_EXTRA_ROOTS={}", roots.display()))
+    assert_eq!(names, ["dispatch", "palette"]);
+    assert_eq!(
+        added[0].1,
+        [
+            format!("SLATE_AGENT_STATE_HOME={}", home.display()),
+            "SLATE_HARNESS=claude".to_string(),
+            format!("DISPATCH_EXTRA_ROOTS={}", roots.display()),
+        ]
     );
     assert_eq!(
-        added[2].1,
+        added[1].1,
         [format!("PALETTE_EXTRA_ROOTS={}", roots.display())]
     );
     assert!(sb.removed_servers().contains(&"workslate".to_string()));
@@ -161,6 +156,11 @@ fn install_reinstall_configure_uninstall() {
         allow_list(&settings),
         [
             "Bash(ls:*)",
+            "mcp__dispatch__dispatch_consult",
+            "mcp__dispatch__dispatch_status",
+            "mcp__dispatch__dispatch_list",
+            "mcp__dispatch__dispatch_logs",
+            "mcp__dispatch__dispatch_backends",
             "mcp__palette__palette_status",
             "mcp__palette__palette_read"
         ]
@@ -207,11 +207,11 @@ fn install_reinstall_configure_uninstall() {
         settings_text
     );
     assert_eq!(
-        read(&sb.prefs_path("aside")),
-        aside,
+        read(&sb.prefs_path("consult")),
+        consult,
         "existing prefs are kept"
     );
-    assert_eq!(sb.added_servers().len(), 3);
+    assert_eq!(sb.added_servers().len(), 2);
     let backups_after: usize = fs::read_dir(&home)
         .unwrap()
         .flatten()
@@ -241,25 +241,25 @@ fn install_reinstall_configure_uninstall() {
     let out = sb.run("uninstall", &[]);
     assert_eq!(out.code, 0, "{}", out.out);
     assert!(!home.join("CLAUDE.md").exists());
-    assert!(!home.join("rules/claude-agent-kit--aside.md").exists());
+    assert!(!home.join("rules/claude-agent-kit--consult.md").exists());
     assert!(!home.join("skills/palette-init").exists());
     assert!(
         !home.join("skills").exists(),
         "the install created skills/, so it is removed once empty"
     );
     assert!(
-        sb.prefs_path("aside").is_file(),
+        sb.prefs_path("consult").is_file(),
         "prefs are user-owned and stay"
     );
     assert!(!home.join(".claude-agent-kit-manifest.toml").exists());
-    for name in ["aside", "dispatch", "palette"] {
+    for name in ["dispatch", "palette"] {
         assert!(
             !sb.bin_dir.join(exe_name(&platform, name)).exists(),
             "{name}"
         );
     }
     let removed = sb.removed_servers();
-    for s in ["aside", "dispatch", "palette"] {
+    for s in ["dispatch", "palette"] {
         assert!(removed.contains(&s.to_string()), "{s} in {removed:?}");
     }
     assert_eq!(
@@ -340,7 +340,7 @@ fn a_custom_home_gets_printed_commands_instead_of_registration() {
     let out = sb2.run("install", &[]);
     assert_eq!(out.code, 0, "{}", out.out);
     assert!(own.join("CLAUDE.md").is_file());
-    assert_eq!(sb2.added_servers().len(), 3);
+    assert_eq!(sb2.added_servers().len(), 2);
 }
 
 #[test]
@@ -386,7 +386,7 @@ fn a_failed_reinstall_keeps_what_the_first_install_recorded() {
     let out = sb.run("uninstall", &[]);
     assert_eq!(out.code, 0, "{}", out.out);
     assert!(!home.join("CLAUDE.md").exists());
-    assert!(!home.join("rules/claude-agent-kit--aside.md").exists());
+    assert!(!home.join("rules/claude-agent-kit--consult.md").exists());
     assert!(!home.join("skills/palette-init").exists());
     assert!(!manifest_path.exists());
 }

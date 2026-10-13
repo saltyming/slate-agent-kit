@@ -1,21 +1,23 @@
-//! Optional transcript forwarding — native, multi-harness.
+//! Transcript forwarding for consultations — native, multi-harness.
 //!
-//! aside forwards a REDACTED tail of the invoking harness's own session log:
+//! A consultation (`dispatch_consult`) forwards a REDACTED tail of the
+//! invoking harness's own session log, rendered when the consultation is
+//! submitted:
 //! - Claude Code:   `~/.claude/projects/<dashed-cwd>/<uuid>.jsonl`
 //! - Codex CLI:     `$CODEX_HOME/sessions/**/rollout-*.jsonl` (interactive
-//!   sessions only — headless `codex exec` children are excluded so aside
-//!   never forwards its own prior consultation as "the conversation")
+//!   sessions only — headless `codex exec` children are excluded so a
+//!   consultation never forwards a prior dispatch run as "the conversation")
 //! - Kimi Code CLI: `$KIMI_CODE_HOME/session_index.jsonl` →
 //!   `<sessionDir>/agents/main/wire.jsonl`
 //!
 //! Source selection, in precedence order:
-//! 1. `ASIDE_TRANSCRIPT_DIR` — explicit directory of Claude-schema `.jsonl`
+//! 1. `DISPATCH_TRANSCRIPT_DIR` — explicit directory of Claude-schema `.jsonl`
 //!    files (tests / unusual setups). Installers do not set this.
-//! 2. `ASIDE_HARNESS` = `claude` | `codex` | `kimi` — set by the installer at
+//! 2. `SLATE_HARNESS` = `claude` | `codex` | `kimi` — set by the installer at
 //!    MCP registration time; deterministic.
 //! 3. Auto-detect — each reader locates a candidate for this project and the
 //!    newest source file wins. The invoking harness appended to its log
-//!    milliseconds before this MCP call, so newest-wins picks the live one.
+//!    milliseconds before the consult call, so newest-wins picks the live one.
 //!
 //! Redaction contract (identical across harnesses): user/assistant text passes
 //! verbatim; tool calls become `[tool_use: <name>]` (name only); tool results
@@ -70,7 +72,7 @@ struct Located {
 }
 
 fn harness_from_env() -> Option<Harness> {
-    let v = std::env::var("ASIDE_HARNESS").ok()?;
+    let v = std::env::var("SLATE_HARNESS").ok()?;
     let v = v.trim().to_ascii_lowercase();
     if v.is_empty() {
         return None;
@@ -81,7 +83,7 @@ fn harness_from_env() -> Option<Harness> {
         "kimi" => Some(Harness::Kimi),
         other => {
             tracing::warn!(
-                "ASIDE_HARNESS has unknown value {other:?}; falling back to auto-detect"
+                "SLATE_HARNESS has unknown value {other:?}; falling back to auto-detect"
             );
             None
         }
@@ -90,7 +92,8 @@ fn harness_from_env() -> Option<Harness> {
 
 /// The project directory this session is about. MCP servers are not always
 /// spawned in the project (the Kimi plugin pins cwd to the plugin dir), so an
-/// explicit env override wins over the process cwd — same chain as dispatch.
+/// explicit env override wins over the process cwd — the same chain as the
+/// server's project root.
 fn resolve_project_dir(cwd: &Path) -> PathBuf {
     for key in [
         "SLATE_PROJECT_DIR",
@@ -111,13 +114,13 @@ fn resolve_project_dir(cwd: &Path) -> PathBuf {
 /// prompt inclusion. `tail` defaults to `DEFAULT_TAIL` messages when `None`.
 pub fn render_transcript(cwd: &Path, home: &Path, tail: Option<u32>) -> TranscriptOutcome {
     // Explicit override: a directory of Claude-schema <uuid>.jsonl files.
-    if let Some(dir) = std::env::var_os("ASIDE_TRANSCRIPT_DIR")
+    if let Some(dir) = std::env::var_os("DISPATCH_TRANSCRIPT_DIR")
         && !dir.is_empty()
     {
         let dir = PathBuf::from(dir);
         if !dir.exists() {
             return TranscriptOutcome::Unavailable(format!(
-                "ASIDE_TRANSCRIPT_DIR={} does not exist",
+                "DISPATCH_TRANSCRIPT_DIR={} does not exist",
                 dir.display()
             ));
         }

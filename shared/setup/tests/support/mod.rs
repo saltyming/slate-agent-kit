@@ -342,7 +342,7 @@ impl ReleaseServer {
         } else {
             format!("{prefix}/latest/download")
         };
-        let mut names = vec!["aside", "dispatch", "palette"];
+        let mut names = vec!["dispatch", "palette"];
         if with_guard && !platform.contains("windows") {
             names.push("agent-guard");
         }

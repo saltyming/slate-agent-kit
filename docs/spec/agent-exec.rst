@@ -18,9 +18,10 @@ token usage from a backend's own output. The public items of the two crates
 are authoritative for names and types; this document is authoritative for the
 behavior behind them.
 
-A server decides what to run and what to do with the result: aside composes a
-prompt and renders a reply, dispatch keeps its run store, its watchdogs and its
-opencode runner. The crates write no file and no store of their own.
+A server decides what to run and what to do with the result: dispatch composes
+a consultation's prompt and renders its reply, and keeps its run store, its
+watchdogs and its opencode runner for both kinds of run. The crates write no
+file and no store of their own.
 
 Definitions and model
 ---------------------
@@ -46,19 +47,28 @@ Isolation
 
 ``Isolation`` states how a spawned backend is kept from reaching back into the
 server that spawned it. For Codex: ``IgnoreUserConfig`` (``exec
---ignore-user-config``, no MCP server at all) or ``DisableMcpServer(name)``
+--ignore-user-config``, no MCP server at all), ``DisableMcpServer(name)``
 (``-c mcp_servers.<name>.enabled=false`` before ``exec``, every other server
-kept). For Claude: ``SafeMode { tools }`` (``--safe-mode
---no-session-persistence --permission-mode plan --tools <list>``) or
-``Permissions`` (the sandbox mapping alone). Every spawned process also
-carries the re-entry marker (see Re-entry).
+kept) or ``ServerEnv`` (``-c mcp_servers.<server>.command="<command>"``, ``-c
+mcp_servers.<server>.env.<var>="<value>"`` and, for each tool the server
+pre-approves, ``-c mcp_servers.<server>.tools.<tool>.approval_mode="approve"``,
+in that order before ``exec``; every server kept and the named server started
+with that variable set). The command is given so the entry is complete when
+the user's ``config.toml`` does not register the server, since Codex refuses
+an entry with an environment and no command; the approvals are given because
+a backend run with ``-a never`` cannot call a tool the configuration has not
+approved; every value is a TOML string, since Codex rejects an integer there.
+For Claude: ``SafeMode { tools }`` (``--safe-mode --no-session-persistence
+--permission-mode plan --tools <list>``) or ``Permissions`` (the sandbox
+mapping alone). Every spawned process also carries the re-entry marker (see
+Re-entry).
 
 OutputMode
 ~~~~~~~~~~
 
 ``OutputMode`` is ``Default`` (no format flag; the backend's final message on
-stdout), ``Text`` (Claude ``--input-format text --output-format text``, as
-aside sends today), ``Json`` (Claude ``--output-format json``) or
+stdout), ``Text`` (Claude ``--input-format text --output-format text``, as a
+consultation sends), ``Json`` (Claude ``--output-format json``) or
 ``JsonStream`` (Codex ``exec --json``). ``Json`` and ``JsonStream`` are what
 usage is parsed from; the other modes yield a record whose ``usage`` is
 ``None`` unless the caller later attaches usage parsed from a session file.
@@ -70,8 +80,9 @@ How much of stdout and stderr is kept and how: ``stdout_cap`` and
 ``stderr_cap``, each with ``Keep::Head`` or ``Keep::Tail`` and ``Unit::Bytes``
 or ``Unit::Chars``, and ``failure_stdout_cap`` for stdout on a non-zero exit.
 Overflow is drained so the child never blocks, discarded, and marked in the
-record. aside's policy: stdout 50 KB head by character, stderr 2 KB tail by
-character, failure stdout 2 KB head by character. dispatch's policy: stdout
+record. The consultation policy: stdout 50 KB head by character, stderr 2 KB
+tail by character, failure stdout 2 KB head by character. The execution
+policy: stdout
 200 KB head by byte, stderr 16 KB head by byte, failure stdout the same as
 stdout.
 
@@ -79,11 +90,11 @@ FailureTextPolicy
 ~~~~~~~~~~~~~~~~~
 
 What the classifier and the user see when a run fails: stderr always;
-stdout for the backends listed in ``stdout_for`` (both servers: Claude only,
+stdout for the backends listed in ``stdout_for`` (both kinds: Claude only,
 because Claude prints the discriminating error on stdout and exits non-zero
 with only warnings on stderr, and a codex answer that mentions a rate limit
 must not read as one), clipped to ``stdout_tail`` characters when set
-(dispatch: 2,000; aside: unset, the failure capture cap applies).
+(execution: 2,000; consultation: unset, the failure capture cap applies).
 
 RunSpec
 ~~~~~~~
@@ -153,12 +164,15 @@ is ``None``.
 Re-entry
 ~~~~~~~~
 
-A server names an environment variable and a ceiling (aside:
-``ASIDE_REENTRY_DEPTH``, ceiling 1; dispatch: ``DISPATCH_REENTRY_DEPTH``,
-ceiling 1). Every spawned process, including the ``--version`` probe, carries
-the variable at the server's depth plus one; a server refuses a request when
-its own depth is at or above its ceiling. An unset or empty value is depth 0; a
-malformed or non-Unicode value is past every ceiling.
+A server names an environment variable and a ceiling (dispatch:
+``DISPATCH_REENTRY_DEPTH``, ceiling 1). Every spawned process, including the
+``--version`` probe, carries the variable at the server's depth plus one; a
+server refuses a request when its own depth is at or above its ceiling, except
+the request kinds it declares safe past the ceiling (dispatch: a consultation,
+whose backend sees no MCP server). An unset or empty value is depth 0; a
+malformed or non-Unicode value is past every ceiling. A backend that starts
+its MCP servers with a clean environment receives the marker through
+``Isolation::ServerEnv`` instead.
 
 Guard
 ~~~~~
@@ -177,7 +191,7 @@ kills on close, inside the server process.
 ``RunSpec.guard`` is ``Required`` (without ``agent-guard`` the attempt is
 ``Spawn`` with a message saying how to install it), ``Preferred`` (without it
 the backend runs unguarded and the ``Started`` event says so) or ``Off``.
-dispatch uses ``Required``; aside uses ``Preferred``.
+an execution uses ``Required``; a consultation uses ``Preferred``.
 
 The crate sets ``AGENT_EXEC_GUARD`` on the guard process, and ``agent-guard``
 removes it from the program's environment. ``run`` refuses with ``Spawn`` when

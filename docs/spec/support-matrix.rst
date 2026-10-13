@@ -39,18 +39,28 @@ palette
   Claude, Codex, Kimi: the palette rule, the palette skills and templates, and
   the palette MCP server.
 
-Consultation (aside)
-  Claude, Codex: shared MCP server reading the harness's own transcripts. Kimi:
-  the same server through the local plugin.
+Consultation
+  Claude, Codex: the dispatch server's ``dispatch_consult``, on codex and
+  claude, reading the harness's own transcripts. Kimi: the same through the
+  local plugin.
 
 Dispatch
-  Claude, Codex: shared MCP server; backends codex, opencode, claude. Kimi: the
-  same through the local plugin, which needs a workspace root.
+  Claude, Codex: shared MCP server; execution backends codex, opencode, claude.
+  Kimi: the same through the local plugin, which needs a workspace root.
+
+Waiting on a run
+  Claude: ``Bash`` with ``run_in_background``, which re-invokes the session
+  when ``dispatch wait`` exits. Codex: ``exec_command`` yields after at most
+  30 s with ``dispatch wait`` still running, and the process is then polled
+  with empty ``write_stdin`` calls of up to ``background_terminal_max_timeout``
+  (300 s by default), each returning when the process exits. Kimi:
+  ``Shell`` with ``run_in_background`` and ``disable_timeout``, which notifies
+  the session when the command completes.
 
 Prefs
-  Claude, Codex, Kimi: aside, dispatch, subagent, git and comment prefs files,
-  written by the installer and owned by the user. Claude loads them with the
-  rules; Codex and Kimi read them when first needed.
+  Claude, Codex, Kimi: consult, dispatch, subagent, git and comment prefs
+  files, written by the installer and owned by the user. Claude loads them with
+  the rules; Codex and Kimi read them when first needed.
 
 Subagent default model
   Claude: ``CLAUDE_CODE_SUBAGENT_MODEL`` in ``settings.json``, no effort
@@ -69,7 +79,8 @@ Model guidance
 
 Read-only subagents
   Claude: ``Explore``, ``Plan``, ``claude-code-guide``. Codex: none; a read-only
-  opinion goes through aside. Kimi: ``Agent`` with ``explore`` or ``plan``.
+  opinion goes through ``dispatch_consult``. Kimi: ``Agent`` with ``explore``
+  or ``plan``.
 
 Write-capable subagents
   Claude: every other ``Agent`` type, and ``Workflow``. Codex: ``spawn_agent``

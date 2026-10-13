@@ -23,6 +23,11 @@
 //! token does not share, so a restart (`interrupted` plus a successor task) and a
 //! user cancel (`cancelled`) stay distinguishable.
 //!
+//! Both kinds run here. A consultation (`JobKind::Consult`) builds its attempts
+//! with `consult::attempt`, is never restarted, pins no claude session (its
+//! claude attempt persists none), locates a codex attempt's rollout by its
+//! question section, and stores the reply text `consult::outcome_text` renders.
+//!
 //! The connection is a std `Mutex`; every DB touch is a short synchronous helper
 //! that locks, writes, and drops the guard — never held across an `.await`, so
 //! the task future stays `Send`.
@@ -41,6 +46,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
 use crate::backend::{self, Backend};
+use crate::consult;
 use crate::liveness;
 use crate::opencode;
 use crate::render;
@@ -59,9 +65,26 @@ const ROLLOUT_LOCATE_ATTEMPTS: usize = 40;
 /// How many characters of a discarded attempt's failure text are kept.
 const DISCARDED_DETAIL_CHARS: usize = 2000;
 
+/// What a job runs: an execution in its working_dir, or a consultation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobKind {
+    /// A write-capable run (`dispatch_submit`, `dispatch_steer`, a restart).
+    Execute,
+    /// A read-only consultation (`dispatch_consult`).
+    Consult {
+        /// The note stored with the reply when the transcript was unavailable.
+        transcript_note: Option<String>,
+        /// The prompt's question section, which locates a codex attempt's
+        /// rollout (`consult::question_section`).
+        log_marker: String,
+    },
+}
+
 /// Owned, `'static` description of one delegated run.
 pub struct Job {
     pub id: String,
+    /// Execution or consultation.
+    pub kind: JobKind,
     pub backend: Backend,
     pub working_dir: PathBuf,
     pub sandbox: String,
@@ -185,7 +208,8 @@ fn attempt_models(job: &Job) -> Vec<Option<String>> {
 /// a restart, not allow_concurrent) is restarted, and only when the window is
 /// enabled.
 fn restart_window(job: &Job) -> Option<Duration> {
-    if job.backend == Backend::Codex
+    if job.kind == JobKind::Execute
+        && job.backend == Backend::Codex
         && job.restart_of.is_none()
         && job.resume_session.is_none()
         && job.nonce.is_some()
@@ -266,11 +290,14 @@ impl AttemptBuilder<'_> {
     fn build(&self, idx: usize, model: Option<&str>) -> agent_exec::RunSpec {
         let job = self.job;
         let (nonce, prompt) = self.identity(idx);
+        let consult = matches!(job.kind, JobKind::Consult { .. });
         // Claude: pin a fresh session id per attempt, so the session log path
         // under ~/.claude/projects/ is deterministic (no discovery/polling). A
         // steered run passes the parent session via --resume … --fork-session
-        // and still pins its own new id.
-        let pin = (job.backend == Backend::Claude).then(|| uuid::Uuid::new_v4().to_string());
+        // and still pins its own new id. A consultation's claude attempt runs
+        // with --no-session-persistence, so there is no session to pin.
+        let pin =
+            (job.backend == Backend::Claude && !consult).then(|| uuid::Uuid::new_v4().to_string());
         // Codex: snapshot the rollouts that already exist BEFORE this attempt's
         // spawn, so the association can require a file that did not exist yet —
         // never a pre-existing same-cwd session, including a prior fallback
@@ -280,20 +307,28 @@ impl AttemptBuilder<'_> {
         } else {
             HashSet::new()
         };
-        let spec = backend::run_spec(
-            job.backend.process().unwrap_or(agent_exec::Backend::Codex),
-            &backend::AttemptSpec {
-                working_dir: &job.working_dir,
-                sandbox: &job.sandbox,
-                model,
-                reasoning_effort: job.reasoning_effort.as_deref(),
-                skip_git_repo_check: job.skip_git_repo_check,
-                resume_session: job.resume_session.as_deref(),
-                pin_session: pin.as_deref(),
-                backend_version: job.backend_version.as_deref(),
-            },
-            prompt,
-        );
+        let process = job.backend.process().unwrap_or(agent_exec::Backend::Codex);
+        let spec = if consult {
+            agent_exec::RunSpec {
+                backend_version: job.backend_version.clone(),
+                ..consult::attempt(process, &prompt, model, job.reasoning_effort.as_deref())
+            }
+        } else {
+            backend::run_spec(
+                process,
+                &backend::AttemptSpec {
+                    working_dir: &job.working_dir,
+                    sandbox: &job.sandbox,
+                    model,
+                    reasoning_effort: job.reasoning_effort.as_deref(),
+                    skip_git_repo_check: job.skip_git_repo_check,
+                    resume_session: job.resume_session.as_deref(),
+                    pin_session: pin.as_deref(),
+                    backend_version: job.backend_version.as_deref(),
+                },
+                prompt,
+            )
+        };
         lock(self.attempts).push(Attempt {
             nonce,
             pin,
@@ -484,13 +519,7 @@ impl Consumer<'_> {
             // history is recorded.
             return self.restart(window);
         }
-        finish(
-            self.db,
-            self.job.backend,
-            &self.job.id,
-            fallback,
-            seen.final_started,
-        );
+        finish(self.db, self.job, fallback, seen.final_started);
         None
     }
 
@@ -685,6 +714,7 @@ impl Consumer<'_> {
             model_fallback: old.model_fallback.clone(),
             allow_concurrent: old.allow_concurrent,
             restart_of: Some(job.id.clone()),
+            kind: store::Kind::Execute,
         };
         let inserted = match db.lock() {
             Ok(mut conn) => store::insert_queued(
@@ -717,6 +747,7 @@ impl Consumer<'_> {
 
         Some(Job {
             id: new_id,
+            kind: JobKind::Execute,
             backend: job.backend,
             working_dir: job.working_dir.clone(),
             sandbox: job.sandbox.clone(),
@@ -739,11 +770,18 @@ impl Consumer<'_> {
 /// Locate a codex attempt's rollout: a resume by its known session id (codex
 /// appends the new turn to the same file); a fresh run by its nonce (positive
 /// identity, robust to a concurrent same-cwd codex), else by the snapshot diff.
+/// A consultation's prompt carries no nonce: its rollout is the newest one in
+/// the server's directory whose user message holds the question section and
+/// that did not exist before the spawn; anything else is left unassociated.
 fn locate_rollout(
     job: &Job,
     nonce: Option<&str>,
     snapshot: &HashSet<PathBuf>,
 ) -> Option<(PathBuf, String)> {
+    if let JobKind::Consult { log_marker, .. } = &job.kind {
+        return harness_log::codex::locate_by_marker(&job.working_dir, log_marker)
+            .filter(|(path, _)| !snapshot.contains(path));
+    }
     match job.resume_session.as_deref() {
         Some(sid) => harness_log::codex::locate_by_session_id(sid).map(|p| (p, sid.to_string())),
         None => match nonce {
@@ -804,24 +842,70 @@ fn terminal(backend: Backend, outcome: &Outcome, started: bool) -> Terminal {
     }
 }
 
-/// Write the chain's terminal outcome, then — only when at least one fallback
-/// attempt was tried and discarded — record which model actually produced the
-/// result plus the discarded attempts' history. A cancellation before the
-/// last attempt spawned records no history.
-fn finish(db: &DbHandle, backend: Backend, id: &str, f: FallbackOutcome, started: bool) {
-    let t = terminal(backend, &f.outcome, started);
+/// The terminal columns of a consultation's final `outcome`: the reply or the
+/// failure text `consult::outcome_text` renders, or, for a cancellation, the
+/// columns any run records.
+fn consult_terminal(
+    job: &Job,
+    f: &FallbackOutcome,
+    started: bool,
+    transcript_note: Option<&str>,
+) -> Terminal {
+    let process = job.backend.process().unwrap_or(agent_exec::Backend::Codex);
+    let exit_code = match &f.outcome {
+        Outcome::Record(r) => r.exit_code.map(|c| c as i64),
+        _ => None,
+    };
+    match consult::outcome_text(
+        process,
+        &f.outcome,
+        &f.discarded,
+        f.model.as_deref(),
+        transcript_note,
+    ) {
+        Some(Ok(reply)) => Terminal {
+            status: store::STATUS_SUCCEEDED,
+            exit_code,
+            result: Some(reply),
+            error: None,
+        },
+        Some(Err(text)) => Terminal {
+            status: store::STATUS_FAILED,
+            exit_code,
+            result: None,
+            error: Some(text),
+        },
+        None => terminal(job.backend, &f.outcome, started),
+    }
+}
+
+/// Write the chain's terminal outcome in one statement: status, exit code,
+/// result or error and — only when at least one fallback attempt was tried and
+/// discarded — the model that actually produced the result plus the discarded
+/// attempts' history. A cancellation before the last attempt spawned records
+/// no history.
+fn finish(db: &DbHandle, job: &Job, f: FallbackOutcome, started: bool) {
+    let t = match &job.kind {
+        JobKind::Execute => terminal(job.backend, &f.outcome, started),
+        JobKind::Consult {
+            transcript_note, ..
+        } => consult_terminal(job, &f, started, transcript_note.as_deref()),
+    };
+    let cancelled_before_start = matches!(f.outcome, Outcome::Cancelled) && !started;
+    let history =
+        (!f.discarded.is_empty() && !cancelled_before_start).then(|| history_json(&f.discarded));
     db_finish(
         db,
-        id,
-        t.status,
-        t.exit_code,
-        t.result.as_deref(),
-        t.error.as_deref(),
+        &job.id,
+        &store::RunOutcome {
+            status: t.status,
+            exit_code: t.exit_code,
+            result: t.result.as_deref(),
+            error: t.error.as_deref(),
+            final_model: history.as_ref().and(f.model.as_deref()),
+            fallback_history: history.as_deref(),
+        },
     );
-    let cancelled_before_start = matches!(f.outcome, Outcome::Cancelled) && !started;
-    if !f.discarded.is_empty() && !cancelled_before_start {
-        db_set_fallback_result(db, id, f.model.as_deref(), &history_json(&f.discarded));
-    }
 }
 
 /// The stored `fallback_history`: `[{model, error_kind, detail}]`, the model
@@ -977,28 +1061,10 @@ fn db_set_session(db: &DbHandle, id: &str, session_id: &str, path: &str) {
     }
 }
 
-fn db_set_fallback_result(db: &DbHandle, id: &str, final_model: Option<&str>, history_json: &str) {
+fn db_finish(db: &DbHandle, id: &str, outcome: &store::RunOutcome<'_>) {
     match db.lock() {
         Ok(conn) => {
-            if let Err(e) = store::set_fallback_result(&conn, id, final_model, history_json) {
-                tracing::warn!("dispatch: set_fallback_result({id}) failed: {e}");
-            }
-        }
-        Err(e) => tracing::warn!("dispatch: db lock poisoned in set_fallback_result: {e}"),
-    }
-}
-
-fn db_finish(
-    db: &DbHandle,
-    id: &str,
-    status: &str,
-    exit_code: Option<i64>,
-    result: Option<&str>,
-    error: Option<&str>,
-) {
-    match db.lock() {
-        Ok(conn) => {
-            if let Err(e) = store::finish(&conn, id, status, exit_code, result, error) {
+            if let Err(e) = store::finish(&conn, id, outcome) {
                 tracing::warn!("dispatch: finish({id}) failed: {e}");
             }
         }
@@ -1111,6 +1177,7 @@ mod tests {
             model_fallback: None,
             allow_concurrent: false,
             restart_of: None,
+            kind: store::Kind::Execute,
         };
         let id = match store::insert_queued(
             &mut conn,
@@ -1137,6 +1204,7 @@ mod tests {
     fn job(id: &str, backend: Backend, dir: &Path, nonce: Option<&str>) -> Job {
         Job {
             id: id.to_string(),
+            kind: JobKind::Execute,
             backend,
             working_dir: dir.to_path_buf(),
             sandbox: "workspace-write".to_string(),
@@ -1291,9 +1359,14 @@ mod tests {
             ]
         );
 
-        // The spec carries dispatch's codex policy.
+        // The spec carries dispatch's codex policy: the dispatch server stays
+        // enabled and receives the re-entry marker in its environment.
         let argv = agent_exec::command(&first).1;
-        assert!(argv.contains(&"mcp_servers.dispatch.enabled=false".to_string()));
+        assert!(argv.contains(&format!(
+            "mcp_servers.dispatch.env.DISPATCH_REENTRY_DEPTH=\"{}\"",
+            backend::next_depth()
+        )));
+        assert!(!argv.iter().any(|a| a.ends_with(".enabled=false")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1322,6 +1395,153 @@ mod tests {
         assert_eq!(
             lock(&attempts).last().unwrap().nonce.as_deref(),
             Some("d-2:N2-retry1")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A consultation job of `backend` in `dir` with the given transcript note.
+    fn consult_job(id: &str, backend: Backend, dir: &Path, note: Option<&str>) -> Job {
+        Job {
+            kind: JobKind::Consult {
+                transcript_note: note.map(str::to_string),
+                log_marker: consult::question_section("why?"),
+            },
+            sandbox: "read-only".to_string(),
+            prompt: consult::compose_prompt(None, None, "why?"),
+            model_fallback: None,
+            ..job(id, backend, dir, None)
+        }
+    }
+
+    #[test]
+    fn a_consultation_builds_the_consult_attempt_without_a_pin() {
+        let dir = scratch("builder-consult");
+        let (db, id) = db_with_row(Backend::Claude, &dir, None);
+        for backend in [Backend::Codex, Backend::Claude] {
+            let job = consult_job(&id, backend, &dir, None);
+            let attempts = StdMutex::new(Vec::new());
+            let b = AttemptBuilder {
+                db: &db,
+                job: &job,
+                attempts: &attempts,
+                snapshot: HashSet::new,
+            };
+            let spec = b.build(0, Some("m1"));
+            let process = backend.process().unwrap();
+            let expected = consult::attempt(process, &job.prompt, Some("m1"), None);
+            assert_eq!(
+                agent_exec::command(&spec).1,
+                agent_exec::command(&expected).1,
+                "{backend:?}: the consultation's argv"
+            );
+            assert_eq!(spec.prompt, job.prompt, "the prompt is sent unchanged");
+            assert_eq!(spec.working_dir, None, "runs in the server's directory");
+            assert_eq!(spec.guard, agent_exec::GuardMode::Preferred);
+            assert_eq!(spec.pin_session, None);
+            assert_eq!(spec.backend_version.as_deref(), Some("v-test"));
+            assert_eq!(lock(&attempts).last().unwrap().pin, None);
+            assert_eq!(
+                restart_window(&job),
+                None,
+                "a consultation is never restarted"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_consultation_stores_the_reply_text_with_its_notes() {
+        let dir = scratch("drive-consult");
+        let (db, id) = db_with_row(Backend::Codex, &dir, None);
+        let job = consult_job(
+            &id,
+            Backend::Codex,
+            &dir,
+            Some("transcript unavailable (x); proceeding with question + context only"),
+        );
+        let ct = CancellationToken::new();
+        let attempt_ct = ct.child_token();
+        let attempts = StdMutex::new(Vec::new());
+        let cx = Consumer {
+            db: &db,
+            job: &job,
+            ct: &ct,
+            attempt_ct: &attempt_ct,
+            attempts: &attempts,
+            restart_after: None,
+            locate: never_found,
+        };
+        let (tx, rx) = unbounded_channel();
+        let chain = async {
+            let _ = tx.send(started(4242));
+            let done = record(true, "the answer", "");
+            let _ = tx.send(RunEvent::Finished(done.clone()));
+            FallbackOutcome {
+                outcome: done,
+                model: Some("m2".into()),
+                discarded: vec![DiscardedAttempt {
+                    model: Some("m1".into()),
+                    kind: BackendErrorKind::RateLimited,
+                    detail: String::new(),
+                }],
+            }
+        };
+        assert!(drive_bounded(&cx, chain, rx).await.is_none());
+        let r = row(&db, &id);
+        assert_eq!(r.status, store::STATUS_SUCCEEDED);
+        assert_eq!(r.exit_code, Some(0));
+        assert_eq!(
+            r.result.as_deref(),
+            Some(
+                "[codex]\n\nthe answer\n\n\
+                 [answered by fallback model m2 after m1 (rate_limited) failed]\n\n\
+                 transcript unavailable (x); proceeding with question + context only"
+            )
+        );
+        assert_eq!(r.error, None);
+        assert_eq!(r.final_model.as_deref(), Some("m2"));
+        assert!(r.fallback_history.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_consultation_stores_the_failure_text() {
+        let dir = scratch("finish-consult");
+        let (db, id) = db_with_row(Backend::Claude, &dir, None);
+        let job = consult_job(&id, Backend::Claude, &dir, None);
+        let failed = FallbackOutcome {
+            outcome: record(false, "bad model", "warning"),
+            model: None,
+            discarded: Vec::new(),
+        };
+        finish(&db, &job, failed, true);
+        let r = row(&db, &id);
+        assert_eq!(r.status, store::STATUS_FAILED);
+        assert_eq!(r.result, None);
+        assert_eq!(
+            r.error.as_deref(),
+            Some(
+                "backend_error: claude exited with status Some(1)\n\nstderr:\nwarning\n\n\
+                 stdout:\nbad model"
+            )
+        );
+        assert_eq!(r.final_model, None);
+        assert_eq!(r.fallback_history, None);
+
+        // A cancellation is recorded as for any run.
+        let (db, id) = db_with_row(Backend::Codex, &dir, None);
+        let job = consult_job(&id, Backend::Codex, &dir, None);
+        let cancelled = FallbackOutcome {
+            outcome: Outcome::Cancelled,
+            model: None,
+            discarded: Vec::new(),
+        };
+        finish(&db, &job, cancelled, true);
+        let r = row(&db, &id);
+        assert_eq!(r.status, store::STATUS_CANCELLED);
+        assert_eq!(
+            r.error.as_deref(),
+            Some("cancelled by request; the backend process group was killed")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

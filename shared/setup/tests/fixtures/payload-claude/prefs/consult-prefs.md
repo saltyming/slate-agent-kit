@@ -1,7 +1,7 @@
-<!-- kimi-agent-kit-custom:aside-prefs -->
-# Aside Preferences
+<!-- claude-agent-kit-custom:consult-prefs -->
+# Consult Preferences
 
-> Fixture template for kimi-agent-kit. Edit freely; uninstall keeps this file.
+> Fixture template for claude-agent-kit. Edit freely; uninstall keeps this file.
 
 ## Level
 

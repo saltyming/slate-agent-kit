@@ -52,7 +52,7 @@ fn install_reinstall_configure_uninstall() {
         "--set",
         "subagent.effort=xhigh",
         "--set",
-        "aside.level=on-request",
+        "consult.level=on-request",
     ];
     let out = sb.run("install", &args);
     assert_eq!(out.code, 0, "{}", out.out);
@@ -62,7 +62,7 @@ fn install_reinstall_configure_uninstall() {
     let agents = read(&home.join("AGENTS.md"));
     let rules: Vec<String> = [
         "codex-agent-kit--task-execution.md",
-        "codex-agent-kit--aside.md",
+        "codex-agent-kit--consult.md",
     ]
     .iter()
     .map(|r| read(&sb.payload.join("rules").join(r)))
@@ -90,15 +90,19 @@ fn install_reinstall_configure_uninstall() {
 
     // Registration with CODEX_HOME set, in the order remove then add.
     let added = sb.added_servers();
-    assert_eq!(added.len(), 3);
-    assert_eq!(added[0].1, ["ASIDE_HARNESS=codex"]);
+    assert_eq!(added.len(), 2);
     let state = home.join("slate-agent-kit");
     assert!(
-        added[1]
+        added[0]
             .1
             .contains(&format!("SLATE_AGENT_STATE_HOME={}", state.display())),
         "{:?}",
-        added[1].1
+        added[0].1
+    );
+    assert!(
+        added[0].1.contains(&"SLATE_HARNESS=codex".to_string()),
+        "{:?}",
+        added[0].1
     );
     assert!(state.is_dir());
     assert!(
@@ -114,34 +118,34 @@ fn install_reinstall_configure_uninstall() {
     assert!(text.contains("theme = \"dark\" # keep this comment"));
     assert!(text.contains("# another server"));
     let cfg = table(&home.join("config.toml"));
-    let aside = cfg["mcp_servers"]["aside"].as_table().unwrap();
-    assert_eq!(aside["tool_timeout_sec"].as_integer(), Some(1800));
-    assert_eq!(
-        aside["default_tools_approval_mode"].as_str(),
-        Some("approve")
-    );
-    assert_eq!(aside["env"]["ASIDE_HARNESS"].as_str(), Some("codex"));
+    let dispatch = cfg["mcp_servers"]["dispatch"].as_table().unwrap();
+    assert_eq!(dispatch["env"]["SLATE_HARNESS"].as_str(), Some("codex"));
     assert!(
-        cfg["mcp_servers"]["dispatch"]
-            .get("tool_timeout_sec")
-            .is_none(),
-        "only aside needs the long timeout"
+        dispatch.get("tool_timeout_sec").is_none()
+            && dispatch.get("default_tools_approval_mode").is_none(),
+        "no call blocks, so no timeout and no server-level approval: {dispatch:?}"
     );
-    let code_mode = cfg["features"]["code_mode"].as_table().unwrap();
-    let excluded: Vec<&str> = code_mode["excluded_tool_namespaces"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
-    assert_eq!(excluded, ["mcp__other", "mcp__aside"]);
+    let dispatch_tools = dispatch["tools"].as_table().unwrap();
+    for t in [
+        "dispatch_consult",
+        "dispatch_status",
+        "dispatch_list",
+        "dispatch_logs",
+        "dispatch_backends",
+    ] {
+        assert_eq!(
+            dispatch_tools[t]["approval_mode"].as_str(),
+            Some("approve"),
+            "{t}"
+        );
+    }
     assert_eq!(
-        code_mode["direct_only_tool_namespaces"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
+        dispatch_tools.len(),
+        5,
+        "submit, steer and cancel keep their prompt"
     );
+    // The code-mode lists are the user's own again: nothing is added to them.
+    assert_eq!(cfg["features"], original["features"]);
     let palette_tools = cfg["mcp_servers"]["palette"]["tools"].as_table().unwrap();
     assert_eq!(
         palette_tools["palette_status"]["approval_mode"].as_str(),
@@ -179,11 +183,11 @@ fn install_reinstall_configure_uninstall() {
     );
     let cfg = table(&home.join("config.toml"));
     assert_eq!(
-        cfg["features"]["code_mode"]["excluded_tool_namespaces"]
-            .as_array()
+        cfg["mcp_servers"]["dispatch"]["tools"]
+            .as_table()
             .unwrap()
             .len(),
-        2
+        5
     );
 
     // Uninstall restores the configuration and removes what the kit installed.
@@ -193,13 +197,13 @@ fn install_reinstall_configure_uninstall() {
     let text = fs::read_to_string(home.join("config.toml")).unwrap();
     assert!(text.contains("# My Codex configuration") && text.contains("# another server"));
     assert!(!home.join("AGENTS.md").exists());
-    assert!(!home.join("rules/codex-agent-kit--aside.md").exists());
+    assert!(!home.join("rules/codex-agent-kit--consult.md").exists());
     assert!(
         home.join("rules/codex-agent-kit--style.md").is_file(),
         "custom rules are user-owned and stay"
     );
     assert!(sb.prefs_path("git").is_file());
-    for name in ["aside", "dispatch", "palette"] {
+    for name in ["dispatch", "palette"] {
         assert!(!sb.bin_dir.join(exe_name(&platform, name)).exists());
     }
     assert!(!home.join(".codex-agent-kit-manifest.toml").exists());
@@ -246,29 +250,6 @@ fn uninstall_removes_the_folders_the_install_created_and_only_those() {
         !sb.home().join("rules").exists(),
         "rules/ was created by the install"
     );
-}
-
-#[test]
-fn a_scalar_code_mode_is_reported_and_the_file_is_never_dropped_silently() {
-    let mut sb = Sandbox::new(Harness::Codex);
-    let server = ReleaseServer::start(&sb.env.platform(), None, true, true);
-    sb.use_release(&server);
-    let home = sb.home();
-    fs::create_dir_all(&home).unwrap();
-    fs::write(home.join("config.toml"), "[features]\ncode_mode = true\n").unwrap();
-    let out = sb.run("install", &[]);
-    assert_eq!(out.code, 1, "{}", out.out);
-    assert!(out.out.contains("scalar `code_mode`"), "{}", out.out);
-    assert!(
-        out.out.contains("remove the `code_mode = ...` line"),
-        "{}",
-        out.out
-    );
-    let text = fs::read_to_string(home.join("config.toml")).unwrap();
-    assert!(text.contains("code_mode = true"));
-    // The servers are registered and the manifest records them, so the fix is one edit and a re-run.
-    assert_eq!(sb.added_servers().len(), 3);
-    assert!(home.join(".codex-agent-kit-manifest.toml").is_file());
 }
 
 #[test]

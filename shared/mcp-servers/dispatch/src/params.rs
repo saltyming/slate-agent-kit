@@ -2,9 +2,10 @@
 //!
 //! `SubmitParams` carries the structured task spec (objective / target_files /
 //! constraints / acceptance) alongside free-form prose (context / details), plus
-//! the execution knobs (backend / model / sandbox / …). Array and boolean fields
-//! use the lenient deserializers so a stringified value from a calling agent is
-//! tolerated with a corrective error.
+//! the execution knobs (backend / model / sandbox / …). `ConsultParams` carries
+//! a consultation's question, context and transcript settings. Array, boolean
+//! and integer fields use the lenient deserializers so a stringified value from
+//! a calling agent is tolerated with a corrective error.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -43,7 +44,7 @@ pub struct SubmitParams {
     /// Optional free-form additional instructions.
     pub details: Option<String>,
 
-    /// Backend to delegate to: "codex" (default) or "opencode".
+    /// Backend to delegate to: "codex" (default), "opencode" or "claude".
     pub backend: Option<String>,
 
     /// Optional model override forwarded to the backend. OpenCode expects provider/model.
@@ -79,6 +80,56 @@ pub struct SubmitParams {
     pub model_fallback: Option<Vec<String>>,
 }
 
+/// Parameters of `dispatch_consult`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+pub struct ConsultParams {
+    /// Required. The question to put to the backend.
+    pub question: String,
+
+    /// Backend to consult: "codex" (default) or "claude". "opencode" serves
+    /// executions only and is refused.
+    pub backend: Option<String>,
+
+    /// Optional additional framing on top of the transcript. Use this to tell
+    /// the backend something that is not in the conversation yet (e.g. "focus
+    /// on correctness, not style"); prefer naming file paths here and letting
+    /// the backend read them over embedding their content.
+    pub context: Option<String>,
+
+    /// Forward the current harness transcript (redacted: text passes, tool
+    /// calls, tool results and thinking become placeholders) when a transcript
+    /// source is available. Defaults to true; pass false for decontextualised
+    /// questions. Pass raw `true` / `false`, not strings.
+    #[serde(default, deserialize_with = "lenient_opt_bool")]
+    pub include_transcript: Option<bool>,
+
+    /// When transcript forwarding is on, keep only this many recent messages
+    /// (default 80). The rendered transcript is further capped at 100 KB by
+    /// trimming from the front. Pass a raw JSON number, not a string.
+    #[serde(default, deserialize_with = "lenient_opt_u32")]
+    pub transcript_tail: Option<u32>,
+
+    /// Optional model forwarded to the backend CLI (`-m` / `--model`); omitted,
+    /// the CLI uses its own default.
+    pub model: Option<String>,
+
+    /// Optional reasoning effort: codex `-c model_reasoning_effort=<val>`,
+    /// claude `--effort <val>` (low / medium / high / xhigh / max where
+    /// supported).
+    pub reasoning_effort: Option<String>,
+
+    /// Optional ordered fallback chain: if `model` (or the backend default)
+    /// fails with a transient backend error (rate limit, quota, model
+    /// unavailable), the server retries the SAME question against the next
+    /// model here, in order. A non-transient failure is never retried. The
+    /// reply notes when a fallback model answered.
+    #[serde(default, deserialize_with = "lenient_opt_vec_string")]
+    pub model_fallback: Option<Vec<String>>,
+
+    /// Optional short label for the consultation (shown in lists).
+    pub title: Option<String>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 pub struct StatusParams {
     /// Task id, e.g. "d-7".
@@ -91,12 +142,15 @@ pub struct StatusParams {
     pub include_spec: Option<bool>,
 }
 
+/// Parameters of `dispatch_list`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 pub struct ListParams {
     /// Optional plan_id filter.
     pub plan_id: Option<String>,
     /// Optional status filter (queued / running / succeeded / failed / cancelled / interrupted).
     pub status: Option<String>,
+    /// Optional kind filter: "execute" or "consult".
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]

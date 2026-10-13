@@ -1,5 +1,5 @@
-<!-- codex-agent-kit-custom:aside-prefs -->
-# Aside Preferences
+<!-- codex-agent-kit-custom:consult-prefs -->
+# Consult Preferences
 
 > Fixture template for codex-agent-kit. Edit freely; uninstall keeps this file.
 

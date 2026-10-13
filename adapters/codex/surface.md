@@ -14,11 +14,11 @@ preferences settle, goals, editing, and the Slate MCP servers.
   rule file and the user's custom rules; it is the loaded instruction surface.
   Codex does not auto-load `$CODEX_HOME/rules/*.md`; that directory is reference
   material.
-- The preference files (`{{ASIDE_PREFS_FILE}}`, `{{DISPATCH_PREFS_FILE}}`,
+- The preference files (`{{CONSULT_PREFS_FILE}}`, `{{DISPATCH_PREFS_FILE}}`,
   `{{SUBAGENT_PREFS_FILE}}`, `{{GIT_PREFS_FILE}}`, `{{COMMENT_PREFS_FILE}}`) live in
   `$CODEX_HOME/rules/` and are not part of the concatenated file, so the user can
   edit them without reinstalling. Read each one the first time a session needs
-  it: before consulting aside, dispatching or starting a subagent, before the
+  it: before consulting another model family, dispatching or starting a subagent, before the
   first commit or PR, and before the first file, comment, doc comment or header
   you write.
 - Skills live under `$CODEX_HOME/skills`. Read a selected skill's `SKILL.md`
@@ -60,7 +60,7 @@ clarification heuristic in `{{PRIMARY_MANUAL_FILE}}`).
 
 ## Slate MCP In Codex
 
-- `aside`, `dispatch` and `palette` are registered as Codex MCP servers in
+- `dispatch` and `palette` are registered as Codex MCP servers in
   `$CODEX_HOME/config.toml` by the kit installer.
 - If `dispatch_submit` or a palette tool reports `no_project_root`, Codex started
   the server outside your project. Tell the user to run the kit installer's

@@ -1,8 +1,8 @@
 //! The `mcp` command: binaries and server registration for one or more
 //! harnesses, without a kit.
 //!
-//! Owns the flow used by slate's `tooling/install-mcp.sh`: obtain the aside,
-//! dispatch and palette binaries (and `agent-guard` beside them on Linux and
+//! Owns the flow used by slate's `tooling/install-mcp.sh`: obtain the dispatch
+//! and palette binaries (and `agent-guard` beside them on Linux and
 //! macOS; it is not a server and is never registered), register the servers
 //! with each named harness, or unregister them. Registrations and edited keys are recorded in
 //! `<home>/.slate-agent-kit-mcp-manifest.toml` so the reverse is exact. It never
@@ -30,6 +30,32 @@ fn config_file(harness: Harness, home: &std::path::Path) -> PathBuf {
     match harness {
         Harness::Claude => home.join("settings.json"),
         Harness::Codex | Harness::Kimi => home.join("config.toml"),
+    }
+}
+
+/// The servers `manifest` records for `harness`, or `fallback` when it records none.
+///
+/// A manifest written by an earlier release may record servers that are no
+/// longer known, such as aside; uninstalling unregisters them too.
+fn recorded_servers(manifest: &Manifest, harness: Harness, fallback: &[String]) -> Vec<String> {
+    let recorded: Vec<String> = manifest
+        .registrations
+        .iter()
+        .filter(|r| r.harness == harness.name() && r.kind == "mcp")
+        .map(|r| r.server.clone())
+        .collect();
+    if recorded.is_empty() {
+        fallback.to_vec()
+    } else {
+        recorded
+    }
+}
+
+/// [`recorded_servers`] of the manifest in `home`, for the summary; an unreadable manifest shows `fallback`.
+fn recorded_or(home: &std::path::Path, harness: Harness, fallback: &[String]) -> Vec<String> {
+    match Manifest::load(home, MCP_KIT, harness) {
+        Ok(Some(m)) => recorded_servers(&m, harness, fallback),
+        _ => fallback.to_vec(),
     }
 }
 
@@ -91,10 +117,13 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
     ui.title("Summary");
     if opts.uninstall {
         for h in &harnesses {
+            let home = home_of(*h);
+            let names = recorded_or(&home, *h, &servers);
             ui.line(&format!(
-                "  Unregister aside, dispatch and palette from {} ({})",
+                "  Unregister {} from {} ({})",
+                names.join(", "),
                 h.product(),
-                home_of(*h).display()
+                home.display()
             ));
         }
     } else {
@@ -137,19 +166,7 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
             let home = home_of(*h);
             let manifest =
                 Manifest::load(&home, MCP_KIT, *h)?.unwrap_or_else(|| Manifest::new(MCP_KIT));
-            let names: Vec<String> = {
-                let recorded: Vec<String> = manifest
-                    .registrations
-                    .iter()
-                    .filter(|r| r.harness == h.name() && r.kind == "mcp")
-                    .map(|r| r.server.clone())
-                    .collect();
-                if recorded.is_empty() {
-                    servers.clone()
-                } else {
-                    recorded
-                }
-            };
+            let names = recorded_servers(&manifest, *h, &servers);
             serve::unserve(env, ui, *h, &home, &names, &manifest, &mut report)?;
             Manifest::delete(&home, MCP_KIT, *h)?;
             created::remove_empty(ui, &manifest.created_dirs);

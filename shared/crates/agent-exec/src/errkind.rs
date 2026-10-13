@@ -5,8 +5,8 @@
 //! `failure_text` and the fallback loop in `run_with_fallback`.
 //!
 //! The pattern table was tuned against REAL captured stderr/stdout from the
-//! backends that expose discriminating errors (codex via both aside and
-//! dispatch, claude, and dispatch's opencode), not
+//! backends that expose discriminating errors (codex in both consultations and
+//! executions, claude, and dispatch's opencode), not
 //! guessed:
 //!   - codex, bad model, ChatGPT-account auth: a JSON body containing
 //!     `"type":"invalid_request_error"` and a message like "The 'X' model is
@@ -39,8 +39,8 @@ pub enum BackendErrorKind {
 impl BackendErrorKind {
     /// `AuthOrPermission` is deliberately NOT retry-worthy: a `model_fallback`
     /// chain swaps models *within* a single already-chosen backend/account
-    /// (dispatch's `Job.backend`, aside's `backend` param each pick codex vs.
-    /// opencode/claude once, before any fallback runs), so an auth/permission
+    /// (dispatch's `Job.backend` picks codex, opencode or claude once, before
+    /// any fallback runs), so an auth/permission
     /// failure affects that whole account and would fail identically on every
     /// model in the chain — retrying just burns the rest of the chain for no
     /// benefit.

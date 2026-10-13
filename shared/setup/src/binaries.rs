@@ -1,4 +1,4 @@
-//! Obtaining the aside, dispatch and palette binaries, and the `agent-guard`
+//! Obtaining the dispatch and palette binaries, and the `agent-guard`
 //! helper beside them where the platform uses it, and placing them in the binary folder.
 //!
 //! Owns the three binary modes: `prebuilt` (download from the slate release,
@@ -61,7 +61,7 @@ pub const GUARD_BINARY: &str = "agent-guard";
 const GUARD_PACKAGE: &str = "agent-exec";
 
 /// The server binaries that start backends through [`GUARD_BINARY`].
-const GUARD_USERS: [&str; 2] = ["aside", "dispatch"];
+const GUARD_USERS: [&str; 1] = ["dispatch"];
 
 /// The binaries whose presence in a manifest keeps `binary` installed: `binary`
 /// itself and, for the guard, the servers that start backends through it. A kit
@@ -92,7 +92,7 @@ pub fn uses_guard(platform: &str) -> bool {
 pub struct Request {
     /// The mode.
     pub mode: Mode,
-    /// Binary names to install (`aside`, `dispatch`, `palette`).
+    /// Binary names to install (`dispatch`, `palette`).
     pub names: Vec<String>,
     /// Also install [`GUARD_BINARY`] beside `names` on platforms that use it.
     pub guard: bool,
@@ -335,7 +335,7 @@ pub fn download_all(
     let zip_format = platform.contains("windows");
     let ext = if zip_format { "zip" } else { "tar.gz" };
     let (versioned, latest) = release_bases(env, &req.slate_version);
-    let first = req.names.first().map(String::as_str).unwrap_or("aside");
+    let first = req.names.first().map(String::as_str).unwrap_or("dispatch");
     let resolved = if req.slate_version == "latest" {
         Resolved {
             checksums: fetch
@@ -385,7 +385,7 @@ pub fn download_all(
                         .is_some_and(|sums| find_checksum(sums, &asset).is_some()) =>
                 {
                     notes.push(format!(
-                        "this slate release has no {GUARD_BINARY} for {platform}; dispatch refuses to start backends and aside runs unguarded until a release that ships it is installed"
+                        "this slate release has no {GUARD_BINARY} for {platform}; dispatch refuses to start execution backends and runs consultations unguarded until a release that ships it is installed"
                     ));
                     continue;
                 }
@@ -457,13 +457,13 @@ pub fn replace_binary(dest: &Path, bytes: &[u8]) -> Result<Option<String>> {
         }
     }
     if let Err(first) = fs::rename(&tmp, dest) {
-        let aside = dest.with_file_name(format!("{name}.old-{}", std::process::id()));
-        let moved = dest.exists() && fs::rename(dest, &aside).is_ok();
+        let parked = dest.with_file_name(format!("{name}.old-{}", std::process::id()));
+        let moved = dest.exists() && fs::rename(dest, &parked).is_ok();
         if moved && fs::rename(&tmp, dest).is_ok() {
-            let _ = fs::remove_file(&aside);
+            let _ = fs::remove_file(&parked);
         } else {
             if moved {
-                let _ = fs::rename(&aside, dest);
+                let _ = fs::rename(&parked, dest);
             }
             let _ = fs::remove_file(&tmp);
             return Err(Error::io(
@@ -660,7 +660,7 @@ mod tests {
     fn request(dir: &Path) -> Request {
         Request {
             mode: Mode::Prebuilt,
-            names: vec!["aside".into(), "dispatch".into(), "palette".into()],
+            names: vec!["dispatch".into(), "palette".into()],
             guard: false,
             bin_dir: dir.to_path_buf(),
             slate_version: "0.7.0".into(),
@@ -674,7 +674,7 @@ mod tests {
             base,
             zip_format,
             with_sums,
-            &["aside", "dispatch", "palette"],
+            &["dispatch", "palette"],
         )
     }
 
@@ -707,8 +707,8 @@ mod tests {
     #[test]
     fn checksum_lines_parse_both_star_and_plain_forms() {
         let h = "a".repeat(64);
-        let text = format!("{h}  aside-x.tar.gz\n{h} *dispatch-x.tar.gz\nshort  nope\n");
-        assert_eq!(find_checksum(&text, "aside-x.tar.gz"), Some(h.clone()));
+        let text = format!("{h}  palette-x.tar.gz\n{h} *dispatch-x.tar.gz\nshort  nope\n");
+        assert_eq!(find_checksum(&text, "palette-x.tar.gz"), Some(h.clone()));
         assert_eq!(find_checksum(&text, "dispatch-x.tar.gz"), Some(h));
         assert_eq!(find_checksum(&text, "nope"), None);
         assert_eq!(find_checksum(&text, "absent"), None);
@@ -731,7 +731,7 @@ mod tests {
         let fetch = release(platform, &versioned, false, true);
         let mut ui = Ui::captured(new_sink());
         let got = install(&env, &mut ui, &request(dir.path()), &fetch).unwrap();
-        assert_eq!(got.paths.len(), 3);
+        assert_eq!(got.paths.len(), 2);
         assert!(
             got.notes.iter().all(|n| !n.contains("checksums")),
             "{:?}",
@@ -757,8 +757,8 @@ mod tests {
         let mut ui = Ui::captured(new_sink());
         install(&env, &mut ui, &request(dir.path()), &fetch).unwrap();
         assert_eq!(
-            fs::read(dir.path().join("aside.exe")).unwrap(),
-            b"binary aside"
+            fs::read(dir.path().join("dispatch.exe")).unwrap(),
+            b"binary dispatch"
         );
         assert!(dir.path().join("palette.exe").exists());
     }
@@ -766,22 +766,25 @@ mod tests {
     #[test]
     fn a_checksum_mismatch_aborts_before_any_binary_is_replaced() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("aside"), "old aside").unwrap();
+        fs::write(dir.path().join("dispatch"), "old dispatch").unwrap();
         let platform = "x86_64-unknown-linux-gnu";
         let env = env_for(platform);
         let (versioned, _) = release_bases(&env, "0.7.0");
         let mut fetch = release(platform, &versioned, false, true);
         // Corrupt the second archive after its checksum was recorded.
-        let key = format!("{versioned}/dispatch-{platform}.tar.gz");
-        fetch.0.insert(key, targz("dispatch", b"tampered"));
+        let key = format!("{versioned}/palette-{platform}.tar.gz");
+        fetch.0.insert(key, targz("palette", b"tampered"));
         let mut ui = Ui::captured(new_sink());
         let err = install(&env, &mut ui, &request(dir.path()), &fetch).unwrap_err();
         assert!(
-            err.to_string().contains("checksum mismatch for dispatch-"),
+            err.to_string().contains("checksum mismatch for palette-"),
             "{err}"
         );
-        assert_eq!(fs::read(dir.path().join("aside")).unwrap(), b"old aside");
-        assert!(!dir.path().join("dispatch").exists());
+        assert_eq!(
+            fs::read(dir.path().join("dispatch")).unwrap(),
+            b"old dispatch"
+        );
+        assert!(!dir.path().join("palette").exists());
         assert!(err.state.unwrap().contains("no binary was replaced"));
     }
 
@@ -799,7 +802,7 @@ mod tests {
             "{:?}",
             got.notes
         );
-        assert!(dir.path().join("aside").exists());
+        assert!(dir.path().join("dispatch").exists());
     }
 
     #[test]
@@ -812,7 +815,7 @@ mod tests {
         let mut ui = Ui::captured(new_sink());
         install(&env, &mut ui, &request(dir.path()), &fetch).unwrap();
         let calls = fetch.1.borrow();
-        for name in ["aside", "dispatch", "palette"] {
+        for name in ["dispatch", "palette"] {
             let asset = format!("{versioned}/{name}-{platform}.tar.gz");
             assert_eq!(
                 calls.iter().filter(|c| **c == asset).count(),
@@ -858,10 +861,10 @@ mod tests {
 
     #[test]
     fn archives_without_the_binary_are_rejected() {
-        let e = extract(&targz("other", b"x"), "aside", false).unwrap_err();
-        assert!(e.to_string().contains("does not contain `aside`"));
-        assert!(extract(b"not an archive", "aside", false).is_err());
-        assert!(extract(b"not an archive", "aside.exe", true).is_err());
+        let e = extract(&targz("other", b"x"), "dispatch", false).unwrap_err();
+        assert!(e.to_string().contains("does not contain `dispatch`"));
+        assert!(extract(b"not an archive", "dispatch", false).is_err());
+        assert!(extract(b"not an archive", "dispatch.exe", true).is_err());
     }
 
     #[cfg(unix)]
@@ -869,7 +872,7 @@ mod tests {
     fn replacing_a_binary_keeps_the_old_inode_for_running_processes() {
         use std::os::unix::fs::MetadataExt;
         let dir = tempfile::tempdir().unwrap();
-        let dest = dir.path().join("aside");
+        let dest = dir.path().join("dispatch");
         fs::write(&dest, "old").unwrap();
         let held = fs::File::open(&dest).unwrap();
         let old_inode = held.metadata().unwrap().ino();
@@ -901,7 +904,7 @@ mod tests {
         assert!(err.to_string().contains("--slate-dir"));
     }
 
-    const WITH_GUARD: [&str; 4] = ["aside", "dispatch", "palette", GUARD_BINARY];
+    const WITH_GUARD: [&str; 3] = ["dispatch", "palette", GUARD_BINARY];
 
     fn guard_request(dir: &Path) -> Request {
         Request {
@@ -915,17 +918,17 @@ mod tests {
         let req = guard_request(Path::new("/b"));
         assert_eq!(
             req.installed_names("aarch64-apple-darwin"),
-            ["aside", "dispatch", "palette", "agent-guard"]
+            ["dispatch", "palette", "agent-guard"]
         );
         assert_eq!(
             req.installed_names("x86_64-pc-windows-msvc"),
-            ["aside", "dispatch", "palette"]
+            ["dispatch", "palette"]
         );
         assert_eq!(
             request(Path::new("/b"))
                 .installed_names("x86_64-unknown-linux-gnu")
                 .len(),
-            3
+            2
         );
     }
 
@@ -935,17 +938,16 @@ mod tests {
         let dir = Path::new("/b");
         assert_eq!(
             keepers_of(&env, &dir.join("agent-guard")),
-            [
-                dir.join("agent-guard"),
-                dir.join("aside"),
-                dir.join("dispatch")
-            ]
+            [dir.join("agent-guard"), dir.join("dispatch")]
         );
         assert_eq!(
             keepers_of(&env, &dir.join("palette")),
             [dir.join("palette")]
         );
-        assert_eq!(keepers_of(&env, &dir.join("aside")), [dir.join("aside")]);
+        assert_eq!(
+            keepers_of(&env, &dir.join("dispatch")),
+            [dir.join("dispatch")]
+        );
         let win = env_for("x86_64-pc-windows-msvc");
         assert_eq!(
             keepers_of(&win, &dir.join("agent-guard")),
@@ -962,7 +964,7 @@ mod tests {
         let fetch = release_of(platform, &versioned, false, true, &WITH_GUARD);
         let mut ui = Ui::captured(new_sink());
         let got = install(&env, &mut ui, &guard_request(dir.path()), &fetch).unwrap();
-        assert_eq!(got.paths.len(), 4);
+        assert_eq!(got.paths.len(), 3);
         assert_eq!(got.paths.last().unwrap(), &dir.path().join(GUARD_BINARY));
         assert_eq!(
             fs::read(dir.path().join(GUARD_BINARY)).unwrap(),
@@ -980,7 +982,7 @@ mod tests {
         let fetch = release(platform, &versioned, false, true);
         let mut ui = Ui::captured(new_sink());
         let got = install(&env, &mut ui, &guard_request(dir.path()), &fetch).unwrap();
-        assert_eq!(got.paths.len(), 3);
+        assert_eq!(got.paths.len(), 2);
         assert!(!dir.path().join(GUARD_BINARY).exists());
         let warnings: Vec<_> = got
             .notes
@@ -989,10 +991,13 @@ mod tests {
             .collect();
         assert_eq!(warnings.len(), 1, "{:?}", got.notes);
         assert!(
-            warnings[0].contains("dispatch refuses to start backends"),
+            warnings[0].contains("dispatch refuses to start execution backends"),
             "{warnings:?}"
         );
-        assert!(warnings[0].contains("aside runs unguarded"), "{warnings:?}");
+        assert!(
+            warnings[0].contains("runs consultations unguarded"),
+            "{warnings:?}"
+        );
     }
 
     #[test]
@@ -1004,7 +1009,7 @@ mod tests {
         let fetch = release(platform, &versioned, false, false);
         let mut ui = Ui::captured(new_sink());
         let got = install(&env, &mut ui, &guard_request(dir.path()), &fetch).unwrap();
-        assert_eq!(got.paths.len(), 3);
+        assert_eq!(got.paths.len(), 2);
         assert_eq!(
             got.notes
                 .iter()
@@ -1029,7 +1034,7 @@ mod tests {
         let mut ui = Ui::captured(new_sink());
         let err = install(&env, &mut ui, &guard_request(dir.path()), &fetch).unwrap_err();
         assert!(err.to_string().contains("agent-guard-"), "{err}");
-        assert!(!dir.path().join("aside").exists());
+        assert!(!dir.path().join("dispatch").exists());
     }
 
     #[test]
@@ -1051,7 +1056,7 @@ mod tests {
             "{err}"
         );
         assert!(err.state.unwrap().contains("no binary was replaced"));
-        assert!(!dir.path().join("aside").exists());
+        assert!(!dir.path().join("dispatch").exists());
     }
 
     #[test]
@@ -1063,7 +1068,7 @@ mod tests {
         let fetch = release(platform, &versioned, true, true);
         let mut ui = Ui::captured(new_sink());
         let got = install(&env, &mut ui, &guard_request(dir.path()), &fetch).unwrap();
-        assert_eq!(got.paths.len(), 3);
+        assert_eq!(got.paths.len(), 2);
         assert!(got.notes.is_empty(), "{:?}", got.notes);
         assert!(
             fetch.1.borrow().iter().all(|c| !c.contains(GUARD_BINARY)),
@@ -1074,7 +1079,10 @@ mod tests {
 
     #[test]
     fn exe_suffix_follows_the_platform() {
-        assert_eq!(exe_name("x86_64-pc-windows-msvc", "aside"), "aside.exe");
-        assert_eq!(exe_name("aarch64-apple-darwin", "aside"), "aside");
+        assert_eq!(
+            exe_name("x86_64-pc-windows-msvc", "dispatch"),
+            "dispatch.exe"
+        );
+        assert_eq!(exe_name("aarch64-apple-darwin", "dispatch"), "dispatch");
     }
 }

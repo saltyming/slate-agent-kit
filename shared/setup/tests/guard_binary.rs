@@ -68,7 +68,7 @@ fn a_prebuilt_install_places_records_and_removes_the_guard_on_unix() {
     assert_eq!(manifest_text(&sb).contains(GUARD), !cfg!(windows));
     assert_eq!(warning_lines(&out.out), 0, "{}", out.out);
     let names: Vec<String> = sb.added_servers().into_iter().map(|(n, _)| n).collect();
-    assert_eq!(names, ["aside", "dispatch", "palette"], "not registered");
+    assert_eq!(names, ["dispatch", "palette"], "not registered");
     let requests = server.requests.lock().unwrap().clone();
     assert_eq!(
         requests.iter().any(|r| r.contains(GUARD)),
@@ -107,7 +107,7 @@ fn a_release_without_the_guard_installs_the_servers_with_one_warning() {
     let out = sb.run("install", &[]);
     assert_eq!(out.code, 0, "{}", out.out);
     assert!(!guard_path(&sb).exists());
-    for name in ["aside", "dispatch", "palette"] {
+    for name in ["dispatch", "palette"] {
         assert!(
             sb.bin_dir
                 .join(exe_name(&sb.env.platform(), name))
@@ -123,13 +123,18 @@ fn a_release_without_the_guard_installs_the_servers_with_one_warning() {
     );
     if !cfg!(windows) {
         assert!(
-            out.out.contains("dispatch refuses to start backends"),
+            out.out
+                .contains("dispatch refuses to start execution backends"),
             "{}",
             out.out
         );
-        assert!(out.out.contains("aside runs unguarded"), "{}", out.out);
+        assert!(
+            out.out.contains("runs consultations unguarded"),
+            "{}",
+            out.out
+        );
     }
-    assert_eq!(sb.added_servers().len(), 3);
+    assert_eq!(sb.added_servers().len(), 2);
 }
 
 #[test]
@@ -167,7 +172,7 @@ fn a_guard_checksum_mismatch_fails_before_any_binary_is_replaced() {
         out.out
     );
     assert!(out.out.contains("no binary was replaced"), "{}", out.out);
-    assert!(!sb.bin_dir.join("aside").exists());
+    assert!(!sb.bin_dir.join("dispatch").exists());
     assert!(!guard_path(&sb).exists());
     assert!(sb.added_servers().is_empty());
 }
@@ -200,14 +205,14 @@ fn a_build_install_places_the_guard_from_the_checkout() {
     }
     assert_eq!(builds.len(), if cfg!(windows) { 1 } else { 2 });
     let names: Vec<String> = sb.added_servers().into_iter().map(|(n, _)| n).collect();
-    assert_eq!(names, ["aside", "dispatch", "palette"], "not registered");
+    assert_eq!(names, ["dispatch", "palette"], "not registered");
 
     let out = sb.run("uninstall", &[]);
     assert_eq!(out.code, 0, "{}", out.out);
     assert!(!guard_path(&sb).exists());
     assert!(
         !sb.bin_dir
-            .join(exe_name(&sb.env.platform(), "aside"))
+            .join(exe_name(&sb.env.platform(), "dispatch"))
             .exists()
     );
 }
@@ -226,7 +231,7 @@ fn mcp_places_the_guard_and_never_registers_it() {
         "summary lists it: {out}"
     );
     let names: Vec<String> = sb.added_servers().into_iter().map(|(n, _)| n).collect();
-    assert_eq!(names.len(), 6);
+    assert_eq!(names.len(), 4);
     assert!(names.iter().all(|n| n != GUARD), "{names:?}");
     let manifest = fs::read_to_string(
         sb.env
@@ -325,7 +330,7 @@ fn the_guard_stays_while_a_kit_that_predates_it_still_lists_its_servers() {
     let out = claude.run("uninstall", &[]);
     assert_eq!(out.code, 0, "{}", out.out);
     let platform = claude.env.platform();
-    for name in ["aside", "dispatch", "palette"] {
+    for name in ["dispatch", "palette"] {
         assert!(
             claude.bin_dir.join(exe_name(&platform, name)).exists(),
             "{name}"
@@ -357,7 +362,7 @@ fn the_guard_is_removed_when_no_other_kit_lists_it_or_a_server() {
     assert!(
         !claude
             .bin_dir
-            .join(exe_name(&claude.env.platform(), "aside"))
+            .join(exe_name(&claude.env.platform(), "dispatch"))
             .exists()
     );
 }

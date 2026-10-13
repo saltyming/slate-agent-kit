@@ -57,11 +57,11 @@ jobs:
 
       - name: Build (Linux via zigbuild)
         if: runner.os == 'Linux'
-        run: cargo zigbuild --release --target ${{ matrix.target }} -p aside -p dispatch -p palette -p slate-setup
+        run: cargo zigbuild --release --target ${{ matrix.target }} -p dispatch -p palette -p slate-setup
 
       - name: Build (macOS / Windows)
         if: runner.os != 'Linux'
-        run: cargo build --release --target ${{ matrix.target }} -p aside -p dispatch -p palette -p slate-setup
+        run: cargo build --release --target ${{ matrix.target }} -p dispatch -p palette -p slate-setup
 
       # agent-guard is the parent-death guard the servers start beside themselves on
       # Linux and macOS; Windows uses a Job Object in-process and ships none. `--bin`
@@ -79,7 +79,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          for name in aside dispatch palette slate-setup agent-guard; do
+          for name in dispatch palette slate-setup agent-guard; do
             tar czf "../../../$name-${{ matrix.platform }}.tar.gz" "$name"
           done
           cd ../../..
@@ -88,7 +88,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($name in @("aside", "dispatch", "palette", "slate-setup")) {
+          foreach ($name in @("dispatch", "palette", "slate-setup")) {
             Compress-Archive -Path "target/${{ matrix.target }}/release/$name.exe" -DestinationPath "$name-${{ matrix.platform }}.zip"
           }
 

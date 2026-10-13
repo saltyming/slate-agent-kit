@@ -3,9 +3,10 @@
 //! Owns the sequence shared by `install`, `configure` and `mcp`: register the
 //! servers with the harness, read the palette server's read-only tools, then
 //! edit the harness configuration file and record every edited key. Also owns
-//! the reverse for `uninstall`. It does not choose servers or values.
+//! the reverse for `uninstall`, and the restore of recorded keys that `retire`
+//! reuses for one server at a time. It does not choose servers or values.
 //!
-//! Main entry points: [`serve`], [`unserve`] and [`Input`].
+//! Main entry points: [`serve`], [`unserve`], [`restore_records`] and [`Input`].
 
 use crate::binaries::{binary_path, read_only_tools};
 use crate::config::{ConfigDoc, ConfigRecord, JsonDoc, Restored, TomlDoc, restore};
@@ -123,8 +124,15 @@ fn apply_config(
                 .any(|s| s == "palette")
                 .then_some(tools)
                 .flatten();
-            let out =
-                claude::settings_edits(&mut doc, file, palette, input.subagent.as_ref(), manifest);
+            let dispatch = registered.iter().any(|s| s == "dispatch");
+            let out = claude::settings_edits(
+                &mut doc,
+                file,
+                palette,
+                dispatch,
+                input.subagent.as_ref(),
+                manifest,
+            );
             finish_edit(
                 ui,
                 out,
@@ -284,9 +292,22 @@ type KeyOutcome = (Vec<String>, Result<Restored>);
 /// Newest first matters for pruning: the first key written into a table the
 /// installer created carries the "table was created" mark, and that table is
 /// empty only after the keys written later have been removed.
-fn restore_file(file: &Path, records: &[&ConfigRecord], report: &mut Report) -> Result<()> {
+///
+/// Returns the key paths whose record is settled, with what happened: restored,
+/// removed, already in their previous state, or changed by the user since
+/// (reported and left as it is). A key whose restore failed is reported in
+/// `report.problems` and not returned, so a caller keeps its record.
+pub fn restore_records(
+    file: &Path,
+    records: &[&ConfigRecord],
+    report: &mut Report,
+) -> Result<Vec<(Vec<String>, Restored)>> {
     let Some(text) = read_text_opt(file)? else {
-        return Ok(());
+        // Without the file there is nothing left to restore.
+        return Ok(records
+            .iter()
+            .map(|r| (r.path.clone(), Restored::Nothing))
+            .collect());
     };
     let is_json = file
         .extension()
@@ -299,7 +320,7 @@ fn restore_file(file: &Path, records: &[&ConfigRecord], report: &mut Report) -> 
                     Error::config(format!("{} could not be read: {e}", file.display()))
                         .with_state("its edited keys were not restored"),
                 );
-                return Ok(());
+                return Ok(Vec::new());
             }
         };
         let outs = records
@@ -316,7 +337,7 @@ fn restore_file(file: &Path, records: &[&ConfigRecord], report: &mut Report) -> 
                     Error::config(format!("{} could not be read: {e}", file.display()))
                         .with_state("its edited keys were not restored"),
                 );
-                return Ok(());
+                return Ok(Vec::new());
             }
         };
         let outs = records
@@ -327,23 +348,30 @@ fn restore_file(file: &Path, records: &[&ConfigRecord], report: &mut Report) -> 
         (doc.render(), outs)
     };
     let mut changed_any = false;
+    let mut settled = Vec::new();
     for (path, outcome) in outcomes {
         match outcome {
-            Ok(Restored::Restored) | Ok(Restored::Removed) => changed_any = true,
-            Ok(Restored::Nothing) => {}
-            Ok(Restored::Changed(cur)) => report.note(format!(
-                "{} in {} was changed after the install ({}); it was left as it is",
-                path.join("."),
-                file.display(),
-                cur.unwrap_or_else(|| "removed".into())
-            )),
+            Ok(r @ (Restored::Restored | Restored::Removed)) => {
+                changed_any = true;
+                settled.push((path, r));
+            }
+            Ok(Restored::Nothing) => settled.push((path, Restored::Nothing)),
+            Ok(Restored::Changed(cur)) => {
+                report.note(format!(
+                    "{} in {} was changed after the install ({}); it was left as it is",
+                    path.join("."),
+                    file.display(),
+                    cur.clone().unwrap_or_else(|| "removed".into())
+                ));
+                settled.push((path, Restored::Changed(cur)));
+            }
             Err(e) => report.problems.push(e),
         }
     }
     if changed_any && new_text != text {
         write_atomic(file, new_text.as_bytes())?;
     }
-    Ok(())
+    Ok(settled)
 }
 
 /// Unregisters servers and restores every edited configuration key.
@@ -383,7 +411,7 @@ pub fn unserve(
     for file in files {
         let records: Vec<&ConfigRecord> =
             manifest.config.iter().filter(|c| c.file == file).collect();
-        restore_file(&file, &records, report)?;
+        restore_records(&file, &records, report)?;
     }
     Ok(())
 }

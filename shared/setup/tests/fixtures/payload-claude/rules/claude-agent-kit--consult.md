@@ -1,4 +1,4 @@
 <!-- slate-agent-kit:common -->
-# Rule codex-agent-kit--aside.md
+# Rule claude-agent-kit--consult.md
 
 Fixture rule text.

@@ -5,8 +5,8 @@
 //! `claude`, `codex` and `kimi` submodules. It does not decide when to register;
 //! `install` and `mcp` do.
 //!
-//! Main entry points: [`Ctx`], [`server_env`], [`shell_quote`], [`Outcome`],
-//! [`SubagentPrefs`] and [`run_cli`].
+//! Main entry points: [`Ctx`], [`server_env`], [`DISPATCH_PREAPPROVED_TOOLS`],
+//! [`shell_quote`], [`Outcome`], [`SubagentPrefs`] and [`run_cli`].
 
 pub mod claude;
 pub mod codex;
@@ -63,25 +63,33 @@ impl Ctx {
     }
 }
 
+/// The dispatch tools pre-approved where the harness grants approval per tool:
+/// the consultation, which runs its backend read-only, and the tools that only
+/// read the run store. Submitting, steering and cancelling keep the harness's
+/// own approval.
+pub const DISPATCH_PREAPPROVED_TOOLS: [&str; 5] = [
+    "dispatch_consult",
+    "dispatch_status",
+    "dispatch_list",
+    "dispatch_logs",
+    "dispatch_backends",
+];
+
 /// The environment variables a server is registered with.
+///
+/// dispatch gets `SLATE_HARNESS`, which picks the harness whose session log a
+/// consultation forwards, and `KIMI_CODE_HOME` for a Kimi home that is not the
+/// default, where that log lives.
 pub fn server_env(ctx: &Ctx, server: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let kimi_custom = ctx.harness == Harness::Kimi && !ctx.is_default_home();
     match server {
-        "aside" => {
-            out.push(("ASIDE_HARNESS".to_string(), ctx.harness.name().to_string()));
-            if kimi_custom {
-                out.push((
-                    "KIMI_CODE_HOME".to_string(),
-                    ctx.home.to_string_lossy().into_owned(),
-                ));
-            }
-        }
         "dispatch" => {
             out.push((
                 "SLATE_AGENT_STATE_HOME".to_string(),
                 ctx.state_home().to_string_lossy().into_owned(),
             ));
+            out.push(("SLATE_HARNESS".to_string(), ctx.harness.name().to_string()));
             if let Some(r) = ctx.roots_value() {
                 out.push(("DISPATCH_EXTRA_ROOTS".to_string(), r));
             }
@@ -164,6 +172,8 @@ pub struct Outcome {
     pub servers_done: Vec<String>,
     /// Backups made while registering, as `(original, backup)`.
     pub backups: Vec<(PathBuf, PathBuf)>,
+    /// Removals the harness CLI ran and refused, as `(server, its message)`.
+    pub refused: Vec<(String, String)>,
     /// A registration that failed after earlier ones succeeded; those stay recorded.
     pub failure: Option<Error>,
 }
@@ -234,7 +244,7 @@ pub(crate) fn test_ctx(harness: Harness, home: &str, default_home: &str) -> Ctx 
         default_home: PathBuf::from(default_home),
         bin_dir: PathBuf::from("/bin"),
         roots: Vec::new(),
-        servers: vec!["aside".into(), "dispatch".into(), "palette".into()],
+        servers: vec!["dispatch".into(), "palette".into()],
         version: "13.0.0".into(),
     }
 }
@@ -284,12 +294,13 @@ mod tests {
     #[test]
     fn claude_environment_per_server() {
         let mut ctx = test_ctx(Harness::Claude, "/h/.claude", "/h/.claude");
-        assert_eq!(
-            server_env(&ctx, "aside"),
-            vec![("ASIDE_HARNESS".to_string(), "claude".to_string())]
+        assert!(
+            server_env(&ctx, "aside").is_empty(),
+            "a retired server gets nothing"
         );
         let d = server_env(&ctx, "dispatch");
         assert_eq!(get(&d, "SLATE_AGENT_STATE_HOME"), Some("/h/.claude"));
+        assert_eq!(get(&d, "SLATE_HARNESS"), Some("claude"));
         assert_eq!(get(&d, "DISPATCH_EXTRA_ROOTS"), None);
         assert!(server_env(&ctx, "palette").is_empty());
         let sep = if cfg!(windows) { ";" } else { ":" };
@@ -312,19 +323,20 @@ mod tests {
             Path::new(get(&d, "SLATE_AGENT_STATE_HOME").unwrap()),
             Path::new("/h/.codex").join("slate-agent-kit")
         );
+        assert_eq!(get(&d, "SLATE_HARNESS"), Some("codex"));
         assert_eq!(get(&d, "KIMI_CODE_HOME"), None);
+        let ctx = test_ctx(Harness::Kimi, "/h/.kimi-code", "/h/.kimi-code");
+        assert_eq!(
+            get(&server_env(&ctx, "dispatch"), "SLATE_HARNESS"),
+            Some("kimi")
+        );
     }
 
     #[test]
     fn kimi_passes_its_home_only_when_it_is_not_the_default() {
         let ctx = test_ctx(Harness::Kimi, "/h/.kimi-code", "/h/.kimi-code");
-        assert_eq!(get(&server_env(&ctx, "aside"), "KIMI_CODE_HOME"), None);
         assert_eq!(get(&server_env(&ctx, "dispatch"), "KIMI_CODE_HOME"), None);
         let ctx = test_ctx(Harness::Kimi, "/x/kimi", "/h/.kimi-code");
-        assert_eq!(
-            get(&server_env(&ctx, "aside"), "KIMI_CODE_HOME"),
-            Some("/x/kimi")
-        );
         assert_eq!(
             get(&server_env(&ctx, "dispatch"), "KIMI_CODE_HOME"),
             Some("/x/kimi")

@@ -23,7 +23,8 @@ pub struct FailureTextPolicy {
 }
 
 impl FailureTextPolicy {
-    /// aside's policy: claude's stdout, as much as the failure capture kept.
+    /// The consultation policy (dispatch's `consult` kind): claude's stdout,
+    /// as much as the failure capture kept.
     pub fn aside() -> Self {
         FailureTextPolicy {
             stdout_for: vec![Backend::Claude],

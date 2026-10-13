@@ -7,10 +7,10 @@ s#{{PALETTE_RULE_FILE}}#claude-agent-kit--palette.md#g
 s#{{DELEGATION_RULE_FILE}}#claude-agent-kit--delegation.md#g
 s#{{MODELS_RULE_FILE}}#claude-agent-kit--models.md#g
 s#{{GIT_WORKFLOW_RULE_FILE}}#claude-agent-kit--git-workflow.md#g
-s#{{ASIDE_RULE_FILE}}#claude-agent-kit--aside.md#g
+s#{{CONSULT_RULE_FILE}}#claude-agent-kit--consult.md#g
 s#{{SURFACE_RULE_FILE}}#claude-agent-kit--claude-surface.md#g
 s#{{DISPATCH_RULE_FILE}}#claude-agent-kit--dispatch.md#g
-s#{{ASIDE_PREFS_FILE}}#claude-agent-kit--aside-prefs.md#g
+s#{{CONSULT_PREFS_FILE}}#claude-agent-kit--consult-prefs.md#g
 s#{{DISPATCH_PREFS_FILE}}#claude-agent-kit--dispatch-prefs.md#g
 s#{{GIT_PREFS_FILE}}#claude-agent-kit--git-prefs.md#g
 s#{{COMMENT_PREFS_FILE}}#claude-agent-kit--comment-prefs.md#g

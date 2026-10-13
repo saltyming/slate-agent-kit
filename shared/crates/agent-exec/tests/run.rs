@@ -712,7 +712,7 @@ async fn aside_capture_truncates_by_character(c: Ctx) {
     assert_eq!(r.stdout.chars().count(), 40 * 1024);
     assert!(!r.stdout_truncated);
 
-    // On failure aside keeps only the first 2 KB of stdout.
+    // On failure the consultation policy keeps only the first 2 KB of stdout.
     sp.env.push(("STUB_EXIT".into(), "1".into()));
     let (o, _) = run_one(&sp).await;
     let r = record(o);
@@ -720,7 +720,10 @@ async fn aside_capture_truncates_by_character(c: Ctx) {
     assert_eq!(r.stdout.chars().count(), 2 * 1024);
     assert!(r.stdout_truncated);
     let text = failure_text(&sp.failure_text, "claude", &Outcome::Record(r.clone())).unwrap();
-    assert!(text.ends_with(&r.stdout), "aside sends all it kept");
+    assert!(
+        text.ends_with(&r.stdout),
+        "the consultation policy sends all it kept"
+    );
 }
 
 async fn structured_output_gives_usage_and_session(c: Ctx) {

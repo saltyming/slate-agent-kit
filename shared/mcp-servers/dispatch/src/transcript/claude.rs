@@ -157,7 +157,8 @@ mod tests {
 
     #[test]
     fn locate_prefers_canonical_slug_and_falls_back_to_raw() {
-        let home = std::env::temp_dir().join(format!("aside-claude-test-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("dispatch-claude-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let proj_dir = home.join(".claude/projects/-w-proj");
         std::fs::create_dir_all(&proj_dir).unwrap();

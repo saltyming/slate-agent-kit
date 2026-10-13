@@ -40,7 +40,7 @@ pub struct Setting {
     pub heading: &'static str,
     /// Accepted values.
     pub kind: Kind,
-    /// Backend the setting belongs to, for per-backend aside settings.
+    /// Backend the setting belongs to, for per-backend consultation settings.
     pub backend: Option<&'static str>,
     /// Question text for the wizard.
     pub label: &'static str,
@@ -50,8 +50,8 @@ pub struct Setting {
 pub const LEVELS: &[&str] = &["on-request", "suggest", "auto"];
 /// Reasoning-effort values for consultation and dispatch backends.
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-/// Aside backends.
-pub const ASIDE_BACKENDS: &[&str] = &["codex", "claude"];
+/// Consultation backends.
+pub const CONSULT_BACKENDS: &[&str] = &["codex", "claude"];
 /// Dispatch backends.
 pub const DISPATCH_BACKENDS: &[&str] = &["codex", "opencode", "claude"];
 /// Codex subagent efforts.
@@ -82,7 +82,7 @@ const fn s(
 /// Every setting, in the order the wizard asks them.
 pub const SETTINGS: &[Setting] = &[
     s(
-        "aside",
+        "consult",
         "level",
         "Level",
         Kind::Enum(LEVELS),
@@ -90,15 +90,15 @@ pub const SETTINGS: &[Setting] = &[
         "How freely the agent consults another model family",
     ),
     s(
-        "aside",
+        "consult",
         "backend",
         "Backend",
-        Kind::Enum(ASIDE_BACKENDS),
+        Kind::Enum(CONSULT_BACKENDS),
         None,
         "Consultation backend",
     ),
     s(
-        "aside",
+        "consult",
         "codex.model",
         "Codex model",
         Kind::Text,
@@ -106,7 +106,7 @@ pub const SETTINGS: &[Setting] = &[
         "codex model (blank: the CLI default)",
     ),
     s(
-        "aside",
+        "consult",
         "codex.effort",
         "Codex reasoning effort",
         Kind::EnumOrBlank(EFFORTS),
@@ -114,7 +114,7 @@ pub const SETTINGS: &[Setting] = &[
         "codex reasoning effort",
     ),
     s(
-        "aside",
+        "consult",
         "codex.fallback",
         "Codex model fallback",
         Kind::List,
@@ -122,7 +122,7 @@ pub const SETTINGS: &[Setting] = &[
         "codex fallback models, comma-separated (blank: none)",
     ),
     s(
-        "aside",
+        "consult",
         "claude.model",
         "Claude model",
         Kind::Text,
@@ -130,7 +130,7 @@ pub const SETTINGS: &[Setting] = &[
         "claude model (blank: the CLI default)",
     ),
     s(
-        "aside",
+        "consult",
         "claude.effort",
         "Claude reasoning effort",
         Kind::EnumOrBlank(EFFORTS),
@@ -138,7 +138,7 @@ pub const SETTINGS: &[Setting] = &[
         "claude reasoning effort",
     ),
     s(
-        "aside",
+        "consult",
         "claude.fallback",
         "Claude model fallback",
         Kind::List,
@@ -473,10 +473,10 @@ pub fn validate_subagent_effort(
 
 /// True when the wizard should ask `setting`, given the answers so far.
 ///
-/// `backend` is the aside backend chosen in this run (or already in the file).
-pub fn applies(setting: &Setting, ctx: &ValidationCtx, aside_backend: &str) -> bool {
+/// `consult_backend` is the consultation backend chosen in this run (or already in the file).
+pub fn applies(setting: &Setting, ctx: &ValidationCtx, consult_backend: &str) -> bool {
     if let Some(b) = setting.backend {
-        return b == aside_backend;
+        return b == consult_backend;
     }
     if setting.kind == Kind::SubagentEffort {
         return ctx.harness != Harness::Claude;
@@ -504,14 +504,18 @@ mod tests {
             );
             assert!(find(&format!("{}.{}", s.file, s.key)).is_some());
         }
-        assert!(find("aside.nope").is_none());
+        assert!(find("consult.nope").is_none());
+        assert!(
+            find("aside.level").is_none(),
+            "the retired file name has no keys"
+        );
         assert!(find("nofile").is_none());
         assert_eq!(for_file("dispatch").count(), 5);
     }
 
     #[test]
     fn levels_reject_unknown_values_with_the_allowed_list() {
-        let level = find("aside.level").unwrap();
+        let level = find("consult.level").unwrap();
         assert_eq!(
             validate(level, &ctx(Harness::Claude), " auto ").unwrap(),
             "auto"
@@ -523,10 +527,10 @@ mod tests {
 
     #[test]
     fn effort_and_list_rules() {
-        let effort = find("aside.codex.effort").unwrap();
+        let effort = find("consult.codex.effort").unwrap();
         assert_eq!(validate(effort, &ctx(Harness::Codex), "").unwrap(), "");
         assert!(validate(effort, &ctx(Harness::Codex), "ultra").is_err());
-        let fb = find("aside.codex.fallback").unwrap();
+        let fb = find("consult.codex.fallback").unwrap();
         assert!(validate(fb, &ctx(Harness::Codex), "a,,b").is_err());
         assert_eq!(validate(fb, &ctx(Harness::Codex), "a, b").unwrap(), "a, b");
         assert!(validate(fb, &ctx(Harness::Codex), "a\nb").is_err());
@@ -597,7 +601,7 @@ mod tests {
 
     #[test]
     fn applicability_follows_backend_and_harness() {
-        let c = find("aside.claude.model").unwrap();
+        let c = find("consult.claude.model").unwrap();
         assert!(applies(c, &ctx(Harness::Codex), "claude"));
         assert!(!applies(c, &ctx(Harness::Codex), "codex"));
         let e = find("subagent.effort").unwrap();

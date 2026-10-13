@@ -1,10 +1,11 @@
 //! The plan of an install or configure run, and its summary.
 //!
 //! Owns turning the payload, the current state of the harness home and the
-//! answers into typed actions (files, prefs, custom rules, binaries, servers,
-//! configuration keys, cleanups), deciding for each file whether it is created,
-//! updated, backed up or skipped, and printing the summary that is confirmed
-//! before anything changes. It reads the file system but never writes it.
+//! answers into typed actions (files, prefs and their renames, custom rules,
+//! binaries, servers, retired servers, configuration keys, cleanups), deciding
+//! for each file whether it is created, updated, backed up or skipped, and
+//! printing the summary that is confirmed before anything changes. It reads
+//! the file system but never writes it.
 //!
 //! Main entry points: [`build`], [`Plan`] and [`print_summary`].
 
@@ -19,6 +20,7 @@ use crate::legacy;
 use crate::manifest::Manifest;
 use crate::options::Kind;
 use crate::prefs::{self, Action as PrefsActionKind, doc::PrefsDoc, schema};
+use crate::retire;
 use crate::rules::{self, CustomDecision, CustomRule};
 use crate::signature::{Owner, classify, classify_skill};
 use crate::ui::{Style, Ui};
@@ -85,6 +87,10 @@ pub struct FileAction {
 pub struct PrefsAction {
     /// Installed path.
     pub dest: PathBuf,
+    /// The file under its earlier name, moved to `dest` before the plan's text is written.
+    pub rename_from: Option<PathBuf>,
+    /// Facts about the file for the summary and the report, such as an ignored old-named file.
+    pub notes: Vec<String>,
     /// The plan for its text.
     pub plan: prefs::FilePlan,
 }
@@ -104,6 +110,8 @@ pub struct Plan {
     pub files: Vec<FileAction>,
     /// Files of the earlier install that this payload no longer ships.
     pub stale: Vec<PathBuf>,
+    /// Servers of the earlier install that this kit no longer lists.
+    pub retire: retire::Plan,
     /// Prefs files.
     pub prefs: Vec<PrefsAction>,
     /// Custom rules to copy.
@@ -244,7 +252,15 @@ fn preview_config(kit: &Kit, plan: &Plan) -> Vec<(PathBuf, Vec<String>)> {
                 .iter()
                 .any(|s| s == "palette")
                 .then_some(placeholder.as_slice());
-            claude::settings_edits(&mut doc, &file, palette, plan.subagent.as_ref(), &manifest)
+            let dispatch = plan.servers.iter().any(|s| s == "dispatch");
+            claude::settings_edits(
+                &mut doc,
+                &file,
+                palette,
+                dispatch,
+                plan.subagent.as_ref(),
+                &manifest,
+            )
         }
         Harness::Codex => {
             let Ok(mut doc) = TomlDoc::parse(text.as_deref().unwrap_or("")) else {
@@ -347,9 +363,12 @@ pub fn build(
             &input,
             &vctx,
         )?;
+        notes.extend(st.notes.iter().cloned());
         notes.extend(plan.warnings.iter().cloned());
         prefs_plans.push(PrefsAction {
             dest: st.dest.clone(),
+            rename_from: st.rename_from.clone(),
+            notes: st.notes.clone(),
             plan,
         });
     }
@@ -453,7 +472,9 @@ pub fn build(
     {
         for f in prior.files.iter().filter(|f| !f.user) {
             if files.iter().any(|a| a.dest == f.path)
-                || prefs_plans.iter().any(|p| p.dest == f.path)
+                || prefs_plans
+                    .iter()
+                    .any(|p| p.dest == f.path || p.rename_from.as_ref() == Some(&f.path))
             {
                 continue;
             }
@@ -496,6 +517,7 @@ pub fn build(
         roots: choices.roots.clone(),
         files,
         stale,
+        retire: retire::plan(env, kit),
         prefs: prefs_plans,
         custom,
         custom_dir,
@@ -593,6 +615,7 @@ pub fn print_summary(ui: &mut Ui, env: &Env, kit: &Kit, plan: &Plan) {
             ui.line(&format!("    remove {}", s.display()));
         }
     }
+    retire::print_summary(ui, &plan.retire);
     let visible_prefs: Vec<&PrefsAction> = plan.prefs.iter().collect();
     if !visible_prefs.is_empty() {
         ui.blank();
@@ -605,6 +628,13 @@ pub fn print_summary(ui: &mut Ui, env: &Env, kit: &Kit, plan: &Plan) {
                 PrefsActionKind::Migrate => "migrate (old file saved as .bak)",
                 PrefsActionKind::KeepLegacy => "keep old layout",
             };
+            if let Some(from) = &p.rename_from {
+                ui.line(&format!(
+                    "    rename {} to {} (keeps your values; the signature line names the new file)",
+                    from.display(),
+                    p.dest.display()
+                ));
+            }
             ui.line(&format!("    {word} {}", p.dest.display()));
             for c in &p.plan.changes {
                 let old = c.old.as_deref().unwrap_or("(none)");

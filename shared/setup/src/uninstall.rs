@@ -92,7 +92,8 @@ fn dispose(kit_name: &str, path: &Path, kind: EntryKind) -> Option<FileDispositi
     })
 }
 
-fn all_homes(env: &Env, kit: &Kit) -> Vec<PathBuf> {
+/// Every harness home where another kit's manifest may list a shared binary.
+pub(crate) fn all_homes(env: &Env, kit: &Kit) -> Vec<PathBuf> {
     let mut homes: Vec<PathBuf> = Harness::ALL.iter().map(|h| env.harness_home(*h)).collect();
     homes.extend(Harness::ALL.iter().map(|h| env.default_home(*h)));
     homes.push(kit.home.clone());

@@ -9,7 +9,11 @@
 //!
 //! Codex, in order: `-C <dir>` when set; `-s <sandbox>`; `-a never`;
 //! `-m <model>`; `-c model_reasoning_effort=<effort>`;
-//! `-c mcp_servers.<name>.enabled=false` for `DisableMcpServer`; `exec`;
+//! `-c mcp_servers.<name>.enabled=false` for `DisableMcpServer`;
+//! `-c mcp_servers.<server>.command="<command>"` (when set) and
+//! `-c mcp_servers.<server>.env.<var>="<value>"` and
+//! `-c mcp_servers.<server>.tools.<tool>.approval_mode="approve"` per approved
+//! tool for `ServerEnv`; `exec`;
 //! `--ignore-user-config` for `IgnoreUserConfig`; `resume <session>`;
 //! `--skip-git-repo-check`; `--json` for `JsonStream`.
 //!
@@ -57,6 +61,18 @@ fn codex_args(spec: &RunSpec) -> Vec<String> {
     //                 codex. codex does NOT pass its process env to the MCP
     //                 servers it boots, so the re-entry marker never reaches a
     //                 codex-booted server; this override is the fail-closed guard.
+    //   mcp_servers.<server>.env.<var>="<value>": keep the server and set one
+    //                 variable in its environment table instead, so the
+    //                 re-entry marker does reach the codex-booted server. The
+    //                 value is a TOML string; codex rejects an integer there.
+    //   mcp_servers.<server>.command="<command>": set alongside, so the entry
+    //                 has a transport even when config.toml does not register
+    //                 the server (an env-only entry fails codex's config load
+    //                 with "invalid transport").
+    //   mcp_servers.<server>.tools.<tool>.approval_mode="approve": under
+    //                 `-a never` an MCP call needing approval is refused, so
+    //                 these name the only tools of that server the backend can
+    //                 call, whatever config.toml says.
     //   exec:         non-interactive subcommand. With no positional PROMPT, codex
     //                 reads the instructions from stdin.
     //   --ignore-user-config: do not load ~/.codex/config.toml, so the spawned
@@ -82,9 +98,39 @@ fn codex_args(spec: &RunSpec) -> Vec<String> {
         args.push("-c".into());
         args.push(format!("model_reasoning_effort={eff}"));
     }
-    if let Isolation::DisableMcpServer(name) = &spec.isolation {
-        args.push("-c".into());
-        args.push(format!("mcp_servers.{name}.enabled=false"));
+    match &spec.isolation {
+        Isolation::DisableMcpServer(name) => {
+            args.push("-c".into());
+            args.push(format!("mcp_servers.{name}.enabled=false"));
+        }
+        Isolation::ServerEnv {
+            server,
+            var,
+            value,
+            command,
+            approve_tools,
+        } => {
+            if let Some(command) = command {
+                args.push("-c".into());
+                args.push(format!(
+                    "mcp_servers.{server}.command={}",
+                    toml_string(command)
+                ));
+            }
+            args.push("-c".into());
+            args.push(format!(
+                "mcp_servers.{server}.env.{var}={}",
+                toml_string(value)
+            ));
+            for tool in approve_tools {
+                args.push("-c".into());
+                args.push(format!(
+                    "mcp_servers.{server}.tools.{tool}.approval_mode={}",
+                    toml_string("approve")
+                ));
+            }
+        }
+        _ => {}
     }
     args.push("exec".into());
     if spec.isolation == Isolation::IgnoreUserConfig {
@@ -101,6 +147,26 @@ fn codex_args(spec: &RunSpec) -> Vec<String> {
         args.push("--json".into());
     }
     args
+}
+
+/// `value` as a TOML basic string: double-quoted, with `\`, `"` and control
+/// characters escaped.
+fn toml_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn claude_args(spec: &RunSpec) -> Vec<String> {
@@ -188,8 +254,9 @@ mod tests {
     use crate::failure::FailureTextPolicy;
     use crate::spec::{GuardMode, Reentry};
 
-    /// aside's claude attempt: safe mode, read-only tools, explicit text formats.
-    fn aside_claude(model: Option<&str>, effort: Option<&str>) -> RunSpec {
+    /// A consultation's claude attempt: safe mode, read-only tools, explicit
+    /// text formats.
+    fn consult_claude(model: Option<&str>, effort: Option<&str>) -> RunSpec {
         RunSpec {
             backend: Backend::Claude,
             prompt: "prompt body".into(),
@@ -213,7 +280,7 @@ mod tests {
             skip_git_repo_check: false,
             env: Vec::new(),
             reentry: Reentry {
-                name: "ASIDE_REENTRY_DEPTH".into(),
+                name: "DISPATCH_REENTRY_DEPTH".into(),
                 ceiling: 1,
             },
             guard: GuardMode::Required,
@@ -221,18 +288,20 @@ mod tests {
         }
     }
 
-    /// aside's codex attempt: read-only, no user config, prompt on stdin.
-    fn aside_codex(model: Option<&str>, effort: Option<&str>) -> RunSpec {
+    /// A consultation's codex attempt: read-only, no user config, prompt on
+    /// stdin.
+    fn consult_codex(model: Option<&str>, effort: Option<&str>) -> RunSpec {
         RunSpec {
             backend: Backend::Codex,
             isolation: Isolation::IgnoreUserConfig,
             output_mode: OutputMode::Default,
-            ..aside_claude(model, effort)
+            ..consult_claude(model, effort)
         }
     }
 
-    /// dispatch's codex/claude attempt: working root, the dispatch MCP server
-    /// disabled for codex, the sandbox mapping for claude, no format flags.
+    /// An execution's codex/claude attempt: working root, the dispatch MCP
+    /// server disabled for codex, the sandbox mapping for claude, no format
+    /// flags.
     fn dispatch_spec(backend: Backend, sandbox: Sandbox) -> RunSpec {
         RunSpec {
             backend,
@@ -270,9 +339,9 @@ mod tests {
     }
 
     #[test]
-    fn aside_claude_argv_is_exact() {
+    fn consult_claude_argv_is_exact() {
         assert_eq!(
-            argv(&aside_claude(Some("sonnet"), Some("high"))),
+            argv(&consult_claude(Some("sonnet"), Some("high"))),
             v(&[
                 "claude",
                 "-p",
@@ -293,7 +362,7 @@ mod tests {
             ])
         );
         assert_eq!(
-            argv(&aside_claude(None, None)),
+            argv(&consult_claude(None, None)),
             v(&[
                 "claude",
                 "-p",
@@ -312,8 +381,8 @@ mod tests {
     }
 
     #[test]
-    fn aside_codex_argv_is_exact_without_positional_prompt() {
-        let spec = aside_codex(Some("gpt-5.5"), Some("high"));
+    fn consult_codex_argv_is_exact_without_positional_prompt() {
+        let spec = consult_codex(Some("gpt-5.5"), Some("high"));
         let got = argv(&spec);
         assert_eq!(
             got,
@@ -333,7 +402,7 @@ mod tests {
         );
         assert!(!got.iter().any(|a| a.contains("prompt body")));
         assert_eq!(
-            argv(&aside_codex(None, None)),
+            argv(&consult_codex(None, None)),
             v(&[
                 "codex",
                 "-s",
@@ -414,8 +483,94 @@ mod tests {
                 "exec",
             ])
         );
-        // aside stays enabled so dispatch → aside remains allowed.
-        assert!(!argv(&spec).join(" ").contains("mcp_servers.aside"));
+        // Only the named server is disabled; no other server is touched.
+        assert_eq!(
+            argv(&spec)
+                .iter()
+                .filter(|a| a.starts_with("mcp_servers."))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn server_env_sets_one_variable_of_one_server_before_exec() {
+        let mut spec = dispatch_spec(Backend::Codex, Sandbox::WorkspaceWrite);
+        spec.isolation = Isolation::ServerEnv {
+            server: "dispatch".into(),
+            var: "DISPATCH_REENTRY_DEPTH".into(),
+            value: "1".into(),
+            command: Some(r"C:\bin\dispatch".into()),
+            approve_tools: vec!["dispatch_consult".into(), "dispatch_status".into()],
+        };
+        spec.model = Some("gpt-5.5".into());
+        spec.resume_session = Some("sid-1".into());
+        let w = PathBuf::from("/w").to_string_lossy().into_owned();
+        assert_eq!(
+            argv(&spec),
+            v(&[
+                "codex",
+                "-C",
+                &w,
+                "-s",
+                "workspace-write",
+                "-a",
+                "never",
+                "-m",
+                "gpt-5.5",
+                "-c",
+                r#"mcp_servers.dispatch.command="C:\\bin\\dispatch""#,
+                "-c",
+                "mcp_servers.dispatch.env.DISPATCH_REENTRY_DEPTH=\"1\"",
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_consult.approval_mode=\"approve\"",
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_status.approval_mode=\"approve\"",
+                "exec",
+                "resume",
+                "sid-1",
+            ])
+        );
+        assert!(!argv(&spec).iter().any(|a| a.ends_with(".enabled=false")));
+
+        // Without a command or approvals, the configured ones stay: only the
+        // env key.
+        if let Isolation::ServerEnv {
+            command,
+            approve_tools,
+            ..
+        } = &mut spec.isolation
+        {
+            *command = None;
+            approve_tools.clear();
+        }
+        let got = argv(&spec);
+        assert!(!got.iter().any(|a| a.contains(".command=")));
+        assert!(!got.iter().any(|a| a.contains(".approval_mode=")));
+        assert!(got.contains(&"mcp_servers.dispatch.env.DISPATCH_REENTRY_DEPTH=\"1\"".to_string()));
+
+        // A claude run takes no codex isolation flag.
+        spec.backend = Backend::Claude;
+        spec.resume_session = None;
+        spec.model = None;
+        assert_eq!(
+            argv(&spec),
+            v(&[
+                "claude",
+                "-p",
+                "--permission-mode",
+                "acceptEdits",
+                "--allowedTools",
+                "Bash"
+            ])
+        );
+    }
+
+    #[test]
+    fn toml_string_quotes_and_escapes() {
+        assert_eq!(toml_string("1"), "\"1\"");
+        assert_eq!(toml_string(r#"a"b\c"#), r#""a\"b\\c""#);
+        assert_eq!(toml_string("x\ny"), "\"x\\ny\"");
     }
 
     #[test]
@@ -513,7 +668,7 @@ mod tests {
             v(&["claude", "-p", "--permission-mode", "plan"])
         );
 
-        let mut codex = aside_codex(None, None);
+        let mut codex = consult_codex(None, None);
         codex.output_mode = OutputMode::JsonStream;
         codex.resume_session = Some("s".into());
         assert_eq!(
@@ -567,8 +722,8 @@ mod tests {
                 .any(|(k, v)| k == "DISPATCH_REENTRY_DEPTH" && v.is_some())
         );
 
-        // aside: no working_dir → no -C and no process directory
-        let (cmd, _) = command(&aside_codex(None, None));
+        // A consultation: no working_dir → no -C and no process directory
+        let (cmd, _) = command(&consult_codex(None, None));
         assert_eq!(cmd.as_std().get_current_dir(), None);
     }
 }

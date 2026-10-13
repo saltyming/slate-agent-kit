@@ -26,18 +26,17 @@ shared/rules/implementing/execution.md
 shared/rules/implementing/delegation.md
 shared/rules/implementing/models.md
 shared/rules/implementing/git.md
-shared/rules/implementing/mcp/aside.md
+shared/rules/implementing/mcp/consult.md
 shared/rules/implementing/mcp/dispatch.md
 shared/workflows/palette/rules.md
 shared/workflows/palette/skills/palette-init/SKILL.md
 shared/workflows/palette/templates/house-style.rst
 shared/workflows/memory/skills/memory-triage/SKILL.md
-shared/prefs/aside-prefs.md.tmpl
+shared/prefs/consult-prefs.md.tmpl
 shared/prefs/dispatch-prefs.md.tmpl
 shared/prefs/subagent-prefs.md.tmpl
 shared/prefs/git-prefs.md.tmpl
 shared/prefs/comment-prefs.md.tmpl
-shared/mcp-servers/aside/Cargo.toml
 shared/mcp-servers/dispatch/Cargo.toml
 shared/crates/agent-exec/Cargo.toml
 shared/crates/harness-log/Cargo.toml
@@ -112,7 +111,7 @@ check_rendered_file() {
     return
   fi
   # A render leak is an unrendered TOKEN — `{{KIT_VERSION}}`, `{{@INSERT …}}`,
-  # `{{ASIDE_RULE_FILE}}` — which always opens `{{` + a token char (upper-case
+  # `{{CONSULT_RULE_FILE}}` — which always opens `{{` + a token char (upper-case
   # or `@`). Match that shape, not bare `{{`/`}}`: shell and PowerShell
   # legitimately contain `}}` (e.g. nested `${VAR:=${VAR2:-}}`), which is not a
   # leak, so a bare-brace check false-positives on copied scripts.
@@ -132,7 +131,7 @@ for kit in claude codex kimi; do
   for f in "$kd"/dist/rules/*.md "$kd"/dist/prefs/*.md "$kd"/dist/skills/*/SKILL.md "$kd"/dist/skills/palette-init/templates/*.rst; do
     check_rendered_file "$f"
   done
-  for p in aside dispatch subagent git comment; do
+  for p in consult dispatch subagent git comment; do
     [ -f "$kd/dist/prefs/$p-prefs.md" ] || { echo "missing prefs template: $kd/dist/prefs/$p-prefs.md" >&2; fail=1; }
   done
   for skill in palette-init palette-resume palette-state palette-record palette-spec palette-ux palette-ui palette-rules memory-triage; do
@@ -160,11 +159,36 @@ for kit in codex kimi; do
   fi
 done
 
-claude_leaks=$(grep -rEn 'workslate|AgentSwarm|TodoList|apply_patch|KIMI_CODE_HOME|CODEX_HOME|update_plan' \
+claude_leaks=$(grep -rEn 'workslate|AgentSwarm|TodoList|apply_patch|KIMI_CODE_HOME|CODEX_HOME|update_plan|TaskOutput|disable_timeout|write_stdin|yield_time_ms' \
     "$ROOT/kits/claude-agent-kit/dist/CLAUDE.md" "$ROOT/kits/claude-agent-kit/dist/rules" 2>/dev/null || true)
 if [ -n "$claude_leaks" ]; then
   echo "non-claude surface bindings leaked into claude render:" >&2
   echo "$claude_leaks" | head -5 >&2
+  fail=1
+fi
+
+# The waiting means of one harness must not leak into another render.
+codex_wait_leaks=$(grep -rEn 'TaskOutput|disable_timeout|run_in_background' "$ROOT/kits/codex-agent-kit/dist/rules" "$ROOT/kits/codex-agent-kit/dist/AGENTS.md" 2>/dev/null || true)
+if [ -n "$codex_wait_leaks" ]; then
+  echo "another harness's waiting means leaked into codex render:" >&2
+  echo "$codex_wait_leaks" | head -5 >&2
+  fail=1
+fi
+kimi_wait_leaks=$(grep -rEn -- 'write_stdin|yield_time_ms|run_in_background: true' "$ROOT/kits/kimi-agent-kit/dist/rules" "$ROOT/kits/kimi-agent-kit/dist/AGENTS.md" 2>/dev/null || true)
+if [ -n "$kimi_wait_leaks" ]; then
+  echo "another harness's waiting means leaked into kimi render:" >&2
+  echo "$kimi_wait_leaks" | head -5 >&2
+  fail=1
+fi
+
+# A retired server leaves no name behind in the rules, prefs, adapters and
+# descriptors; records and changelogs keep the history.
+retired_server=$(grep -rniE '\baside\b' "$ROOT/shared/rules" "$ROOT/shared/prefs" "$ROOT/adapters" "$ROOT/tooling/render-kit.sh" \
+    "$ROOT"/kits/*-agent-kit/dist/rules "$ROOT"/kits/*-agent-kit/dist/prefs "$ROOT"/kits/*-agent-kit/dist/kit.toml \
+    "$ROOT"/kits/*-agent-kit/dist/AGENTS.md "$ROOT"/kits/*-agent-kit/dist/CLAUDE.md "$ROOT"/kits/*-agent-kit/AGENTS.md 2>/dev/null || true)
+if [ -n "$retired_server" ]; then
+  echo "retired server named in sources or renders:" >&2
+  echo "$retired_server" | head -5 >&2
   fail=1
 fi
 

@@ -420,11 +420,11 @@ mod tests {
         m.record_file(&dir.path().join("a.md"), EntryKind::File, false);
         m.record_file(&dir.path().join("skills"), EntryKind::Dir, true);
         m.record_backup(&dir.path().join("a.md.bak-1"), &dir.path().join("a.md"));
-        m.record_binary(&dir.path().join("aside"));
+        m.record_binary(&dir.path().join("dispatch"));
         m.record_registration(Registration {
             kind: "mcp".into(),
             harness: "codex".into(),
-            server: "aside".into(),
+            server: "dispatch".into(),
             path: None,
         });
         m.record_config(ConfigRecord {
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn other_manifests_are_found_by_binary() {
         let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("bin").join("aside");
+        let bin = dir.path().join("bin").join("palette");
         let mut a = Manifest::new("a-kit");
         a.record_binary(&bin);
         a.save(dir.path()).unwrap();

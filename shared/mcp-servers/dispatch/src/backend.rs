@@ -1,23 +1,38 @@
 //! The coding-agent backends dispatch delegates to, and dispatch's spawn policy
-//! for the two that run as processes.
+//! for an execution by the two that run as processes.
 //!
-//! Unlike `aside` (read-only Q&A), dispatch runs the backend **write-capable**:
-//! codex executes in `-s workspace-write` and may modify files in the target
-//! directory. codex and claude are started through the `agent-exec` crate, which
-//! owns lookup, argv, spawning under the parent-death guard, capture and the
-//! fallback loop; this module only chooses the [`agent_exec::RunSpec`] values
-//! ([`run_spec`]). opencode is driven over HTTP by `opencode.rs`.
+//! An execution runs the backend **write-capable**: codex executes in
+//! `-s workspace-write` and may modify files in the target directory. codex and
+//! claude are started through the `agent-exec` crate, which owns lookup, argv,
+//! spawning under the parent-death guard, capture and the fallback loop; this
+//! module only chooses the [`agent_exec::RunSpec`] values of an execution
+//! attempt ([`run_spec`]); a consultation's are in `consult.rs`. opencode is
+//! driven over HTTP by `opencode.rs`.
 //!
-//! Anti-recursion: every process dispatch spawns carries
-//! [`REENTRY_ENV`] at this server's depth plus one, and `dispatch_submit` /
-//! `dispatch_steer` refuse at [`REENTRY_CEILING`]. That covers **claude** and
-//! **opencode**, which pass their process env to the MCP servers they boot.
-//! **codex** launches MCP servers with a clean env, so the marker never reaches a
-//! codex-booted dispatch; codex is instead guarded, fail-closed, by disabling the
-//! `dispatch` MCP server on its command line
-//! (`Isolation::DisableMcpServer("dispatch")`). A dispatch backend calling
-//! *aside* stays allowed (a different marker, and aside is left enabled); only
-//! dispatch→dispatch is blocked.
+//! Anti-recursion: every process dispatch spawns carries [`REENTRY_ENV`] at
+//! this server's depth plus one ([`next_depth`]). A dispatch server at depth
+//! [`REENTRY_CEILING`] or more refuses `dispatch_submit` and `dispatch_steer`
+//! and accepts `dispatch_consult`, so a backend may consult but never start
+//! another execution. **claude** and **opencode** pass their process env to
+//! the MCP servers they boot, so the inherited marker reaches a booted
+//! dispatch. **codex** launches MCP servers with a clean env, so an execution's
+//! codex receives the marker on its command line as the environment of the
+//! `dispatch` server (`Isolation::ServerEnv`,
+//! `-c mcp_servers.dispatch.env.DISPATCH_REENTRY_DEPTH="<depth>"`); the server
+//! stays enabled so the backend can consult. The same override also sets
+//! `mcp_servers.dispatch.command` to this running binary, because codex
+//! refuses to load a configuration whose `dispatch` entry has an `env` key but
+//! no transport, which is what the env override alone creates when the user's
+//! `config.toml` does not register dispatch; with a registered entry, the
+//! command override merges with its other keys. The codex backend runs with
+//! `-a never`, under which codex refuses an MCP call that needs approval, so the
+//! override also pre-approves the tools a backend may use
+//! ([`BACKEND_APPROVED_TOOLS`]: `dispatch_consult` and the read tools) with
+//! `-c mcp_servers.dispatch.tools.<tool>.approval_mode="approve"`.
+//! `dispatch_submit` and `dispatch_steer` stay unapproved, so codex refuses them
+//! before they reach the server; the server's per-kind re-entry refusal is the
+//! backstop. A consultation backend has no MCP server at all (codex
+//! `--ignore-user-config`, claude safe mode).
 
 use std::path::Path;
 
@@ -31,6 +46,23 @@ pub(crate) const REENTRY_ENV: &str = "DISPATCH_REENTRY_DEPTH";
 
 /// Depth at or above which a submit/steer is refused. `1` = no nesting.
 pub(crate) const REENTRY_CEILING: u32 = 1;
+
+/// The dispatch tools a codex execution backend may call, pre-approved on its
+/// command line in this order: the consultation and the read tools. Executions
+/// (`dispatch_submit`, `dispatch_steer`) are left out.
+pub(crate) const BACKEND_APPROVED_TOOLS: [&str; 5] = [
+    "dispatch_consult",
+    "dispatch_status",
+    "dispatch_list",
+    "dispatch_logs",
+    "dispatch_backends",
+];
+
+/// The depth every process this server spawns carries: the server's own
+/// depth plus one, saturating.
+pub(crate) fn next_depth() -> u32 {
+    agent_exec::reentry::depth(REENTRY_ENV).saturating_add(1)
+}
 
 /// dispatch's re-entry marker, as stamped on every spawned process.
 pub(crate) fn reentry() -> Reentry {
@@ -120,8 +152,9 @@ pub struct AttemptSpec<'a> {
     pub backend_version: Option<&'a str>,
 }
 
-/// dispatch's `RunSpec` for one codex or claude attempt: codex with only the
-/// `dispatch` MCP server disabled, claude with the sandbox's permission mapping
+/// dispatch's `RunSpec` for one codex or claude execution attempt: codex with
+/// the re-entry marker set in the `dispatch` MCP server's environment, claude
+/// with the sandbox's permission mapping
 /// (read-only → plan; workspace-write → acceptEdits + Bash; danger-full-access →
 /// skip permissions), no output-format flags, dispatch's capture and
 /// failure-text policies, and the guard required. The prompt travels on stdin.
@@ -130,7 +163,13 @@ pub struct AttemptSpec<'a> {
 /// default dispatch applies at submit.
 pub fn run_spec(backend: agent_exec::Backend, a: &AttemptSpec<'_>, prompt: String) -> RunSpec {
     let isolation = match backend {
-        agent_exec::Backend::Codex => Isolation::DisableMcpServer("dispatch".to_string()),
+        agent_exec::Backend::Codex => Isolation::ServerEnv {
+            server: "dispatch".to_string(),
+            var: REENTRY_ENV.to_string(),
+            value: next_depth().to_string(),
+            command: Some(crate::current_exe_path()),
+            approve_tools: BACKEND_APPROVED_TOOLS.map(str::to_string).to_vec(),
+        },
         agent_exec::Backend::Claude => Isolation::Permissions,
     };
     RunSpec {
@@ -208,8 +247,25 @@ mod tests {
         Path::new("/w").to_string_lossy().into_owned()
     }
 
+    /// The `-c` override that carries the marker into a codex-booted dispatch.
+    fn marker_override() -> String {
+        format!(
+            "mcp_servers.dispatch.env.DISPATCH_REENTRY_DEPTH=\"{}\"",
+            next_depth()
+        )
+    }
+
+    /// The `-c` override that names this binary as the dispatch server's
+    /// command, quoted as a TOML string.
+    fn command_override() -> String {
+        let exe = crate::current_exe_path()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        format!("mcp_servers.dispatch.command=\"{exe}\"")
+    }
+
     #[test]
-    fn codex_argv_disables_only_dispatch_mcp_before_exec() {
+    fn codex_argv_passes_the_marker_to_the_dispatch_server_before_exec() {
         let bare = argv(
             agent_exec::Backend::Codex,
             &attempt("workspace-write", None, None, None, None, false),
@@ -225,12 +281,28 @@ mod tests {
                 "-a",
                 "never",
                 "-c",
-                "mcp_servers.dispatch.enabled=false",
+                &command_override(),
+                "-c",
+                &marker_override(),
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_consult.approval_mode=\"approve\"",
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_status.approval_mode=\"approve\"",
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_list.approval_mode=\"approve\"",
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_logs.approval_mode=\"approve\"",
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_backends.approval_mode=\"approve\"",
                 "exec",
             ])
         );
-        // aside stays enabled so dispatch→aside remains allowed.
-        assert!(!bare.iter().any(|a| a.contains("mcp_servers.aside")));
+        // Executions stay unapproved, so codex refuses them under `-a never`.
+        for tool in ["dispatch_submit", "dispatch_steer"] {
+            assert!(!bare.iter().any(|a| a.contains(&format!(".tools.{tool}."))));
+        }
+        // The dispatch server stays enabled so the backend can consult.
+        assert!(!bare.iter().any(|a| a.ends_with(".enabled=false")));
 
         let full = argv(
             agent_exec::Backend::Codex,
@@ -259,7 +331,19 @@ mod tests {
                 "-c",
                 "model_reasoning_effort=high",
                 "-c",
-                "mcp_servers.dispatch.enabled=false",
+                &command_override(),
+                "-c",
+                &marker_override(),
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_consult.approval_mode=\"approve\"",
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_status.approval_mode=\"approve\"",
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_list.approval_mode=\"approve\"",
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_logs.approval_mode=\"approve\"",
+                "-c",
+                "mcp_servers.dispatch.tools.dispatch_backends.approval_mode=\"approve\"",
                 "exec",
                 "resume",
                 "sid-1",
@@ -392,5 +476,17 @@ mod tests {
         );
         assert_eq!(odd.sandbox, Sandbox::WorkspaceWrite);
         assert_eq!(odd.isolation, Isolation::Permissions);
+
+        assert_eq!(
+            s.isolation,
+            Isolation::ServerEnv {
+                server: "dispatch".into(),
+                var: "DISPATCH_REENTRY_DEPTH".into(),
+                value: next_depth().to_string(),
+                command: Some(crate::current_exe_path()),
+                approve_tools: BACKEND_APPROVED_TOOLS.map(str::to_string).to_vec(),
+            }
+        );
+        assert_eq!(next_depth(), agent_exec::reentry::depth(REENTRY_ENV) + 1);
     }
 }

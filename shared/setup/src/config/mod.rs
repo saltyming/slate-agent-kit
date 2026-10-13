@@ -278,13 +278,13 @@ mod tests {
     #[test]
     fn list_add_keeps_existing_entries_and_is_idempotent() {
         let mut doc = toml("[features.code_mode]\nexcluded_tool_namespaces = [\"a\", \"b\"]\n");
-        let items = vec!["mcp__aside".to_string()];
+        let items = vec!["mcp__example".to_string()];
         let path = ["features", "code_mode", "excluded_tool_namespaces"];
         let change = list_add(&mut doc, &path, &items).unwrap().unwrap();
         assert_eq!(change.added, items);
         assert_eq!(
             doc.render(),
-            "[features.code_mode]\nexcluded_tool_namespaces = [\"a\", \"b\", \"mcp__aside\"]\n"
+            "[features.code_mode]\nexcluded_tool_namespaces = [\"a\", \"b\", \"mcp__example\"]\n"
         );
         assert!(list_add(&mut doc, &path, &items).unwrap().is_none());
         let rec = change.record(std::path::Path::new("c.toml"));

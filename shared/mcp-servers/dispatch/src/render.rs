@@ -27,7 +27,7 @@ pub fn render_prompt(p: &SubmitParams, nonce: &str) -> String {
     push_text(&mut parts, "Details", p.details.as_deref());
     // Identity marker: codex records the prompt verbatim as a `user_message`, so this
     // lets `rollout::locate_by_nonce` match the rollout this task produced even when a
-    // sibling codex (e.g. aside) shares the cwd. One unobtrusive trailing line.
+    // sibling codex (e.g. a consultation) shares the cwd. One unobtrusive trailing line.
     parts.push(nonce_marker(nonce));
     parts.join("\n\n")
 }

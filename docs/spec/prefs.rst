@@ -7,7 +7,7 @@ Prefs files
 Scope and authority
 -------------------
 Each installed kit has five prefs files in ``<home>/rules/``:
-``<kit>--aside-prefs.md``, ``<kit>--dispatch-prefs.md``,
+``<kit>--consult-prefs.md``, ``<kit>--dispatch-prefs.md``,
 ``<kit>--subagent-prefs.md``, ``<kit>--git-prefs.md`` and
 ``<kit>--comment-prefs.md``. Each starts with ``<!-- <kit>-custom:<name>-prefs -->``
 and belongs to the user. Claude Code loads them with the other rule files; the
@@ -32,7 +32,7 @@ Keys for ``--set`` are ``<file>.<key>``. Each key is stored under the heading
 named after it below; a template that lacks a heading makes install fail with
 a message naming the file and the heading. A blank value is written ``****``.
 
-- aside: ``level`` Level; ``backend`` Backend; ``<backend>.model``
+- consult: ``level`` Level; ``backend`` Backend; ``<backend>.model``
   "<Backend> model"; ``<backend>.effort`` "<Backend> reasoning effort";
   ``<backend>.fallback`` "<Backend> model fallback", for Codex and Claude.
 - dispatch: ``level`` Level; ``backend`` Backend; ``model`` Model; ``effort``
@@ -47,15 +47,15 @@ a message naming the file and the heading. A blank value is written ``****``.
 
 The allowed values:
 
-aside
+consult
   ``level`` (``on-request``, ``suggest``, ``auto``; default ``suggest``);
   ``backend`` (``codex``, ``claude``); per backend ``model``, ``effort``
   (``low``, ``medium``, ``high``, ``xhigh``, ``max``, or blank) and
   ``fallback`` (a comma-separated model list, or blank), as
-  ``aside.codex.model`` and so on. Only the chosen backend's values are asked.
-  A file that still carries the settings of an earlier backend installs; the
-  installer reports them in one warning line and treats them, and a
-  ``backend`` value naming that backend, as blank.
+  ``consult.codex.model`` and so on. Only the chosen backend's values are
+  asked. A file that still carries the settings of an earlier backend
+  installs; the installer reports them in one warning line and treats them,
+  and a ``backend`` value naming that backend, as blank.
 
 dispatch
   ``level`` (default ``suggest``); ``backend`` (``codex``, ``opencode``,
@@ -82,6 +82,18 @@ comment
 
 Migration
 ~~~~~~~~~
+The consultation prefs were named ``<kit>--aside-prefs.md`` before 26.10.1.
+When install or configure finds that file and no ``<kit>--consult-prefs.md``,
+it reads it as the consult file, so the questions and the summary show the
+user's values. After the confirmation it renames the file and rewrites only
+its first line from ``<!-- <kit>-custom:aside-prefs -->`` to
+``<!-- <kit>-custom:consult-prefs -->``; every other byte stays, line endings
+included, and the report names the rename. A first line that is not that
+signature is left as it is and reported. When both files exist, the consult
+file is used and the aside file is left untouched and reported. A file in the
+12.x or 0.7.x layout is renamed first and then migrated as below. ``--set``
+keys named ``aside.*`` are unknown.
+
 Prefs written by claude-agent-kit 12.x or codex and kimi kits 0.7.x are
 migrated when install or configure finds them, after the user confirms each
 file (without a terminal: migrated). The old file is copied to
@@ -92,10 +104,10 @@ the template has no heading for it. Values of a backend the schema no longer
 has cannot be carried over: the migration reports them in one warning line and
 they stay in the backup.
 
-- aside ``Auto-call policy``: ``conservative`` or ``preference-only`` becomes
-  ``level`` ``on-request``; ``proactive`` becomes ``auto``. ``Preferred
-  third-party advisor`` becomes ``backend`` (``none`` becomes ``codex`` with
-  ``level`` ``on-request``).
+- consult (then named aside) ``Auto-call policy``: ``conservative`` or
+  ``preference-only`` becomes ``level`` ``on-request``; ``proactive`` becomes
+  ``auto``. ``Preferred third-party advisor`` becomes ``backend`` (``none``
+  becomes ``codex`` with ``level`` ``on-request``).
 - dispatch ``Execution policy`` and ``Approval mode``: ``conservative`` or
   ``preference-only`` becomes ``on-request``; ``proactive`` with ``ask`` becomes
   ``suggest``; ``proactive`` with ``auto`` becomes ``auto``. ``Default

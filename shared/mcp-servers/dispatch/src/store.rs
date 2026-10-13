@@ -26,6 +26,44 @@ pub fn is_active(status: &str) -> bool {
     matches!(status, STATUS_QUEUED | STATUS_RUNNING)
 }
 
+// ── kinds ─────────────────────────────────────────────────
+
+/// The `kind` of an execution row: a write-capable run in its working_dir.
+pub const KIND_EXECUTE: &str = "execute";
+/// The `kind` of a consultation row: a read-only question to another model
+/// family, run in the server's directory.
+pub const KIND_CONSULT: &str = "consult";
+
+/// What a run is: an execution or a consultation. Stored in the `kind`
+/// column; a row written before the column existed reads as `Execute`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A write-capable run in its working_dir (`dispatch_submit`,
+    /// `dispatch_steer`).
+    Execute,
+    /// A read-only consultation (`dispatch_consult`).
+    Consult,
+}
+
+impl Kind {
+    /// The stored value: `execute` or `consult`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Execute => KIND_EXECUTE,
+            Kind::Consult => KIND_CONSULT,
+        }
+    }
+
+    /// Parse a stored or requested value; anything else is `None`.
+    pub fn parse(s: &str) -> Option<Kind> {
+        match s.trim() {
+            KIND_EXECUTE => Some(Kind::Execute),
+            KIND_CONSULT => Some(Kind::Consult),
+            _ => None,
+        }
+    }
+}
+
 // ── schema ────────────────────────────────────────────────
 
 pub const SCHEMA_SQL: &str = "\
@@ -61,7 +99,8 @@ CREATE TABLE IF NOT EXISTS dispatch_tasks (
     final_model      TEXT,
     fallback_history TEXT,
     allow_concurrent INTEGER NOT NULL DEFAULT 0,
-    restart_of       TEXT
+    restart_of       TEXT,
+    kind             TEXT NOT NULL DEFAULT 'execute'
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_plan_status ON dispatch_tasks(plan_id, status);
 CREATE INDEX IF NOT EXISTS idx_dispatch_dir_status  ON dispatch_tasks(working_dir, status);
@@ -75,7 +114,7 @@ const COLS: &str = "id, plan_id, backend, working_dir, title, spec_json, prompt,
 model, reasoning_effort, sandbox, backend_version, argv, owner_pid, owner_instance, child_pid, \
 exit_code, result, error, created_at, started_at, finished_at, session_id, rollout_path, parent_id, \
 nonce, rollout_start_line, model_fallback, final_model, fallback_history, allow_concurrent, \
-restart_of";
+restart_of, kind";
 
 pub fn init(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA_SQL)?;
@@ -93,6 +132,7 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
         ("fallback_history", "TEXT"),
         ("allow_concurrent", "INTEGER NOT NULL DEFAULT 0"),
         ("restart_of", "TEXT"),
+        ("kind", "TEXT NOT NULL DEFAULT 'execute'"),
     ] {
         let _ = conn.execute(
             &format!("ALTER TABLE dispatch_tasks ADD COLUMN {col} {decl}"),
@@ -137,6 +177,8 @@ pub struct NewTask {
     /// means steer/resume (an inherited backend session) — a restart is a brand
     /// new session and must never be treated as a resume by log association.
     pub restart_of: Option<String>,
+    /// Execution or consultation.
+    pub kind: Kind,
 }
 
 /// A full row read back from the DB.
@@ -183,6 +225,8 @@ pub struct TaskRow {
     pub allow_concurrent: bool,
     /// Set on an automatic-restart successor: the id of the task it re-runs.
     pub restart_of: Option<String>,
+    /// The stored kind, `execute` or `consult` (see [`TaskRow::kind`]).
+    pub kind: String,
 }
 
 fn row_from(r: &Row) -> rusqlite::Result<TaskRow> {
@@ -219,10 +263,17 @@ fn row_from(r: &Row) -> rusqlite::Result<TaskRow> {
         fallback_history: r.get(29)?,
         allow_concurrent: r.get(30)?,
         restart_of: r.get(31)?,
+        kind: r.get(32)?,
     })
 }
 
 impl TaskRow {
+    /// The row's kind; an unrecognized stored value reads as `Execute`, the
+    /// column's default.
+    pub fn kind(&self) -> Kind {
+        Kind::parse(&self.kind).unwrap_or(Kind::Execute)
+    }
+
     /// JSON view for tool output. `include_result` inlines the (large) captured
     /// stdout/error plus operational/fallback detail — list responses omit it,
     /// status includes it. `include_spec` inlines the (very large) request-side
@@ -232,6 +283,7 @@ impl TaskRow {
     pub fn to_json(&self, include_result: bool, include_spec: bool) -> Value {
         let mut v = json!({
             "id": self.id,
+            "kind": self.kind,
             "plan_id": self.plan_id,
             "backend": self.backend,
             "working_dir": self.working_dir,
@@ -356,8 +408,9 @@ pub fn insert_queued(
         "INSERT INTO dispatch_tasks \
          (id, plan_id, backend, working_dir, title, spec_json, prompt, status, \
           model, reasoning_effort, sandbox, owner_pid, owner_instance, parent_id, \
-          nonce, rollout_start_line, model_fallback, allow_concurrent, restart_of) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+          nonce, rollout_start_line, model_fallback, allow_concurrent, restart_of, kind) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, \
+         ?20)",
         params![
             id,
             t.plan_id,
@@ -378,6 +431,7 @@ pub fn insert_queued(
             t.model_fallback,
             t.allow_concurrent,
             t.restart_of,
+            t.kind.as_str(),
         ],
     )?;
     tx.execute(
@@ -430,38 +484,42 @@ pub fn set_attempt_nonce(conn: &Connection, id: &str, nonce: &str) -> rusqlite::
     Ok(())
 }
 
-/// Write a terminal status (succeeded / failed / cancelled) plus captured output.
-pub fn finish(
-    conn: &Connection,
-    id: &str,
-    status: &str,
-    exit_code: Option<i64>,
-    result: Option<&str>,
-    error: Option<&str>,
-) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE dispatch_tasks SET status = ?1, exit_code = ?2, result = ?3, error = ?4, \
-         finished_at = datetime('now') WHERE id = ?5",
-        params![status, exit_code, result, error, id],
-    )?;
-    Ok(())
+/// A run's terminal outcome, written by [`finish`] as one unit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunOutcome<'a> {
+    /// `succeeded`, `failed` or `cancelled`.
+    pub status: &'a str,
+    /// The backend's exit code, when it exited.
+    pub exit_code: Option<i64>,
+    /// The captured result (execution: stdout; consultation: the reply text).
+    pub result: Option<&'a str>,
+    /// The error text of a run that did not succeed.
+    pub error: Option<&'a str>,
+    /// The model that produced the outcome; set only when a fallback attempt
+    /// was tried and discarded first, else `None` (stored NULL).
+    pub final_model: Option<&'a str>,
+    /// JSON array of the discarded attempts (`{model, error_kind, detail}`);
+    /// `None` (stored NULL) when no fallback attempt was discarded.
+    pub fallback_history: Option<&'a str>,
 }
 
-/// Record which model actually produced the terminal outcome plus the JSON
-/// history of any fallback attempts that were tried and discarded first.
-/// Called only when at least one retry happened — a narrow addition alongside
-/// `finish()` rather than a change to its signature, so existing call sites
-/// (the cancelled-before-start path, the single-attempt success/failure path)
-/// are untouched.
-pub fn set_fallback_result(
-    conn: &Connection,
-    id: &str,
-    final_model: Option<&str>,
-    fallback_history_json: &str,
-) -> rusqlite::Result<()> {
+/// Write a terminal outcome: status, exit code, result, error, final model and
+/// fallback history in ONE statement, so a reader that sees the terminal
+/// status also sees the rest of the outcome (`dispatch wait` reports
+/// `final_model` the moment it reads a terminal status).
+pub fn finish(conn: &Connection, id: &str, o: &RunOutcome<'_>) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE dispatch_tasks SET final_model = ?1, fallback_history = ?2 WHERE id = ?3",
-        params![final_model, fallback_history_json, id],
+        "UPDATE dispatch_tasks SET status = ?1, exit_code = ?2, result = ?3, error = ?4, \
+         final_model = ?5, fallback_history = ?6, finished_at = datetime('now') WHERE id = ?7",
+        params![
+            o.status,
+            o.exit_code,
+            o.result,
+            o.error,
+            o.final_model,
+            o.fallback_history,
+            id
+        ],
     )?;
     Ok(())
 }
@@ -491,28 +549,32 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<TaskRow>> {
     .optional()
 }
 
-/// List tasks, optionally filtered by plan_id and/or status. `rowid` ordering
-/// preserves insertion order (the TEXT id sorts lexically, which is wrong).
+/// List tasks, optionally filtered by plan_id, status and/or kind. `rowid`
+/// ordering preserves insertion order (the TEXT id sorts lexically, which is
+/// wrong).
 pub fn list(
     conn: &Connection,
     plan_id: Option<&str>,
     status: Option<&str>,
+    kind: Option<Kind>,
 ) -> rusqlite::Result<Vec<TaskRow>> {
     let sql = format!(
         "SELECT {COLS} FROM dispatch_tasks \
          WHERE (?1 IS NULL OR plan_id = ?1) AND (?2 IS NULL OR status = ?2) \
+         AND (?3 IS NULL OR kind = ?3) \
          ORDER BY rowid"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![plan_id, status], row_from)?;
+    let rows = stmt.query_map(params![plan_id, status, kind.map(Kind::as_str)], row_from)?;
     rows.collect()
 }
 
-/// Returns the id of an active (queued/running) task already targeting this
-/// canonical working_dir, if any — the per-dir concurrency guard.
+/// Returns the id of an active (queued/running) execution already targeting
+/// this canonical working_dir, if any — the per-dir concurrency guard.
+/// Consultations take no working-dir slot, so they are never counted.
 pub fn active_for_dir(conn: &Connection, working_dir: &str) -> rusqlite::Result<Option<String>> {
     conn.query_row(
-        "SELECT id FROM dispatch_tasks WHERE working_dir = ?1 \
+        "SELECT id FROM dispatch_tasks WHERE working_dir = ?1 AND kind = 'execute' \
          AND status IN ('queued', 'running') ORDER BY rowid LIMIT 1",
         params![working_dir],
         |r| r.get(0),
@@ -575,6 +637,7 @@ mod tests {
             model_fallback: None,
             allow_concurrent: false,
             restart_of: None,
+            kind: Kind::Execute,
         }
     }
 
@@ -721,6 +784,9 @@ CREATE TABLE dispatch_counters (scope TEXT PRIMARY KEY, next_id INTEGER NOT NULL
             !row.allow_concurrent,
             "an old row must backfill allow_concurrent to false"
         );
+        assert_eq!(row.kind, KIND_EXECUTE, "an old row must read as execute");
+        assert_eq!(row.kind(), Kind::Execute);
+        assert_eq!(row.to_json(false, false)["kind"], json!("execute"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -753,7 +819,17 @@ CREATE TABLE dispatch_counters (scope TEXT PRIMARY KEY, next_id INTEGER NOT NULL
             InsertOutcome::Created(id) => id,
             InsertOutcome::Conflict(_) => panic!("expected Created"),
         };
-        finish(&c, &id2, STATUS_SUCCEEDED, Some(0), Some("ok"), None).unwrap();
+        finish(
+            &c,
+            &id2,
+            &RunOutcome {
+                status: STATUS_SUCCEEDED,
+                exit_code: Some(0),
+                result: Some("ok"),
+                ..RunOutcome::default()
+            },
+        )
+        .unwrap();
         assert_eq!(
             mark_interrupted(&c, &id2, "late").unwrap(),
             0,
@@ -905,5 +981,151 @@ CREATE TABLE dispatch_counters (scope TEXT PRIMARY KEY, next_id INTEGER NOT NULL
         assert_eq!(row.session_id, None);
         assert_eq!(row.rollout_path, None);
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn created(o: InsertOutcome) -> String {
+        match o {
+            InsertOutcome::Created(id) => id,
+            InsertOutcome::Conflict(other) => panic!("expected Created, got conflict with {other}"),
+        }
+    }
+
+    /// A database created before the `kind` column (the schema of the previous
+    /// release) opens, migrates and reads every old row as `execute`; new rows
+    /// of either kind are written beside them.
+    #[test]
+    fn kind_defaults_to_execute_on_a_database_without_the_column() {
+        let path =
+            std::env::temp_dir().join(format!("dispatch-kind-migrate-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let c = open(&path);
+            // SCHEMA_SQL without the kind column, as the previous release wrote it.
+            let old = SCHEMA_SQL.replace(
+                ",\n    kind             TEXT NOT NULL DEFAULT 'execute'",
+                "",
+            );
+            assert!(
+                !old.contains("kind "),
+                "the old schema must lack the column"
+            );
+            c.execute_batch(&old).unwrap();
+            c.execute(
+                "INSERT INTO dispatch_tasks (id, backend, working_dir, spec_json, prompt, status) \
+                 VALUES ('d-legacy', 'codex', '/tmp/x', '{}', 'noop', 'running')",
+                [],
+            )
+            .unwrap();
+        }
+        let mut c = open(&path);
+        init(&c).unwrap();
+        init(&c).unwrap(); // idempotent
+        let row = get(&c, "d-legacy").unwrap().unwrap();
+        assert_eq!(row.kind(), Kind::Execute);
+        let mut consult = sample_task();
+        consult.kind = Kind::Consult;
+        let id = created(insert_queued(&mut c, &consult, 1, "i1", None).unwrap());
+        assert_eq!(get(&c, &id).unwrap().unwrap().kind(), Kind::Consult);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn list_filters_by_kind() {
+        let mut c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let exec = created(insert_queued(&mut c, &sample_task(), 1, "i1", None).unwrap());
+        let mut t = sample_task();
+        t.kind = Kind::Consult;
+        let consult = created(insert_queued(&mut c, &t, 1, "i1", None).unwrap());
+        let ids = |k: Option<Kind>| -> Vec<String> {
+            list(&c, None, None, k)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.id)
+                .collect()
+        };
+        assert_eq!(ids(None), vec![exec.clone(), consult.clone()]);
+        assert_eq!(ids(Some(Kind::Execute)), vec![exec]);
+        assert_eq!(ids(Some(Kind::Consult)), vec![consult]);
+    }
+
+    /// Consultations take no working-dir slot in either direction: an active
+    /// consultation in a directory does not block an execution there, and an
+    /// active execution does not block a consultation.
+    #[test]
+    fn active_for_dir_ignores_consult_rows() {
+        let mut c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let dir = "/tmp/dispatch-guard";
+        let mut consult = sample_task();
+        consult.kind = Kind::Consult;
+        created(insert_queued(&mut c, &consult, 1, "i1", None).unwrap());
+        assert_eq!(active_for_dir(&c, dir).unwrap(), None);
+        let exec = created(insert_queued(&mut c, &sample_task(), 1, "i1", Some(dir)).unwrap());
+        assert_eq!(active_for_dir(&c, dir).unwrap(), Some(exec));
+        // A second consultation is inserted without the guard and stays apart.
+        created(insert_queued(&mut c, &consult, 1, "i1", None).unwrap());
+        assert!(matches!(
+            insert_queued(&mut c, &sample_task(), 1, "i1", Some(dir)).unwrap(),
+            InsertOutcome::Conflict(_)
+        ));
+    }
+
+    /// `finish` writes the whole outcome in one statement: a row read right
+    /// after carries the terminal status together with the final model and
+    /// the fallback history; without a fallback both stay NULL.
+    #[test]
+    fn finish_writes_the_whole_outcome_at_once() {
+        let mut c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let id = created(insert_queued(&mut c, &sample_task(), 1, "i1", None).unwrap());
+        finish(
+            &c,
+            &id,
+            &RunOutcome {
+                status: STATUS_SUCCEEDED,
+                exit_code: Some(0),
+                result: Some("reply"),
+                error: None,
+                final_model: Some("m2"),
+                fallback_history: Some(
+                    r#"[{"model":"m1","error_kind":"rate_limited","detail":""}]"#,
+                ),
+            },
+        )
+        .unwrap();
+        let row = get(&c, &id).unwrap().unwrap();
+        assert_eq!(row.status, STATUS_SUCCEEDED);
+        assert_eq!(row.exit_code, Some(0));
+        assert_eq!(row.result.as_deref(), Some("reply"));
+        assert_eq!(row.final_model.as_deref(), Some("m2"));
+        assert!(row.fallback_history.is_some());
+        assert!(row.finished_at.is_some());
+
+        let id2 = created(insert_queued(&mut c, &sample_task(), 1, "i1", None).unwrap());
+        finish(
+            &c,
+            &id2,
+            &RunOutcome {
+                status: STATUS_FAILED,
+                exit_code: Some(1),
+                error: Some("boom"),
+                ..RunOutcome::default()
+            },
+        )
+        .unwrap();
+        let row = get(&c, &id2).unwrap().unwrap();
+        assert_eq!(row.status, STATUS_FAILED);
+        assert_eq!(row.error.as_deref(), Some("boom"));
+        assert_eq!(row.final_model, None);
+        assert_eq!(row.fallback_history, None);
+    }
+
+    #[test]
+    fn kind_round_trips_its_stored_values() {
+        for k in [Kind::Execute, Kind::Consult] {
+            assert_eq!(Kind::parse(k.as_str()), Some(k));
+        }
+        assert_eq!(Kind::parse("other"), None);
     }
 }
