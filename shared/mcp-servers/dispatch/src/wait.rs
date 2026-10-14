@@ -582,10 +582,14 @@ mod tests {
                 "{bad} must be a usage error"
             );
         }
-        // 1e19 s fits a Duration but not an Instant: no deadline, no panic.
+        // 1e19 s fits a Duration; whether it fits an Instant depends on the platform
+        // (it does on Windows, not on Unix), and either way there is no panic.
         let huge = parse_seconds(&OsString::from("1e19")).expect("1e19 fits a Duration");
         assert_eq!(huge, Duration::from_secs(10_000_000_000_000_000_000));
-        assert_eq!(deadline_after(Instant::now(), Some(huge)), None);
+        let now = Instant::now();
+        assert!(deadline_after(now, Some(huge)).is_none_or(|d| d > now));
+        // No platform's Instant holds Duration::MAX past now: no deadline.
+        assert_eq!(deadline_after(Instant::now(), Some(Duration::MAX)), None);
         assert!(deadline_after(Instant::now(), Some(Duration::from_secs(1))).is_some());
         assert_eq!(deadline_after(Instant::now(), None), None);
 
