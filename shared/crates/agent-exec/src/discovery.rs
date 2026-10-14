@@ -67,6 +67,10 @@ pub fn install_hint(backend: Backend) -> String {
         Backend::Claude => "install Claude Code CLI (`npm i -g @anthropic-ai/claude-code`; see \
              https://claude.com/claude-code)"
             .to_string(),
+        Backend::Agy => {
+            "install the Antigravity CLI `agy` and sign in (see https://antigravity.google/docs)"
+                .to_string()
+        }
     }
 }
 
@@ -78,6 +82,7 @@ mod tests {
     fn install_hints_name_their_cli() {
         assert!(install_hint(Backend::Codex).contains("@openai/codex"));
         assert!(install_hint(Backend::Claude).contains("@anthropic-ai/claude-code"));
+        assert!(install_hint(Backend::Agy).contains("`agy`"));
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //! codex writes a JSONL "rollout" per session at
 //! `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<session-uuid>.jsonl`, appended
 //! live while a run is in progress. OpenCode runs write dispatch-owned normalized
-//! JSONL with the same top-level shape. `dispatch_logs` reads either source to
+//! JSONL with the same top-level shape. Claude and agy keep logs of their own
+//! shape (`curate_claude`, `curate_agy`). `dispatch_logs` reads either source to
 //! show progress, then curates noise down to a compact timeline and slices it by
 //! **line range** so a long session can't blow the MCP output budget. The
 //! `locate_*` functions here and in `harness_log` positively identify the log a
@@ -35,9 +36,9 @@ pub fn default_kinds(backend: &str) -> Vec<String> {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    // OpenCode and Claude expose plaintext reasoning in their logs; codex
-    // reasoning is API-encrypted, so it stays excluded there.
-    if backend == "opencode" || backend == "claude" {
+    // OpenCode, Claude and agy expose plaintext reasoning in their logs;
+    // codex reasoning is API-encrypted, so it stays excluded there.
+    if backend == "opencode" || backend == "claude" || backend == "agy" {
         kinds.push("reasoning".to_string());
     }
     kinds
@@ -490,6 +491,94 @@ pub fn curate_claude(jsonl: &str, kinds: &[String], elide_prompt: Option<&str>) 
                     if kinds.iter().any(|k| k == kind) {
                         lines.push(line);
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+    let total = lines.len();
+    Rendered { lines, total }
+}
+
+/// Curate an agy conversation log (`transcript.jsonl`: one step per line) into
+/// the same compact timeline. `USER_INPUT` steps are user messages,
+/// `PLANNER_RESPONSE` steps carry the model's text, its plaintext `thinking`
+/// and its `tool_calls`, and a `GENERIC` step's content is step output (a
+/// tool result). There are no lifecycle events in this format.
+pub fn curate_agy(jsonl: &str, kinds: &[String], elide_prompt: Option<&str>) -> Rendered {
+    let wants = |k: &str| kinds.iter().any(|x| x == k);
+    let mut lines = Vec::new();
+    let mut elided = false;
+    for raw in jsonl.lines() {
+        let Ok(o) = serde_json::from_str::<Value>(raw.trim()) else {
+            continue;
+        };
+        let content = o
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|c| !c.trim().is_empty());
+        match o.get("type").and_then(Value::as_str).unwrap_or("") {
+            "USER_INPUT" => {
+                let Some(c) = content else { continue };
+                if !wants("messages") {
+                    continue;
+                }
+                match elide_prompt {
+                    Some(p) if is_prompt_echo(c, p) => {
+                        if !elided {
+                            elided = true;
+                            lines.push(elided_prompt_line(p));
+                        }
+                    }
+                    _ => lines.push(format!("[user] {}", flatten(c))),
+                }
+            }
+            "PLANNER_RESPONSE" => {
+                if let Some(t) = o
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .filter(|t| !t.trim().is_empty())
+                    && wants("reasoning")
+                {
+                    lines.push(format!("[thinking] {}", flatten(t)));
+                }
+                if let Some(c) = content
+                    && wants("messages")
+                {
+                    lines.push(format!("[agy] {}", flatten(c)));
+                }
+                for call in o
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let name = crate::agy::tool_name(call);
+                    let edit = matches!(
+                        name,
+                        "write_to_file" | "replace_file_content" | "multi_replace_file_content"
+                    );
+                    let (kind, tag) = if edit {
+                        ("edits", "edit")
+                    } else {
+                        ("tools", "tool")
+                    };
+                    if wants(kind) {
+                        let args = call
+                            .get("args")
+                            .or_else(|| call.get("arguments"))
+                            .or_else(|| call.get("input"))
+                            .map(Value::to_string)
+                            .unwrap_or_default();
+                        lines.push(format!("[{tag}] {name}: {}", oneline(&args, 160)));
+                    }
+                }
+            }
+            "GENERIC" => {
+                if let Some(c) = content
+                    && wants("tool_results")
+                {
+                    lines.push(format!("[result] {}", oneline(c, 200)));
                 }
             }
             _ => {}
@@ -1140,5 +1229,38 @@ mod tests {
         assert_eq!(r.lines.len(), 1, "the bare think marker is dropped");
         assert!(!r.lines.iter().any(|l| l.contains("think>")));
         assert!(r.lines[0].contains("actual output"));
+    }
+
+    #[test]
+    fn curate_agy_renders_steps_by_kind() {
+        let jsonl = [
+            r#"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"do the thing\n\n[dispatch-task: n1]"}"#,
+            r#"{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","thinking":"plan it","tool_calls":[{"name":"run_command","args":{"CommandLine":"ls"}},{"name":"write_to_file","args":{"TargetFile":"a.txt"}}],"content":"working"}"#,
+            r#"{"step_index":2,"source":"MODEL","type":"GENERIC","status":"DONE","content":"a.txt\nb.txt"}"#,
+            "{half",
+            r#"{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"done"}"#,
+        ]
+        .join("\n");
+        let all: Vec<String> = ["messages", "reasoning", "tools", "edits", "tool_results"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let r = curate_agy(&jsonl, &all, Some("do the thing"));
+        assert_eq!(
+            r.lines,
+            vec![
+                elided_prompt_line("do the thing"),
+                "[thinking] plan it".to_string(),
+                "[agy] working".to_string(),
+                r#"[tool] run_command: {"CommandLine":"ls"}"#.to_string(),
+                r#"[edit] write_to_file: {"TargetFile":"a.txt"}"#.to_string(),
+                "[result] a.txt b.txt".to_string(),
+                "[agy] done".to_string(),
+            ]
+        );
+        let r = curate_agy(&jsonl, &default_kinds("agy"), None);
+        assert!(r.lines.iter().any(|l| l.starts_with("[user] do the thing")));
+        assert!(r.lines.iter().any(|l| l.starts_with("[thinking]")));
+        assert!(!r.lines.iter().any(|l| l.starts_with("[result]")));
     }
 }

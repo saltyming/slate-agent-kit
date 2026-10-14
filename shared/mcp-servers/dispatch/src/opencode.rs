@@ -223,6 +223,7 @@ async fn run_inner(
         exit_code: Some(exit_code),
         success: exit_code == 0,
         final_text: (exit_code == 0).then(|| stdout.clone()),
+        failure_detail: None,
         stdout,
         stdout_total,
         stdout_truncated: false,

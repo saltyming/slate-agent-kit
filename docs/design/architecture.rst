@@ -7,12 +7,12 @@ slate-agent-kit design
 Purpose and scope
 -----------------
 
-slate-agent-kit is the single source of the agent kits for Claude Code, Codex
-and Kimi Code: their rules, skills, document templates and prefs templates;
-the shared MCP servers (dispatch, palette); and the installer. Each harness
-kit is a git submodule under ``kits/`` whose installable content is rendered
-from this repository. The kits do not vendor slate; synchronization is driven
-from here.
+slate-agent-kit is the single source of the agent kits for Claude Code, Codex,
+Kimi Code and the Antigravity CLI: their rules, skills, document templates and
+prefs templates; the shared MCP servers (dispatch, palette); and the installer.
+Each harness kit is a git submodule under ``kits/`` whose installable content
+is rendered from this repository. The kits do not vendor slate;
+synchronization is driven from here.
 
 Architecture
 ------------
@@ -48,24 +48,29 @@ Sources
   the harness's surface rule: how it loads the rules, the harness defaults the
   user's preferences settle, and how it reaches the servers. The constitution
   carries no insert, so it renders to the same text in every kit apart from
-  file names.
+  file names. The four adapters are ``claude``, ``codex``, ``kimi`` and
+  ``agy`` (the Antigravity CLI).
 
 ``shared/crates/``
   The Rust libraries the servers share: agent-exec (one headless backend
   process invocation, from binary lookup to a run record with normalized
-  token usage) and harness-log (session location and usage parsing for each
-  backend's own output).
+  token usage; codex and claude take the prompt verbatim on stdin and are
+  judged by their exit status, agy takes it as a stream-json event and is
+  judged by the ``result`` event its output stream carries) and harness-log
+  (session location and usage parsing for each backend's own output).
 
 ``shared/mcp-servers/``
   The Rust MCP servers: dispatch (consultation on codex and claude; external
-  execution on codex, claude and opencode; every run asynchronous with a
+  execution on codex, claude, opencode and agy; every run asynchronous with a
   ``wait`` subcommand) and palette (document reads, checks and writes).
-  dispatch runs codex and claude through agent-exec with parameters that
-  differ by kind; its opencode runner is its own and reports through
-  agent-exec's event types.
+  dispatch runs codex, claude and agy through agent-exec with parameters that
+  differ by kind and backend; its opencode runner is its own and reports
+  through agent-exec's event types.
 
 ``shared/setup/``
-  The Rust installer, ``slate-setup``.
+  The Rust installer, ``slate-setup``: one module per harness, each giving the
+  layout (manual, rules, skills, state and native-configuration paths) the
+  shared steps consult.
 
 ``tooling/``
   ``render-kit.sh`` (renders a kit), ``validate.sh`` (checks sources and
@@ -79,7 +84,11 @@ Render
 ``tooling/render-kit.sh <harness>`` expands each insert marker from the
 harness's inserts, substitutes the tokens, and writes the kit's ``dist/``: the
 manual, the rule files in load order, the skills with the palette templates,
-the prefs templates, and the ``kit.toml`` descriptor. It also renders the kit's
+the prefs templates, and the ``kit.toml`` descriptor. For the Antigravity kit
+it also prepends to every rule and prefs file the YAML frontmatter block
+Antigravity's rules folder requires (``trigger: always_on``, a quoted
+``description``), in front of the kit signature; the sources carry no such
+block, so the other renders are unchanged. It also renders the kit's
 ``install.sh``, ``install.ps1``, ``Makefile`` and the maintainer ``AGENTS.md``
 at the kit root, and removes paths of the earlier layout. A missing insert file
 is a hard error.
@@ -91,10 +100,14 @@ A kit's entry point obtains ``slate-setup`` (prebuilt for the platform from the
 slate release the descriptor names, or built from a slate checkout) and runs it
 on the kit's ``dist/``. ``slate-setup`` asks its questions, shows a summary, and
 then installs the files, the binaries and the server registrations, writes the
-prefs and the harness's native subagent configuration, and records everything
-in a manifest. Claude Code loads its rules folder file by file; Codex and Kimi
-load one ``AGENTS.md``, which the installer writes as the manual followed by the
-rule files and the user's custom rules.
+prefs and the harness's native configuration, and records everything in a
+manifest. Each harness has a layout the installer consults for its manual,
+rules, skills, state and native-configuration paths. Claude Code and
+Antigravity load their rules folder file by file (Antigravity only files that
+open with the frontmatter block the render supplies); Codex and Kimi load one
+``AGENTS.md``, which the installer writes as the manual followed by the rule
+files and the user's custom rules. Antigravity's home is ``~/.gemini`` and has
+no override, so the installer accepts no other ``--home`` for it.
 
 Ownership and state
 -------------------

@@ -7,3 +7,6 @@
 [submodule "kits/kimi-agent-kit"]
 	path = kits/kimi-agent-kit
 	url = https://github.com/saltyming/kimi-agent-kit.git
+[submodule "kits/agy-agent-kit"]
+	path = kits/agy-agent-kit
+	url = https://github.com/saltyming/agy-agent-kit.git

@@ -9,11 +9,14 @@
 //!   consultation never forwards a prior dispatch run as "the conversation")
 //! - Kimi Code CLI: `$KIMI_CODE_HOME/session_index.jsonl` →
 //!   `<sessionDir>/agents/main/wire.jsonl`
+//! - Antigravity CLI (agy): `~/.gemini/antigravity-cli/cache/
+//!   last_conversations.json[<dir>]` → `brain/<id>/.system_generated/logs/
+//!   transcript.jsonl`
 //!
 //! Source selection, in precedence order:
 //! 1. `DISPATCH_TRANSCRIPT_DIR` — explicit directory of Claude-schema `.jsonl`
 //!    files (tests / unusual setups). Installers do not set this.
-//! 2. `SLATE_HARNESS` = `claude` | `codex` | `kimi` — set by the installer at
+//! 2. `SLATE_HARNESS` = `claude` | `codex` | `kimi` | `agy` — set by the installer at
 //!    MCP registration time; deterministic.
 //! 3. Auto-detect — each reader locates a candidate for this project and the
 //!    newest source file wins. The invoking harness appended to its log
@@ -25,6 +28,7 @@
 //! sources, unparseable lines, or unknown shapes degrade to `Unavailable` —
 //! the caller's `question` and `context` always reach the backend.
 
+mod agy;
 mod claude;
 mod codex;
 mod kimi;
@@ -52,6 +56,7 @@ enum Harness {
     Claude,
     Codex,
     Kimi,
+    Agy,
 }
 
 impl Harness {
@@ -60,6 +65,7 @@ impl Harness {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
             Harness::Kimi => "kimi",
+            Harness::Agy => "agy",
         }
     }
 }
@@ -81,6 +87,7 @@ fn harness_from_env() -> Option<Harness> {
         "claude" => Some(Harness::Claude),
         "codex" => Some(Harness::Codex),
         "kimi" => Some(Harness::Kimi),
+        "agy" => Some(Harness::Agy),
         other => {
             tracing::warn!(
                 "SLATE_HARNESS has unknown value {other:?}; falling back to auto-detect"
@@ -141,7 +148,7 @@ pub fn render_transcript(cwd: &Path, home: &Path, tail: Option<u32>) -> Transcri
             // Auto-detect: the newest located source wins.
             let mut attempts: Vec<String> = Vec::new();
             let mut best: Option<(Harness, Located)> = None;
-            for h in [Harness::Claude, Harness::Codex, Harness::Kimi] {
+            for h in [Harness::Claude, Harness::Codex, Harness::Kimi, Harness::Agy] {
                 match locate_for(h, cwd, &project_dir, home) {
                     Ok(loc) => {
                         if best
@@ -176,6 +183,7 @@ fn locate_for(
         Harness::Claude => claude::locate(project_dir, raw_cwd, home),
         Harness::Codex => codex::locate(project_dir),
         Harness::Kimi => kimi::locate(project_dir, home),
+        Harness::Agy => agy::locate(project_dir, raw_cwd, home),
     }
 }
 
@@ -184,6 +192,7 @@ fn render_for_path(h: Harness, path: &Path) -> Vec<String> {
         Harness::Claude => claude::render_file(path),
         Harness::Codex => codex::render_file(path),
         Harness::Kimi => kimi::render_file(path),
+        Harness::Agy => agy::render_file(path),
     }
 }
 

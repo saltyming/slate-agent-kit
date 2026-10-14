@@ -3,7 +3,7 @@
 #
 # It installs the shared MCP servers (dispatch, palette), plus the
 # agent-guard helper beside them on Linux and macOS, and registers the servers
-# with Claude Code, Codex and Kimi Code. Every step lives in slate-setup;
+# with Claude Code, Codex, Kimi Code and the Antigravity CLI. Every step lives in slate-setup;
 # this script only translates its documented options and environment variables.
 set -eu
 
@@ -24,10 +24,12 @@ Options:
   --configure-claude      Build/copy and register via `claude mcp add -s user`
   --configure-codex       Build/copy and register via `codex mcp add`
   --configure-kimi        Build/copy and register a Kimi local plugin
-  --configure-all         Build/copy and configure Claude + Codex + Kimi
+  --configure-agy         Build/copy and register with the Antigravity CLI (agy mcp add)
+  --configure-all         Build/copy and configure Claude + Codex + Kimi + Antigravity
   --uninstall-claude      Remove the servers from Claude user-scope MCP config
   --uninstall-codex       Remove the servers from Codex config
   --uninstall-kimi        Remove the Kimi local plugin registration and files
+  --uninstall-agy         Remove the Antigravity registration (agy mcp remove)
   --roots DIRS            Absolute workspace roots for dispatch and palette
                           containment, separated like PATH (':' on Unix).
                           Required for Kimi (its plugin runtime spawns MCP
@@ -75,10 +77,12 @@ while [ "$#" -gt 0 ]; do
     --configure-claude) INSTALL=1; CONFIGURE="$CONFIGURE claude" ;;
     --configure-codex) INSTALL=1; CONFIGURE="$CONFIGURE codex" ;;
     --configure-kimi) INSTALL=1; CONFIGURE="$CONFIGURE kimi" ;;
-    --configure-all) INSTALL=1; CONFIGURE="$CONFIGURE claude codex kimi" ;;
+    --configure-agy) INSTALL=1; CONFIGURE="$CONFIGURE agy" ;;
+    --configure-all) INSTALL=1; CONFIGURE="$CONFIGURE claude codex kimi agy" ;;
     --uninstall-claude) UNCONFIGURE="$UNCONFIGURE claude" ;;
     --uninstall-codex) UNCONFIGURE="$UNCONFIGURE codex" ;;
     --uninstall-kimi) UNCONFIGURE="$UNCONFIGURE kimi" ;;
+    --uninstall-agy) UNCONFIGURE="$UNCONFIGURE agy" ;;
     --roots)
       [ "$#" -ge 2 ] || { echo "--roots requires a path list" >&2; exit 2; }
       ROOTS="$2"; shift ;;
@@ -96,7 +100,7 @@ done
 # No option at all: install and configure every harness, as before.
 if [ "$INSTALL" = 0 ] && [ -z "$CONFIGURE" ] && [ -z "$UNCONFIGURE" ]; then
   INSTALL=1
-  CONFIGURE=" claude codex kimi"
+  CONFIGURE=" claude codex kimi agy"
 fi
 
 [ -z "${CLAUDE_DIR:-}" ] || : "${CLAUDE_CONFIG_DIR:=$CLAUDE_DIR}"

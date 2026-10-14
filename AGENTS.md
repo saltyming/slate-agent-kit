@@ -10,7 +10,7 @@ memory-triage skill in `shared/workflows/memory/`. The Rust crates are the MCP
 servers in `shared/mcp-servers/{dispatch,palette}`, the libraries they
 share in `shared/crates/{agent-exec,harness-log}` and the
 installer in `shared/setup`. Harness render mappings are under
-`adapters/{claude,codex,kimi}/`, and `kits/*-agent-kit/` are git submodules
+`adapters/{claude,codex,kimi,agy}/`, and `kits/*-agent-kit/` are git submodules
 whose `dist/`, entry points (`install.sh`, `install.ps1`, `Makefile`) and root
 `AGENTS.md` are rendered. Do not hand-edit rendered files in `kits/`; edit
 shared sources, adapters and `tooling/kit-scripts/`, then render.
@@ -27,7 +27,7 @@ This repository documents itself in `docs/` (RST: `rfc/`, `adr/`,
   matches CI lint strictness.
 - `cargo fmt --all -- --check` verifies Rust formatting.
 - `sh tooling/render-kit.sh codex` renders one kit; replace `codex` with
-  `claude` or `kimi` as needed.
+  `claude`, `kimi` or `agy` as needed.
 - `sh tooling/validate.sh` checks required paths, rendered outputs, inserts,
   invariant IDs, harness leaks, retired terms, size budgets, entry points and
   descriptors, and runs `palette check` on this repository when a palette
@@ -62,6 +62,7 @@ follows it.
 ## Security & Configuration Tips
 
 Do not print, copy, or commit live harness credentials such as
-`~/.codex/config.toml`, `~/.codex/auth.json`, or `~/.kimi-code/config.toml`.
+`~/.codex/config.toml`, `~/.codex/auth.json`, `~/.kimi-code/config.toml` or the
+credential files under `~/.gemini`.
 The installer preserves user-owned files (`-custom:` signatures); test install
 flows in a scratch `HOME`.

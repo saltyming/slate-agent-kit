@@ -25,24 +25,30 @@ Definitions and model
 Kind
 ~~~~
 
-``execute``: the backend (codex, claude or opencode) runs in ``working_dir``
-under the run's sandbox and may modify files there. ``consult``: the backend
-(codex or claude) runs read-only in the server's directory with no MCP server
-of its own, answering a question; its prompt is the role framing, the optional
-context, the redacted transcript when one was found, the question and the
-independence reminder, in that order.
+``execute``: the backend (codex, claude, opencode or agy) runs in
+``working_dir`` under the run's sandbox and may modify files there; agy runs
+headless with permissions skipped under the agent guard, with its terminal
+sandbox at the workspace-write level, and is refused the read-only level.
+``consult``: the backend (codex or claude; agy is refused, since it cannot hide
+the user's MCP servers from a nested run) runs read-only in the server's
+directory with no MCP server of its own, answering a question; its prompt is
+the role framing, the optional context, the redacted transcript when one was
+found, the question and the independence reminder, in that order.
 
 Run
 ~~~
 
 A row of the store with an id (``d-<n>``), a kind, a backend, a status, the
 rendered prompt, the model and effort, the fallback chain and its history, the
-owning server's pid and instance, the child pid, the exit code, the result or
-the error, and timestamps. Statuses: ``queued``, ``running``, ``succeeded``,
-``failed``, ``cancelled``, ``interrupted``. The first two are active; the rest
-are terminal. ``interrupted`` is a run whose owning server went away without
-ending it, or that the server killed to restart; a restarted run names its
-successor in ``restarted_as`` and the successor names it in ``restart_of``.
+owning server's pid and instance, the child pid, the backend's session
+identity once it is known (a codex rollout, a claude session, an agy
+conversation id, written while the run is live as soon as the backend reports
+it), the exit code, the result or the error, and timestamps. Statuses:
+``queued``, ``running``, ``succeeded``, ``failed``, ``cancelled``,
+``interrupted``. The first two are active; the rest are terminal.
+``interrupted`` is a run whose owning server went away without ending it, or
+that the server killed to restart; a restarted run names its successor in
+``restarted_as`` and the successor names it in ``restart_of``.
 
 Store
 ~~~~~
@@ -60,14 +66,21 @@ Transcript
 ~~~~~~~~~~
 
 For a consultation the server reads the invoking harness's own session log:
-Claude Code project transcripts, Codex rollouts (interactive sessions only) or
-Kimi Code wire logs, chosen by ``SLATE_HARNESS`` when set, else the newest
-candidate; ``DISPATCH_TRANSCRIPT_DIR`` names a directory of Claude-schema logs
-instead. The last ``transcript_tail`` messages (default 80) are rendered within
-100 KB, trimmed from the front; user and assistant text passes, tool calls
-become ``[tool_use: <name>]``, tool results ``[tool_result]`` and reasoning
-``[thinking]``. A missing or unreadable source is a note in the result, never a
-failure.
+Claude Code project transcripts, Codex rollouts (interactive sessions only),
+Kimi Code wire logs or Antigravity conversation transcripts, chosen by
+``SLATE_HARNESS`` when set, else the newest candidate;
+``DISPATCH_TRANSCRIPT_DIR`` names a directory of Claude-schema logs instead.
+The Antigravity reader resolves the working directory's latest conversation
+through ``<home>/.gemini/antigravity-cli/cache/last_conversations.json`` and
+reads ``brain/<conversation id>/.system_generated/logs/transcript.jsonl``
+(``home`` from ``HOME``, ``USERPROFILE`` on Windows): ``USER_INPUT`` and
+``PLANNER_RESPONSE`` content passes as user and assistant text, ``tool_calls``
+become ``[tool_use: <name>]``, ``GENERIC`` steps ``[tool_result]`` and
+``thinking`` ``[thinking]``. The last ``transcript_tail`` messages (default 80)
+are rendered within 100 KB, trimmed from the front; user and assistant text
+passes, tool calls become ``[tool_use: <name>]``, tool results
+``[tool_result]`` and reasoning ``[thinking]``. A missing or unreadable source
+is a note in the result, never a failure.
 
 Re-entry
 ~~~~~~~~
@@ -100,12 +113,14 @@ constraints?, acceptance?, context?, details?, backend?, model?,
 reasoning_effort?, sandbox?, plan_id?, skip_git_repo_check?, allow_concurrent?,
 model_fallback?)`` starts an execution and returns ``id``, ``kind``, ``status``
 (``queued``), ``backend``, the canonical ``working_dir``, ``sandbox``,
-``plan_id``, ``wait`` and a note. ``working_dir`` must canonicalize inside the
-project root or an extra root (``DISPATCH_EXTRA_ROOTS``). ``sandbox`` is
+``plan_id``, ``wait`` and a note. ``backend`` is ``codex`` (default),
+``opencode``, ``claude`` or ``agy``. ``working_dir`` must canonicalize inside
+the project root or an extra root (``DISPATCH_EXTRA_ROOTS``). ``sandbox`` is
 ``read-only``, ``workspace-write`` (default) or ``danger-full-access``, the
-last refused unless ``DISPATCH_ALLOW_DANGER`` is set. One active execution per
-working directory unless ``allow_concurrent``; consultations count neither
-way. A fresh codex execution whose log never associates within
+last refused unless ``DISPATCH_ALLOW_DANGER`` is set, and ``read-only``
+refused for ``agy`` (``invalid_params``, naming the reason). One active
+execution per working directory unless ``allow_concurrent``; consultations
+count neither way. A fresh codex execution whose log never associates within
 ``DISPATCH_RESTART_UNASSOCIATED_SECS`` (default about 30; 0 disables) and whose
 directory shows no writes is killed and resubmitted once.
 
@@ -115,33 +130,40 @@ consultation and returns ``id``, ``kind``, ``status`` (``queued``),
 ``backend``, the echoed ``model``, ``reasoning_effort``, ``model_fallback`` and
 ``include_transcript``, ``transcript_note`` (set when no transcript was
 forwarded), ``wait`` and a note. ``backend`` is ``codex`` (default) or
-``claude``; ``opencode`` is refused (``invalid_params``). ``include_transcript``
-defaults to true; an empty question is ``invalid_params``.
+``claude``; ``opencode`` and ``agy`` are refused (``invalid_params``).
+``include_transcript`` defaults to true; an empty question is
+``invalid_params``.
 
 ``dispatch_status(id, include_spec?)`` returns the row: id, kind, backend,
 status, working directory, sandbox, model, effort, final model and fallback
 history when a fallback answered, ``restarted_as`` or ``restart_of`` when set,
-the pids and timestamps, and, once terminal, the result or the error. An
-active row also reports ``child_process_alive``, ``log_associated`` and
+the session identity when known, the pids and timestamps, and, once terminal,
+the result or the error. An active row also reports
+``child_process_alive``, ``log_associated`` and
 ``log_last_write_age_seconds``. The result of a consultation is the
 ``[<backend>]`` header, the reply, a truncation note when the reply exceeded
 50 KB, the fallback note and the transcript note; the result of an execution
-is the captured stdout with its truncation note. ``include_spec`` adds the
-accepted spec, the rendered prompt and the argv.
+is the backend's final text (the captured stdout with its truncation note for
+codex and claude; for agy the ``result`` event's ``response``, followed by a
+note naming the actions headless agy denied when there were any).
+``include_spec`` adds the accepted spec, the rendered prompt and the argv.
 
 ``dispatch_list(plan_id?, status?, kind?)`` lists rows in insertion order
 without results. ``dispatch_cancel(id | plan_id)`` fires the cancellation
 token, kills the backend's process group and moves the run to ``cancelled``;
 it applies to both kinds and is the only way to stop a consultation after
 submission. ``dispatch_logs(id, ...)`` shows the backend's own log for an
-execution (codex rollout, claude session log, dispatch's opencode JSONL); for a
+execution (codex rollout, claude session log, the agy conversation's
+``transcript.jsonl`` by the stored conversation id, saying that there is no
+live log until the id is known, dispatch's opencode JSONL); for a
 consultation it shows the backend's session log when one is located and
 otherwise says that a consultation has no live log. ``dispatch_steer(id,
 instruction, ...)`` cancels an execution and resumes its backend session with
-the instruction as a new linked run; a consultation is refused
-(``invalid_params``). ``dispatch_backends()`` lists codex, opencode and claude
-with availability, version and the kinds each serves, plus the containment
-configuration.
+the instruction as a new linked run (codex ``exec resume``, claude
+``--resume``, agy ``--conversation``); a consultation is refused
+(``invalid_params``). ``dispatch_backends()`` lists codex, opencode, claude
+and agy with availability, version and the kinds each serves (agy:
+``execute`` only), plus the containment configuration.
 
 The ``wait`` field
 ~~~~~~~~~~~~~~~~~~
@@ -179,8 +201,12 @@ Run outcome
 
 A run's terminal status, exit code, result or error, final model and fallback
 history are written in one statement; a reader that sees a terminal status
-sees the whole outcome. ``succeeded`` means the backend exited 0, not that its
-work is correct.
+sees the whole outcome. ``succeeded`` means the backend's result normaliser
+reported success (``agent-exec.rst``, Outcome and RunRecord: the exit status
+for codex and claude; for agy also a well-formed ``result`` event with
+``status`` ``SUCCESS``, no error and not a denied action beside an empty
+reply), not that its work is correct; an agy run can exit 0 and end
+``failed``, with the exit code kept as observed.
 
 Errors and edge cases
 ---------------------
@@ -189,13 +215,18 @@ Tool errors are JSON ``{"error": {"code", "message"}}`` with the codes
 ``invalid_params``, ``no_such_task``, ``invalid_working_dir``,
 ``no_project_root``, ``sandbox_forbidden``, ``dir_busy``,
 ``session_not_ready``, ``unknown_backend``, ``rollout_unreadable``,
-``db_error`` and ``reentrant``. A reentrant refusal names the depth. When the
-server starts it marks every active row owned by a process that is not
-running, or by no process, ``interrupted``; a read of an active row owned by a
-dead process does the same. On a termination signal the server cancels its
-own runs, which end ``cancelled``. A quiet log on a live process is
-inconclusive: a backend inside a long tool call emits nothing until it
-returns.
+``db_error`` and ``reentrant``. A reentrant refusal names the depth. A
+consultation on ``agy`` and an agy execution under ``read-only`` are
+``invalid_params`` with the reason. When the server starts it marks every
+active row owned by a process that is not running, or by no process,
+``interrupted``; a read of an active row owned by a dead process does the
+same. On a termination signal the server cancels its own runs, which end
+``cancelled``. A quiet log on a live process is inconclusive: a backend inside
+a long tool call emits nothing until it returns; an agy run has no log at all
+until its ``init`` event has arrived. A ``server/discover`` request that a
+client (the Antigravity CLI) sends before ``initialize`` is answered with the
+JSON-RPC error ``-32601 Method not found`` and the standard handshake then
+proceeds; blank lines before it are ignored.
 
 Ownership and ordering
 ----------------------
@@ -214,6 +245,8 @@ A store from an earlier release opens; its rows read as ``execute``. The
 ``aside`` server, its tools and its ``ASIDE_*`` environment variables are
 retired with this contract; the installer removes its registration. A caller
 that treats a terminal status as success must check for ``succeeded``.
+``backend: agy`` on a server from before 26.10.1 is ``unknown_backend``; a
+store that holds agy rows opens on such a server and lists them.
 
 Conformance
 -----------

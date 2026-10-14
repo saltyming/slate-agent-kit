@@ -2,7 +2,7 @@
 
 Meta-repo and single source of truth for the agent-kit family: shared rule
 sources, skills and document templates, the shared MCP servers, and the
-installer. The three harness kits (`kits/{claude,codex,kimi}-agent-kit`) are git
+installer. The four harness kits (`kits/{claude,codex,kimi,agy}-agent-kit`) are git
 submodules whose payload is **rendered** from this repo. A kit's root
 `AGENTS.md` describes maintaining that kit; the manual a kit installs is its
 `dist/CLAUDE.md` or `dist/AGENTS.md`.
@@ -14,7 +14,7 @@ submodules whose payload is **rendered** from this repo. A kit's root
 (`shared/`, `adapters/<h>/`, `tooling/kit-scripts/`), then:
 
 ```sh
-sh tooling/render-kit.sh claude   # and/or codex, kimi
+sh tooling/render-kit.sh claude   # and/or codex, kimi, agy
 sh tooling/validate.sh            # must print "validate: OK" before committing
 ```
 
@@ -27,7 +27,7 @@ When a tool or behavior is removed or changed, rewrite the rule text so the new 
 - `shared/rules/constitution.md` — the constitution (the preamble and the articles, § 1 to § 21, in six parts); `shared/rules/implementing/` — the implementing rules (execution, delegation, models, git), which hold only what the articles do not imply; `shared/rules/implementing/mcp/` — consultation and dispatch.
 - `shared/workflows/palette/` — palette rule, skills, and `templates/` (also the palette server's schema); `shared/workflows/memory/` — the memory-triage skill; `shared/prefs/` — prefs templates.
 - `shared/mcp-servers/{dispatch,palette}`, `shared/crates/{agent-exec,harness-log}` (the backend execution library with its `agent-guard` executable, and the session-log and usage parsers) and `shared/setup` (the `slate-setup` installer) — the Rust workspace (repo-root `Cargo.toml`). The kits ship no binaries of their own.
-- `adapters/<harness>/` — `tokens.sed` (render-time `{{TOKEN}}` values, including `KIT_VERSION`), `inserts/*.md` (per-marker fragments); codex and kimi also have `surface.md` (harness surface rules).
+- `adapters/<harness>/` — `tokens.sed` (render-time `{{TOKEN}}` values, including `KIT_VERSION`), `inserts/*.md` (per-marker fragments); codex, kimi and agy also have `surface.md` (harness surface rules). The agy render prepends the YAML frontmatter Antigravity's rules folder requires to every rule and prefs file; the sources carry none.
 - `tooling/` — `render-kit.sh`, `validate.sh`, `install-mcp.sh` (build the servers and register them through `slate-setup`), `slate-version` (the slate release a kit's binaries come from), `kit-scripts/` (entry-point and maintainer templates).
 - `docs/` — this repo's own records and maintained documents (RST): `rfc/`, `adr/`, `changeset/`, `staging/`, `design/`, `spec/`, `principles.rst`, `glossary.rst`. `_palette/` holds the internal work documents (git-ignored). Indexes and `staging/` are generated: after changing `docs/` outside the palette server's tools, run `palette generate .` and commit the result; CI only checks them.
 
@@ -61,18 +61,18 @@ When a tool or behavior is removed or changed, rewrite the rule text so the new 
 4. Re-render the kits, update each kit's `CHANGELOG.md`, commit, and push each kit's main without a tag.
 5. Push slate's source changes and the submodule pin bumps in **one** push, so that main's `validate.sh` never runs a new check against old renders; wait for slate and kit CI to be green.
 6. Tag each kit, then tag slate `vX.Y.Z` (this publishes the binaries).
-7. For rules-affecting releases, refresh the live homes: `make install` in each kit (installs into `~/.claude`, `~/.codex`, `~/.kimi-code`; new rules apply from each harness's next session).
+7. For rules-affecting releases, refresh the live homes: `make install` in each kit (installs into `~/.claude`, `~/.codex`, `~/.kimi-code`, `~/.gemini`; new rules apply from each harness's next session).
 8. A regression found after a tag is reported and waits for the user; another release is the user's decision.
 
 ## Secrets
 
 Never print, copy, or commit `~/.kimi-code/config.toml` (contains a live API
-key) or `~/.codex/{config.toml,auth.json}`. Backups and verification steps
-exclude them.
+key), `~/.codex/{config.toml,auth.json}` or the credential files under
+`~/.gemini`. Backups and verification steps exclude them.
 
 ## Live homes
 
-`~/.claude`, `~/.codex`, `~/.kimi-code` are production installs of the rendered
+`~/.claude`, `~/.codex`, `~/.kimi-code`, `~/.gemini` are production installs of the rendered
 kits. `slate-setup` replaces or removes only kit-signed files; user-owned files
 (`-custom:` signatures, e.g. prefs and custom rules) are preserved. Replacing
 MCP binaries uses atomic rename + macOS ad-hoc codesign, so live sessions keep

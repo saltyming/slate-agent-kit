@@ -62,7 +62,7 @@ Descriptor
 ``dist/kit.toml``::
 
    kit = "claude-agent-kit"          # file prefix and manifest name
-   harness = "claude"                # claude | codex | kimi
+   harness = "claude"                # claude | codex | kimi | agy
    version = "26.10.1"               # kit version, YY.MM.N
    contract = 1                      # compatibility contract (Compatibility)
    slate_version = "26.10.1"         # slate release that provides the binaries
@@ -75,27 +75,49 @@ Descriptor
    legacy = ["workslate"]            # optional legacy cleanups, claude only
 
 ``load = "rules-dir"`` means the harness loads every file in its rules folder
-(Claude Code). ``load = "concat"`` means the harness loads only its primary
-file, so the installer writes the primary file followed by every rule file in
-``rules`` order and then every custom rule file, each preceded by a line
-``---`` with blank lines around it (Codex, Kimi Code).
+(Claude Code; Antigravity, whose rules folder loads a file only when it opens
+with the YAML frontmatter block the render emits in front of the signature).
+``load = "concat"`` means the harness loads only its primary file, so the
+installer writes the primary file followed by every rule file in ``rules``
+order and then every custom rule file, each preceded by a line ``---`` with
+blank lines around it (Codex, Kimi Code).
 
 Harness homes
 ~~~~~~~~~~~~~
+Each harness has a layout (``layout::Layout``: the home, the manual folder,
+the rules folder, the skills folder, the manifest folder, the backup folder,
+the servers' state home and the native configuration file) that every shared
+step consults; ``layout::manifest_dirs`` lists every harness's manifest folder
+for the shared-binary ownership checks, and ``layout::check_home`` refuses a
+``--home`` the harness cannot use.
+
 ``claude``
   ``--home``, else ``$CLAUDE_CONFIG_DIR``, else ``~/.claude``. Primary file
   ``CLAUDE.md``; rules in ``rules/``; skills in ``skills/``; settings in
-  ``settings.json``.
+  ``settings.json``; the manifest at the home root.
 
 ``codex``
   ``--home``, else ``$CODEX_HOME``, else ``~/.codex``. Primary file
   ``AGENTS.md``; rules copied to ``rules/`` for reference; skills in ``skills/``;
-  configuration in ``config.toml``.
+  configuration in ``config.toml``; the manifest at the home root.
 
 ``kimi``
   ``--home``, else ``$KIMI_CODE_HOME``, else ``~/.kimi-code``. Primary file
   ``AGENTS.md``; rules copied to ``rules/`` for reference; skills in
-  ``skills/``; configuration in ``config.toml``; plugins in ``plugins/``.
+  ``skills/``; configuration in ``config.toml``; plugins in ``plugins/``; the
+  manifest at the home root.
+
+``agy``
+  ``~/.gemini`` under the process home (``HOME``; ``USERPROFILE`` on Windows).
+  Antigravity has no home override, so ``--home`` is accepted only when it
+  names that folder and is refused otherwise with a message saying to set the
+  process home instead. Primary file ``config/AGENTS.md``; rules and prefs in
+  ``config/rules/``, each with the frontmatter block; skills in
+  ``config/skills/``; the servers in ``config/mcp_config.json``, written by
+  ``agy mcp``; approvals in ``antigravity-cli/settings.json``; the manifest,
+  the backups (``backups/``) and the servers' state home under
+  ``slate-agent-kit/``. ``config/`` is shared with the Antigravity
+  application.
 
 The binary folder is ``--bin-dir``, else ``~/.local/bin`` on every operating
 system (``%USERPROFILE%\.local\bin`` on Windows).
@@ -118,16 +140,17 @@ Commands
   slate's ``tooling/install-mcp.sh``.
 
 Common options: ``--payload <dir>`` (default: the ``dist/`` beside the running
-entry point), ``--home <dir>``, ``--bin-dir <dir>``,
-``--binaries prebuilt|build|skip`` (default ``prebuilt``), ``--slate-dir <dir>``
-(the checkout to build from), ``--roots <paths>`` (an OS path list),
-``--set <key>=<value>`` (repeatable; keys in spec/prefs.rst),
-``--custom-rules <dir|none>``, ``--yes``, ``--dry-run``. ``mcp`` also takes
-``--harness <name>`` (repeatable or comma-separated), ``--uninstall`` and
-``--slate-version``; it records its registrations and edits in
-``<home>/.slate-agent-kit-mcp-manifest.toml`` and never removes binaries. The
-environment variable ``CUSTOM_RULES_DIR`` seeds ``--custom-rules`` and is never
-required.
+entry point), ``--home <dir>`` (for agy only its own folder, Harness homes),
+``--bin-dir <dir>``, ``--binaries prebuilt|build|skip`` (default
+``prebuilt``), ``--slate-dir <dir>`` (the checkout to build from), ``--roots
+<paths>`` (an OS path list), ``--set <key>=<value>`` (repeatable; keys in
+spec/prefs.rst), ``--custom-rules <dir|none>``, ``--yes``, ``--dry-run``.
+``mcp`` also takes ``--harness <name>`` (repeatable or comma-separated),
+``--uninstall`` and ``--slate-version``; it records its registrations and
+edits in ``.slate-agent-kit-mcp-manifest.toml`` in the harness's manifest
+folder (the home; ``~/.gemini/slate-agent-kit`` for agy) and never removes
+binaries. The environment variable ``CUSTOM_RULES_DIR`` seeds
+``--custom-rules`` and is never required.
 
 Terminal experience
 ~~~~~~~~~~~~~~~~~~~
@@ -201,6 +224,12 @@ Payload files and signatures
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 - A kit-managed Markdown file starts with ``<!-- slate-agent-kit:common -->``
   or ``<!-- <kit> -->``. A user-owned file starts with ``<!-- <kit>-custom:``.
+  Either signature may follow a closed YAML frontmatter block (a ``---`` line,
+  lines, a ``---`` line) as the first line after it
+  (``signature::frontmatter_end``, ``signature::signature_line``); the
+  Antigravity kit's rule and prefs files are written that way, and the
+  classification reads through the block for every harness. An unclosed block
+  leaves the file unrecognised.
 - Install overwrites kit-managed files and never overwrites a user-owned one.
   A kit-managed file the previous manifest lists and the new payload no longer
   has is removed, and the summary says so.
@@ -208,22 +237,29 @@ Payload files and signatures
   under its current name and renamed after the confirmation
   (spec/prefs.rst, Migration).
 - An existing primary file that is not kit-managed is copied to
-  ``<file>.bak-<UTC timestamp>`` before it is replaced; the backup is recorded.
+  ``<file>.bak-<UTC timestamp>`` before it is replaced; the backup is recorded
+  (for agy under the kit's ``backups/`` folder, ``util::backup_file_in``).
 - A skill folder is replaced as a whole when its ``SKILL.md`` is kit-managed.
-- Custom rules: every ``*.md`` in the chosen folder is copied into ``rules/`` as
-  ``<kit>--<name>.md`` with the user-owned signature added when missing. A file
-  that would replace a kit-managed one is refused. For ``concat`` harnesses the
-  combined primary file is regenerated from scratch on every install and
-  configure, so a custom rule appears exactly once.
+- Custom rules: every ``*.md`` in the chosen folder is copied into the rules
+  folder as ``<kit>--<name>.md`` with the user-owned signature added when
+  missing. For agy the always-on frontmatter block
+  (``signature::always_on_block``, description
+  ``Harness::rule_frontmatter_title``) is added first when the file has none,
+  and the signature follows the block
+  (``signature::ensure_custom_signature_with_frontmatter``), so Antigravity
+  loads the rule. A file that would replace a kit-managed one is refused. For
+  ``concat`` harnesses the combined primary file is regenerated from scratch
+  on every install and configure, so a custom rule appears exactly once.
 
 Server registration
 ~~~~~~~~~~~~~~~~~~~
 Environment per server:
 
-- dispatch: ``SLATE_AGENT_STATE_HOME`` (Claude: the Claude home; Codex and
-  Kimi: ``<home>/slate-agent-kit``); ``SLATE_HARNESS=<harness>``, the harness
-  whose session log a consultation forwards; ``DISPATCH_EXTRA_ROOTS`` when
-  roots were given; for Kimi with a non-default home also ``KIMI_CODE_HOME``.
+- dispatch: ``SLATE_AGENT_STATE_HOME`` (Claude: the Claude home; Codex, Kimi
+  and Agy: the layout's state home, ``<home>/slate-agent-kit``);
+  ``SLATE_HARNESS=<harness>``, the harness whose session log a consultation
+  forwards; ``DISPATCH_EXTRA_ROOTS`` when roots were given; for Kimi with a
+  non-default home also ``KIMI_CODE_HOME``.
 - palette: ``PALETTE_EXTRA_ROOTS`` when roots were given.
 
 The roots question is asked for every harness. For Kimi, whose plugin runtime
@@ -264,6 +300,21 @@ warning that dispatch and palette will reject every project.
   plugin's entry and keeps every other entry; an unreadable registry is backed
   up before it is rebuilt.
 
+``agy``
+  ``agy mcp remove <server>`` then ``agy mcp add --env <K=V>... <server>
+  <binary>`` (the flags before the name), run with the process home, so agy
+  writes ``~/.gemini/config/mcp_config.json`` itself. Then dispatch's
+  consultation and read tools (``dispatch_consult``, ``dispatch_status``,
+  ``dispatch_list``, ``dispatch_logs``, ``dispatch_backends``) and the palette
+  server's read-only tools (``palette_status``, ``palette_lint``,
+  ``palette_layout``, ``palette_template``, a fixed list in the agy module)
+  are added to ``permissions.allow`` in ``~/.gemini/antigravity-cli/settings.json``
+  as ``mcp(<server>/<tool>)``, in one edit that creates the file and the
+  ``permissions`` object when absent and keeps every other key and the user's
+  own entries; the edit is recorded in the manifest and reversed at uninstall
+  and retirement. A missing ``agy`` turns the registration into a report of
+  the commands, as for the other harnesses.
+
 Native configuration
 ~~~~~~~~~~~~~~~~~~~~
 The subagent default model and effort from ``subagent-prefs.md`` are written
@@ -286,14 +337,22 @@ only when set, and only after validation:
   ``high``, ``xhigh``, ``max``). ``force`` is never set and no pool entry is
   named ``primary``.
 
+``agy``
+  None: Antigravity has no subagent default-model setting. The values are
+  validated and written to the prefs file only, where the agent reads them as
+  what to pass to ``define_subagent``; any model name is accepted.
+
 Every configuration edit keeps all keys, comments and formatting it does not
 change, and records the key's previous value (or its absence) in the manifest.
 
 Manifest
 ~~~~~~~~
-``<home>/.<kit>-manifest.toml`` records: kit and version; every installed file
-and folder; every backup; every configuration key edited with its previous
-value; every registration. An older line-format manifest
+``.<kit>-manifest.toml`` in the harness's manifest folder (the home for
+claude, codex and kimi; ``~/.gemini/slate-agent-kit`` for agy) records: kit
+and version; every installed file and folder; every backup; every
+configuration key edited with its previous value; every registration. The
+checks that ask whether another kit still lists a binary read every harness's
+manifest folder (``layout::manifest_dirs``). An older line-format manifest
 (``<home>/.<kit>-manifest``) is read once for compatibility and replaced.
 
 Uninstall
@@ -301,14 +360,18 @@ Uninstall
 - Removes the kit-managed files and folders the manifest lists after checking
   their signatures; lists the user-owned ones and removes them only if the
   user chooses to (default: keep).
-- Unregisters the servers, removes the Kimi plugin entry and the Claude
-  permission entries it added.
+- Unregisters the servers, removes the Kimi plugin entry and the Claude and
+  Antigravity permission entries it added (for Antigravity the nine
+  ``mcp(<server>/<tool>)`` strings, and a ``settings.json`` the installer
+  created when nothing else was written into it).
 - Restores each edited configuration key to its recorded previous value, or
   removes it if it did not exist, but only when its current value is still the
   one the installer wrote; otherwise it reports the key and leaves it.
-- Removes a binary only when no other kit's manifest in any harness home lists
-  it; ``agent-guard`` also stays while another kit's manifest lists dispatch.
-- Runs the legacy cleanups.
+- Removes a binary only when no other kit's manifest in any harness's
+  manifest folder lists it; ``agent-guard`` also stays while another kit's
+  manifest lists dispatch.
+- Runs the legacy cleanups. The kit's state folder stays while it holds
+  backups, which are never removed.
 
 Legacy cleanup
 ~~~~~~~~~~~~~~
@@ -414,7 +477,14 @@ Conformance
 parser, migration and rename, the configuration edits for each harness, the
 retirement of a recorded server on each harness, and the install, reinstall,
 upgrade-from-previous-release and uninstall flows in a scratch home with
-stand-in harness CLIs; the tests pass on Linux, macOS and Windows.
+stand-in harness CLIs; for Antigravity also the exact filesystem diff of an
+install against the recorded set, the byte-identical reinstall, the
+uninstall that keeps the user's permission entries and unknown keys, the
+ownership classification of files with a frontmatter block (BOM, CRLF, an
+unclosed block), the ``--home`` refusal, shared binaries kept in both
+directions, ``mcp`` and retirement, and a layout regression that keeps the
+three earlier harnesses' install, uninstall and ``mcp`` outputs byte-identical;
+the tests pass on Linux, macOS and Windows.
 
 References
 ----------

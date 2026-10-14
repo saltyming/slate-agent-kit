@@ -14,7 +14,7 @@ use crate::config::{ConfigDoc, TomlDoc};
 use crate::descriptor::LoadMode;
 use crate::env::{Env, Harness};
 use crate::error::{Error, Result};
-use crate::harness::{SubagentPrefs, claude, codex, kimi};
+use crate::harness::{SubagentPrefs, agy, claude, codex, kimi};
 use crate::kit::{Kit, PrefsState, on_path};
 use crate::legacy;
 use crate::manifest::Manifest;
@@ -180,6 +180,10 @@ fn subagent_from_prefs(
     states: &[PrefsState],
     notes: &mut Vec<String>,
 ) -> Option<SubagentPrefs> {
+    // agy has no subagent default setting: its subagent prefs are informational.
+    if kit.harness == Harness::Agy {
+        return None;
+    }
     let state = states.iter().find(|s| s.name == "subagent")?;
     let action = planned.iter().find(|a| a.plan.name == "subagent")?;
     let text = match (&action.plan.text, &action.plan.action) {
@@ -292,6 +296,14 @@ fn preview_config(kit: &Kit, plan: &Plan) -> Vec<(PathBuf, Vec<String>)> {
             };
             kimi::config_edits(&mut doc, &file, plan.subagent.as_ref(), &manifest)
         }
+        Harness::Agy => {
+            let Ok(mut doc) = claude::parse_settings(text.as_deref(), &file) else {
+                return Vec::new();
+            };
+            let dispatch = plan.servers.iter().any(|s| s == "dispatch");
+            let palette = plan.servers.iter().any(|s| s == "palette");
+            agy::settings_edits(&mut doc, &file, dispatch, palette)
+        }
     };
     for c in &out.changes {
         lines.push(describe(c));
@@ -395,7 +407,14 @@ pub fn build(
                 reason: "the name is reserved for a prefs file",
             }));
             (
-                rules::plan_custom_rules(name, &kit.rules_dir, dir, &prior_custom, &reserved)?,
+                rules::plan_custom_rules(
+                    name,
+                    &kit.rules_dir,
+                    dir,
+                    &prior_custom,
+                    &reserved,
+                    kit.harness.rule_frontmatter_title(),
+                )?,
                 Some(dir.clone()),
             )
         }
@@ -416,7 +435,7 @@ pub fn build(
 
     // Payload files.
     let mut files = Vec::new();
-    let primary_dest = kit.home.join(kit.harness.primary_file());
+    let primary_dest = kit.layout.primary();
     let primary_text = kit.payload.read(&kit.payload.primary_path())?;
     let mut rule_texts = Vec::new();
     for r in &desc.rules {
@@ -452,7 +471,7 @@ pub fn build(
             });
         }
         for s in &desc.skills {
-            let dest = kit.home.join("skills").join(s);
+            let dest = kit.layout.skill(s);
             files.push(FileAction {
                 decision: decide_skill(name, &dest),
                 dest,

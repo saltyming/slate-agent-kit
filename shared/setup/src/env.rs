@@ -3,17 +3,17 @@
 //! Owns an injectable snapshot of environment variables, the user's home
 //! folder and the extra variables passed to child processes, so library code
 //! never reads process-global state and tests can run in parallel. Also owns
-//! [`Harness`], the per-harness names and default locations. It does not run
-//! commands beyond building them.
+//! [`Harness`], the per-harness names and default locations, and
+//! [`process_home_var`]. It does not run commands beyond building them.
 //!
 //! Main entry points: [`Env::from_process`], [`Env::for_home`], [`Env::command`],
-//! [`Env::which`] and [`Harness`].
+//! [`Env::which`], [`Harness`] and [`process_home_var`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// One of the three harnesses a kit can target.
+/// One of the four harnesses a kit can target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Harness {
     /// Claude Code.
@@ -22,18 +22,21 @@ pub enum Harness {
     Codex,
     /// Kimi Code.
     Kimi,
+    /// The Antigravity CLI, `agy`.
+    Agy,
 }
 
 impl Harness {
     /// Every harness, in a fixed order.
-    pub const ALL: [Harness; 3] = [Harness::Claude, Harness::Codex, Harness::Kimi];
+    pub const ALL: [Harness; 4] = [Harness::Claude, Harness::Codex, Harness::Kimi, Harness::Agy];
 
-    /// Parses `claude`, `codex` or `kimi`.
+    /// Parses `claude`, `codex`, `kimi` or `agy`.
     pub fn parse(s: &str) -> Option<Harness> {
         match s {
             "claude" => Some(Harness::Claude),
             "codex" => Some(Harness::Codex),
             "kimi" => Some(Harness::Kimi),
+            "agy" => Some(Harness::Agy),
             _ => None,
         }
     }
@@ -44,6 +47,7 @@ impl Harness {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
             Harness::Kimi => "kimi",
+            Harness::Agy => "agy",
         }
     }
 
@@ -53,15 +57,19 @@ impl Harness {
             Harness::Claude => "Claude Code",
             Harness::Codex => "Codex",
             Harness::Kimi => "Kimi Code",
+            Harness::Agy => "Antigravity CLI",
         }
     }
 
-    /// Environment variable that relocates the harness home.
-    pub fn home_var(self) -> &'static str {
+    /// Environment variable that relocates the harness home, when the harness has one.
+    ///
+    /// agy has none: its folder is always `.gemini` under the process home.
+    pub fn home_var(self) -> Option<&'static str> {
         match self {
-            Harness::Claude => "CLAUDE_CONFIG_DIR",
-            Harness::Codex => "CODEX_HOME",
-            Harness::Kimi => "KIMI_CODE_HOME",
+            Harness::Claude => Some("CLAUDE_CONFIG_DIR"),
+            Harness::Codex => Some("CODEX_HOME"),
+            Harness::Kimi => Some("KIMI_CODE_HOME"),
+            Harness::Agy => None,
         }
     }
 
@@ -71,14 +79,15 @@ impl Harness {
             Harness::Claude => ".claude",
             Harness::Codex => ".codex",
             Harness::Kimi => ".kimi-code",
+            Harness::Agy => ".gemini",
         }
     }
 
-    /// File name of the primary instruction file in the home.
+    /// File name of the primary instruction file.
     pub fn primary_file(self) -> &'static str {
         match self {
             Harness::Claude => "CLAUDE.md",
-            Harness::Codex | Harness::Kimi => "AGENTS.md",
+            Harness::Codex | Harness::Kimi | Harness::Agy => "AGENTS.md",
         }
     }
 
@@ -88,6 +97,7 @@ impl Harness {
             Harness::Claude => Some("CLAUDE_BIN"),
             Harness::Codex => Some("CODEX_BIN"),
             Harness::Kimi => None,
+            Harness::Agy => Some("AGY_BIN"),
         }
     }
 
@@ -97,8 +107,25 @@ impl Harness {
             Harness::Claude => Some("claude"),
             Harness::Codex => Some("codex"),
             Harness::Kimi => None,
+            Harness::Agy => Some("agy"),
         }
     }
+
+    /// The display name a rule file's frontmatter description starts with, for a
+    /// harness that drops a rule file without a YAML frontmatter block; `None`
+    /// for the harnesses that read rule files as they are.
+    pub fn rule_frontmatter_title(self) -> Option<&'static str> {
+        match self {
+            Harness::Agy => Some("Antigravity Agent"),
+            Harness::Claude | Harness::Codex | Harness::Kimi => None,
+        }
+    }
+}
+
+/// The variable that names the user's home folder on this platform: `USERPROFILE`
+/// on Windows, `HOME` elsewhere.
+pub fn process_home_var() -> &'static str {
+    if cfg!(windows) { "USERPROFILE" } else { "HOME" }
 }
 
 /// Snapshot of the environment the installer runs in.
@@ -115,9 +142,8 @@ impl Env {
     /// Builds the snapshot from the running process.
     pub fn from_process() -> Env {
         let vars: BTreeMap<String, String> = std::env::vars().collect();
-        let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
         let home = vars
-            .get(home_var)
+            .get(process_home_var())
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
             .or_else(std::env::home_dir)
@@ -158,7 +184,7 @@ impl Env {
 
     /// The home of `harness`: its override variable, else the default folder.
     pub fn harness_home(&self, harness: Harness) -> PathBuf {
-        match self.get(harness.home_var()) {
+        match harness.home_var().and_then(|v| self.get(v)) {
             Some(v) => PathBuf::from(v),
             None => self.default_home(harness),
         }
@@ -169,7 +195,7 @@ impl Env {
         self.home.join(".local").join("bin")
     }
 
-    /// The program used to run the harness CLI (`CLAUDE_BIN`, `CODEX_BIN` or the default name).
+    /// The program used to run the harness CLI (`CLAUDE_BIN`, `CODEX_BIN`, `AGY_BIN` or the default name).
     pub fn cli_program(&self, harness: Harness) -> Option<String> {
         let default = harness.cli_default()?;
         let var = harness.cli_var()?;
@@ -263,6 +289,24 @@ mod tests {
         env.set_var("CLAUDE_BIN", "/x/fake");
         assert_eq!(env.cli_program(Harness::Claude).as_deref(), Some("/x/fake"));
         assert_eq!(env.cli_program(Harness::Kimi), None);
+        assert_eq!(env.cli_program(Harness::Agy).as_deref(), Some("agy"));
+    }
+
+    #[test]
+    fn agy_home_is_gemini_under_the_process_home_and_has_no_override() {
+        let mut env = Env::for_home("/h");
+        assert_eq!(
+            env.harness_home(Harness::Agy),
+            Path::new("/h").join(".gemini")
+        );
+        env.set_var("GEMINI_HOME", "/elsewhere");
+        assert_eq!(
+            env.harness_home(Harness::Agy),
+            Path::new("/h").join(".gemini")
+        );
+        assert_eq!(Harness::Agy.home_var(), None);
+        assert_eq!(Harness::parse("agy"), Some(Harness::Agy));
+        assert_eq!(Harness::Agy.primary_file(), "AGENTS.md");
     }
 
     #[test]

@@ -168,7 +168,19 @@ pub fn backup_path(path: &Path) -> PathBuf {
 
 /// Copies `path` to a fresh backup name and returns that name.
 pub fn backup_file(path: &Path) -> Result<PathBuf> {
-    let dest = backup_path(path);
+    backup_file_in(path, None)
+}
+
+/// Copies `path` to a fresh backup name in `dir`, or beside `path` when `dir` is
+/// `None`, and returns that name. `dir` is created when missing.
+pub fn backup_file_in(path: &Path, dir: Option<&Path>) -> Result<PathBuf> {
+    let dest = match (dir, path.file_name()) {
+        (Some(d), Some(name)) => {
+            fs::create_dir_all(d).ctx(|| format!("creating {}", d.display()))?;
+            backup_path(&d.join(name))
+        }
+        _ => backup_path(path),
+    };
     fs::copy(path, &dest).ctx(|| format!("backing up {} to {}", path.display(), dest.display()))?;
     Ok(dest)
 }
@@ -248,6 +260,23 @@ mod tests {
             fs::metadata(&real).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn backups_go_to_the_given_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("AGENTS.md");
+        fs::write(&f, "mine").unwrap();
+        let into = dir.path().join("state").join("backups");
+        let b = backup_file_in(&f, Some(&into)).unwrap();
+        assert_eq!(b.parent(), Some(into.as_path()));
+        assert!(
+            b.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("AGENTS.md.bak-")
+        );
+        assert_eq!(fs::read_to_string(&b).unwrap(), "mine");
     }
 
     #[test]

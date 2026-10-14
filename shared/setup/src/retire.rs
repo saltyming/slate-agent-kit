@@ -13,7 +13,7 @@ use crate::binaries::{self, exe_name};
 use crate::config::{ConfigRecord, Restored};
 use crate::env::{Env, Harness};
 use crate::error::{IoContext, Result};
-use crate::harness::{self, claude, codex, kimi};
+use crate::harness::{self, agy, claude, codex, kimi};
 use crate::kit::Kit;
 use crate::manifest::{Manifest, manifest_path, other_manifests_listing};
 use crate::report::Report;
@@ -53,7 +53,7 @@ impl BinaryPlan {
 pub struct RetiredServer {
     /// Server name.
     pub name: String,
-    /// The manifest records its registration with the harness CLI (Claude Code, Codex).
+    /// The manifest records its registration with the harness CLI (Claude Code, Codex, agy).
     pub registered: bool,
     /// The Kimi plugin the installer wrote lists it.
     pub in_plugin: bool,
@@ -83,8 +83,9 @@ impl Plan {
 ///
 /// A key under `mcp_servers.<server>` belongs to that server whole. A list key
 /// belongs to a server through the entries the installer added for it: the
-/// tool namespace `mcp__<server>` (Codex code mode) or a tool permission
-/// `mcp__<server>__<tool>` (Claude Code).
+/// tool namespace `mcp__<server>` (Codex code mode), a tool permission
+/// `mcp__<server>__<tool>` (Claude Code), or an approval `mcp(<server>)` or
+/// `mcp(<server>/<tool>)` (agy).
 pub fn server_part(rec: &ConfigRecord, servers: &[String]) -> Option<ConfigRecord> {
     if rec.path.len() >= 2 && rec.path[0] == "mcp_servers" && servers.contains(&rec.path[1]) {
         return Some(rec.clone());
@@ -95,7 +96,10 @@ pub fn server_part(rec: &ConfigRecord, servers: &[String]) -> Option<ConfigRecor
         .filter(|a| {
             servers.iter().any(|s| {
                 let ns = format!("mcp__{s}");
-                a.as_str() == ns || a.starts_with(&format!("{ns}__"))
+                a.as_str() == ns
+                    || a.starts_with(&format!("{ns}__"))
+                    || a.as_str() == format!("mcp({s})")
+                    || a.starts_with(&format!("mcp({s}/"))
             })
         })
         .cloned()
@@ -150,8 +154,8 @@ pub fn plan(env: &Env, kit: &Kit) -> Plan {
     if names.is_empty() {
         return Plan::default();
     }
-    let own = manifest_path(&kit.home, kit.name());
-    let homes = crate::uninstall::all_homes(env, kit);
+    let own = manifest_path(&kit.layout.manifest_dir, kit.name());
+    let homes = crate::uninstall::all_manifest_dirs(env, kit);
     let servers = names
         .iter()
         .map(|name| {
@@ -272,6 +276,7 @@ fn manual_remove(env: &Env, harness: Harness, server: &str) -> String {
         .unwrap_or_else(|| harness.name().to_string());
     match harness {
         Harness::Claude => format!("{program} {}", claude::remove_args(server).join(" ")),
+        Harness::Agy => format!("{program} {}", agy::remove_args(server).join(" ")),
         _ => format!("{program} {}", codex::remove_args(server).join(" ")),
     }
 }
@@ -336,6 +341,7 @@ pub fn apply(
         let outcome = match harness {
             Harness::Claude => claude::unregister(env, ui, &kit.home, &registered)?,
             Harness::Codex => codex::unregister(env, ui, &kit.home, &registered)?,
+            Harness::Agy => agy::unregister(env, ui, &registered)?,
             Harness::Kimi => harness::Outcome::default(),
         };
         for n in outcome.notes {
@@ -478,6 +484,22 @@ mod tests {
         assert_eq!(server_part(&subagent, &gone), None);
         let palette_only = rec(&["permissions", "allow"], &["mcp__palette__palette_status"]);
         assert_eq!(server_part(&palette_only, &gone), None);
+        let agy_allow = rec(
+            &["permissions", "allow"],
+            &[
+                "mcp(palette/palette_status)",
+                "mcp(aside/aside_codex)",
+                "mcp(aside)",
+                "mcp(asidex/t)",
+            ],
+        );
+        assert_eq!(
+            server_part(&agy_allow, &gone).unwrap().added,
+            vec![
+                "mcp(aside/aside_codex)".to_string(),
+                "mcp(aside)".to_string()
+            ]
+        );
     }
 
     #[test]

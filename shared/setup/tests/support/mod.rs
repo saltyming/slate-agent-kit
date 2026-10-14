@@ -1,7 +1,8 @@
 //! Shared setup for the end-to-end tests.
 //!
 //! Owns an isolated sandbox (a temporary user home, a copy of a fixture payload,
-//! the stand-in harness CLI wired in through `CLAUDE_BIN` and `CODEX_BIN`), a
+//! the stand-in harness CLI wired in through `CLAUDE_BIN` and `CODEX_BIN`, and a
+//! copy of it named `agy` wired in through `AGY_BIN`), a
 //! local HTTP mirror of a slate release, and helpers to run the installer and to
 //! read what the stand-in CLI recorded. Nothing here touches the real home.
 
@@ -12,6 +13,7 @@ use flate2::write::GzEncoder;
 use slate_setup::binaries::{exe_name, sha256_hex};
 use slate_setup::env::{Env, Harness};
 use slate_setup::json::Json;
+use slate_setup::layout::Layout;
 use slate_setup::ui::{Ui, new_sink, sink_text};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -33,6 +35,15 @@ pub fn fixture(rel: &str) -> PathBuf {
 /// Path of the stand-in harness CLI built by cargo for the tests.
 pub fn fake_cli() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_fake-harness-cli"))
+}
+
+/// Copies the stand-in CLI into `dir` as `agy`, which makes it act as agy.
+pub fn fake_agy(dir: &Path) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let name = if cfg!(windows) { "agy.exe" } else { "agy" };
+    let dest = dir.join(name);
+    std::fs::copy(fake_cli(), &dest).unwrap();
+    dest
 }
 
 /// Text with Windows line endings normalised, so assertions hold with `core.autocrlf`.
@@ -100,6 +111,8 @@ impl Sandbox {
         let mut env = Env::for_home(&user_home);
         env.set_var("CLAUDE_BIN", fake_cli().to_string_lossy());
         env.set_var("CODEX_BIN", fake_cli().to_string_lossy());
+        let agy = fake_agy(&dir.path().join("tools"));
+        env.set_var("AGY_BIN", agy.to_string_lossy());
         env.child_env
             .insert("FAKE_CLI_LOG".into(), log.to_string_lossy().into_owned());
         Sandbox {
@@ -123,10 +136,15 @@ impl Sandbox {
         format!("{}-agent-kit", self.harness.name())
     }
 
+    /// The layout of the harness home.
+    pub fn layout(&self) -> Layout {
+        Layout::new(self.harness, &self.home())
+    }
+
     /// The path of an installed prefs file.
     pub fn prefs_path(&self, name: &str) -> PathBuf {
-        self.home()
-            .join("rules")
+        self.layout()
+            .rules_dir
             .join(format!("{}--{name}-prefs.md", self.kit()))
     }
 
@@ -144,6 +162,31 @@ impl Sandbox {
             "--bin-dir".into(),
             self.bin_dir.to_string_lossy().into_owned(),
         ]
+    }
+
+    /// Runs `slate-setup <cmd> <extra...> --yes` without a terminal against another payload.
+    pub fn run_payload(&self, payload: &Path, cmd: &str, extra: &[&str]) -> Outcome {
+        let mut args = self.base_args(cmd);
+        args[3] = payload.to_string_lossy().into_owned();
+        args.extend(extra.iter().map(|s| s.to_string()));
+        args.push("--yes".into());
+        let sink = new_sink();
+        let code = slate_setup::run(
+            args.into_iter().map(Into::into),
+            &self.env,
+            Some(Ui::captured(sink.clone())),
+        );
+        Outcome {
+            code,
+            out: sink_text(&sink),
+        }
+    }
+
+    /// Copies the fixture payload of another harness into the sandbox and returns its folder.
+    pub fn add_payload(&self, harness: Harness) -> PathBuf {
+        let dest = self.dir.path().join(format!("dist-{}", harness.name()));
+        copy_dir(&fixture(&format!("payload-{}", harness.name())), &dest);
+        dest
     }
 
     /// Runs `slate-setup <cmd> <extra...> --yes` without a terminal.
@@ -212,6 +255,9 @@ impl Sandbox {
     }
 
     /// The recorded `mcp add` calls as `(server, "K=V" pairs)`.
+    ///
+    /// The server is the third argument, or for agy, whose flags come first,
+    /// the first argument after them.
     pub fn added_servers(&self) -> Vec<(String, Vec<String>)> {
         self.cli_calls()
             .into_iter()
@@ -222,7 +268,11 @@ impl Sandbox {
                     .filter(|w| w[0] == "-e" || w[0] == "--env")
                     .map(|w| w[1].clone())
                     .collect();
-                (c[2].clone(), pairs)
+                let mut i = 2;
+                while c[i] == "-e" || c[i] == "--env" {
+                    i += 2;
+                }
+                (c[i].clone(), pairs)
             })
             .collect()
     }

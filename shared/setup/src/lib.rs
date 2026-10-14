@@ -1,8 +1,9 @@
 //! `slate-setup`: the installer for the slate agent kits.
 //!
-//! Installs one kit into one harness home (Claude Code, Codex or Kimi Code): the
-//! kit's instruction files, rules and skills; the dispatch and palette MCP
-//! servers; the prefs files; and the harness's native configuration. Also
+//! Installs one kit into one harness home (Claude Code, Codex, Kimi Code or the
+//! Antigravity CLI): the kit's instruction files, rules and skills; the dispatch
+//! and palette MCP servers; the prefs files; and the harness's native
+//! configuration. Where each harness keeps those is the `layout` module's. Also
 //! reconfigures and uninstalls, and retires the servers an earlier release
 //! installed that the kit no longer lists. Every run has one shape: detect, ask, summarise
 //! and confirm, apply, report.
@@ -22,6 +23,7 @@ pub mod error;
 pub mod harness;
 pub mod json;
 pub mod kit;
+pub mod layout;
 pub mod legacy;
 pub mod manifest;
 pub mod mcp;

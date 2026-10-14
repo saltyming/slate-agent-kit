@@ -1,6 +1,7 @@
 //! Integration tests for `run`, `run_with_fallback`, `version` and the guard,
 //! against the crate's own test-support executables: `stub-backend`, copied
-//! onto a temporary `PATH` as `codex` and `claude`; `agent-guard`, copied
+//! onto a temporary `PATH` as `codex`, `claude` and `agy` (a stand-in that
+//! prints recorded agy stream-json output); `agent-guard`, copied
 //! beside them; and `stub-parent`, a killable parent for the guard tests.
 //!
 //! This test target has its own `main` (`harness = false`): `PATH` is set to
@@ -67,7 +68,7 @@ fn main() {
     let scratch = root.join("scratch");
     std::fs::create_dir_all(&bin_dir).expect("create bin dir");
     std::fs::create_dir_all(&scratch).expect("create scratch dir");
-    for name in ["codex", "claude"] {
+    for name in ["codex", "claude", "agy"] {
         std::fs::copy(STUB_BACKEND, bin_dir.join(exe_name(name))).expect("copy stub");
     }
     std::fs::copy(AGENT_GUARD, bin_dir.join(exe_name("agent-guard"))).expect("copy guard");
@@ -110,6 +111,27 @@ fn main() {
         }),
         ("structured_output_gives_usage_and_session", |c| {
             Box::pin(structured_output_gives_usage_and_session(c))
+        }),
+        ("exit_status_final_text_is_the_retained_stdout", |c| {
+            Box::pin(exit_status_final_text_is_the_retained_stdout(c))
+        }),
+        ("agy_run_reads_the_result_and_sends_the_stdin_event", |c| {
+            Box::pin(agy_run_reads_the_result_and_sends_the_stdin_event(c))
+        }),
+        ("agy_exit_zero_failure_keeps_its_exit_code", |c| {
+            Box::pin(agy_exit_zero_failure_keeps_its_exit_code(c))
+        }),
+        ("agy_exit_three_reports_the_agy_error_line", |c| {
+            Box::pin(agy_exit_three_reports_the_agy_error_line(c))
+        }),
+        ("agy_read_only_is_refused_unspawned", |c| {
+            Box::pin(agy_read_only_is_refused_unspawned(c))
+        }),
+        ("agy_session_is_reported_while_the_run_lasts", |c| {
+            Box::pin(agy_session_is_reported_while_the_run_lasts(c))
+        }),
+        ("agy_fallback_ignores_error_words_in_a_response", |c| {
+            Box::pin(agy_fallback_ignores_error_words_in_a_response(c))
         }),
         ("missing_binary_is_not_found_with_hint", |c| {
             Box::pin(missing_binary_is_not_found_with_hint(c))
@@ -213,7 +235,7 @@ fn spec(backend: Backend, env: &[(&str, String)]) -> RunSpec {
         sandbox: Sandbox::ReadOnly,
         isolation: match backend {
             Backend::Codex => Isolation::IgnoreUserConfig,
-            Backend::Claude => Isolation::Permissions,
+            Backend::Claude | Backend::Agy => Isolation::Permissions,
         },
         output_mode: OutputMode::Default,
         capture: CapturePolicy::dispatch(),
@@ -573,7 +595,10 @@ async fn non_zero_exit_is_a_failed_record(c: Ctx) {
     assert_eq!(r.exit_code, Some(3));
     assert_eq!(r.stdout, bad_model);
     assert_eq!(r.stderr, "Warning: something incidental");
-    assert_eq!(r.final_text, None);
+    // Under the exit-status normaliser the answer is the retained stdout, on
+    // failure too.
+    assert_eq!(r.final_text.as_deref(), Some(bad_model));
+    assert_eq!(r.failure_detail, None);
     assert_eq!(classify(&text), BackendErrorKind::ModelUnavailable);
 }
 
@@ -759,6 +784,310 @@ async fn structured_output_gives_usage_and_session(c: Ctx) {
     assert_eq!(u.usage_source, UsageSource::ClaudeJsonResult);
     assert_eq!(u.output, Some(8));
     assert_eq!(u.cache_write_5m, None);
+}
+
+async fn exit_status_final_text_is_the_retained_stdout(c: Ctx) {
+    let _ = c;
+    for backend in [Backend::Codex, Backend::Claude] {
+        for mode in [OutputMode::Default, OutputMode::Text] {
+            for exit in [0, 2] {
+                let mut sp = spec(
+                    backend,
+                    &[
+                        ("STUB_STDOUT", s("answer with a 429 rate limit in it")),
+                        ("STUB_EXIT", s(exit)),
+                    ],
+                );
+                sp.output_mode = mode;
+                let (o, _) = run_one(&sp).await;
+                let r = record(o);
+                assert_eq!(r.success, exit == 0);
+                assert_eq!(r.stdout, "answer with a 429 rate limit in it");
+                assert_eq!(
+                    r.final_text.as_deref(),
+                    Some(r.stdout.as_str()),
+                    "{backend:?} {mode:?} exit {exit}"
+                );
+                assert_eq!(r.failure_detail, None);
+            }
+        }
+    }
+}
+
+// ── agy ───────────────────────────────────────────────────
+
+const AGY_ID: &str = "e195bb9c-5d1f-4c4e-9a0e-3f1d2b7c8a90";
+
+/// The recorded agy 1.3.4 init event.
+fn agy_init() -> String {
+    format!(
+        r#"{{"event":"init","conversation_id":"{AGY_ID}","init":{{"cwd":"/w","tools":["view_file","run_command"],"permission_mode":"request-review"}}}}"#
+    )
+}
+
+fn agy_delta(text: &str) -> String {
+    serde_json::json!({"event": "step_update", "step_update": {
+        "conversation_id": AGY_ID, "step_index": 1, "state": "ACTIVE",
+        "step_type": "agent_response", "text_delta": text,
+    }})
+    .to_string()
+}
+
+fn agy_result(result: serde_json::Value) -> String {
+    serde_json::json!({"event": "result", "result": result}).to_string()
+}
+
+fn agy_usage() -> serde_json::Value {
+    serde_json::json!({"input_tokens": 11936, "output_tokens": 26, "thinking_tokens": 25,
+                       "cache_read_tokens": 0, "total_tokens": 11962})
+}
+
+/// A recorded successful stream answering `response` in one delta.
+fn agy_success(response: &str) -> String {
+    [
+        agy_init(),
+        agy_delta(response),
+        agy_result(serde_json::json!({
+            "conversation_id": AGY_ID, "status": "SUCCESS", "response": response,
+            "duration_seconds": 11.25, "num_turns": 1, "usage": agy_usage(),
+        })),
+    ]
+    .join("\n")
+        + "\n"
+}
+
+fn agy_spec(env: &[(&str, String)]) -> RunSpec {
+    RunSpec {
+        backend: Backend::Agy,
+        sandbox: Sandbox::WorkspaceWrite,
+        isolation: Isolation::Permissions,
+        ..spec(Backend::Claude, env)
+    }
+}
+
+async fn agy_run_reads_the_result_and_sends_the_stdin_event(c: Ctx) {
+    let args_file = c.file("agy-args");
+    let stdin_file = c.file("agy-stdin");
+    let mut sp = agy_spec(&[
+        ("STUB_STDOUT", agy_success("ok\n")),
+        ("STUB_ARGS_FILE", s(args_file.display())),
+        ("STUB_STDIN_FILE", s(stdin_file.display())),
+    ]);
+    sp.prompt = "fix \"it\"\nnow — ünï 😀".into();
+    sp.model = Some("claude-sonnet-5-5-low".into());
+    sp.reasoning_effort = Some("high".into());
+    let (o, events) = run_one(&sp).await;
+    let r = record(o);
+    assert!(r.success, "{r:?}");
+    assert_eq!(r.backend, "agy");
+    assert_eq!(r.exit_code, Some(0));
+    assert_eq!(r.final_text.as_deref(), Some("ok\n"));
+    assert_eq!(r.stdout, "ok\n", "the retained capture is the text deltas");
+    assert_eq!(r.failure_detail, None);
+    assert_eq!(r.session_id.as_deref(), Some(AGY_ID));
+    let u = r.usage.expect("agy usage");
+    assert_eq!(u.usage_source, UsageSource::AgyStreamJson);
+    assert_eq!(u.input_uncached, Some(11936));
+    assert_eq!(u.cache_read, Some(0));
+    assert_eq!(u.output, Some(26));
+    assert_eq!(u.reasoning, Some(25));
+    assert_eq!(
+        r.argv,
+        vec![
+            "agy",
+            "--dangerously-skip-permissions",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--print-timeout",
+            "0",
+            "--sandbox",
+            "--model",
+            "claude-sonnet-5-5-low",
+        ]
+    );
+    let seen: Vec<String> = std::fs::read_to_string(&args_file)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(seen, r.argv[1..].to_vec());
+    // The prompt arrived as one stream-json user event and a newline.
+    assert_eq!(
+        std::fs::read_to_string(&stdin_file).unwrap(),
+        "{\"event\":\"user\",\"message\":{\"role\":\"user\",\"content\":\
+         \"fix \\\"it\\\"\\nnow — ünï 😀\"}}\n"
+    );
+    let kinds: Vec<String> = events
+        .iter()
+        .map(|e| match e {
+            RunEvent::Started { .. } => "started".to_string(),
+            RunEvent::Session { session_id, port } => format!("session {session_id} {port:?}"),
+            RunEvent::Finished(_) => "finished".to_string(),
+            RunEvent::Progress(_) => "progress".to_string(),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "started".to_string(),
+            format!("session {AGY_ID} None"),
+            "finished".to_string()
+        ]
+    );
+}
+
+async fn agy_exit_zero_failure_keeps_its_exit_code(c: Ctx) {
+    let _ = c;
+    let denial = [
+        agy_init(),
+        agy_result(serde_json::json!({
+            "conversation_id": AGY_ID, "status": "SUCCESS", "response": "",
+            "duration_seconds": 5.17, "num_turns": 1, "usage": agy_usage(),
+            "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
+        })),
+    ]
+    .join("\n");
+    let jetski = "jetski: no output produced — a tool required the \"command\" permission \
+                  that headless mode cannot prompt for, so it was auto-denied.";
+    let sp = agy_spec(&[("STUB_STDOUT", denial), ("STUB_STDERR", s(jetski))]);
+    let (o, _) = run_one(&sp).await;
+    let text = failure_text(&sp.failure_text, sp.backend.as_str(), &o).expect("failure text");
+    let r = record(o);
+    assert!(!r.success);
+    assert_eq!(r.exit_code, Some(0), "the observed exit code stays");
+    assert_eq!(
+        r.failure_detail.as_deref(),
+        Some("RunCommand needed a permission headless agy cannot grant")
+    );
+    assert_eq!(r.session_id.as_deref(), Some(AGY_ID));
+    assert!(
+        text.contains("detail=RunCommand needed a permission"),
+        "{text}"
+    );
+    assert_eq!(classify(&text), BackendErrorKind::Other);
+}
+
+async fn agy_exit_three_reports_the_agy_error_line(c: Ctx) {
+    let _ = c;
+    let out = [
+        agy_init(),
+        agy_delta("partial ans"),
+        "AGY_ERROR: model stream interrupted".to_string(),
+    ]
+    .join("\n");
+    let sp = agy_spec(&[("STUB_STDOUT", out), ("STUB_EXIT", s(3))]);
+    let (o, _) = run_one(&sp).await;
+    let r = record(o);
+    assert!(!r.success);
+    assert_eq!(r.exit_code, Some(3));
+    assert_eq!(
+        r.failure_detail.as_deref(),
+        Some("AGY_ERROR: model stream interrupted")
+    );
+    assert_eq!(r.final_text, None);
+    assert_eq!(r.stdout, "partial ans");
+}
+
+async fn agy_read_only_is_refused_unspawned(c: Ctx) {
+    let args_file = c.file("agy-ro-args");
+    let mut sp = agy_spec(&[("STUB_ARGS_FILE", s(args_file.display()))]);
+    sp.sandbox = Sandbox::ReadOnly;
+    let (o, events) = run_one(&sp).await;
+    let msg = match &o {
+        Outcome::Spawn(m) => m.clone(),
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+    assert!(msg.contains("read-only"), "{msg}");
+    assert_eq!(classify(&msg), BackendErrorKind::Other);
+    assert!(!args_file.exists(), "nothing was spawned");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(matches!(events[0], RunEvent::Finished(Outcome::Spawn(_))));
+}
+
+async fn agy_session_is_reported_while_the_run_lasts(c: Ctx) {
+    let _ = c;
+    // The init event, then a long pause, then an exit 0 with no result.
+    let sp = agy_spec(&[
+        ("STUB_STDOUT", format!("{}\n", agy_init())),
+        ("STUB_SLEEP_MS", s(1500)),
+    ]);
+    let (tx, mut rx) = unbounded_channel();
+    let task = tokio::spawn(async move { run(&sp, &tx, &CancellationToken::new()).await });
+    let session = within(async {
+        loop {
+            match rx.recv().await {
+                Some(RunEvent::Session { session_id, .. }) => break session_id,
+                Some(RunEvent::Finished(o)) => panic!("finished before the session: {o:?}"),
+                Some(_) => {}
+                None => panic!("channel closed before the session"),
+            }
+        }
+    })
+    .await;
+    assert_eq!(session, AGY_ID);
+    assert!(
+        !task.is_finished(),
+        "the session arrives while agy still runs"
+    );
+    let r = record(within(task).await.expect("run task"));
+    assert!(!r.success);
+    assert_eq!(r.exit_code, Some(0));
+    assert_eq!(
+        r.failure_detail.as_deref(),
+        Some("agy ended without a result event")
+    );
+    assert_eq!(r.session_id.as_deref(), Some(AGY_ID));
+}
+
+async fn agy_fallback_ignores_error_words_in_a_response(c: Ctx) {
+    let _ = c;
+    let models = [None, Some("m2".to_string())];
+    // A successful answer that talks about rate limits and quotas.
+    let words = "Handled the 429 rate limit, the quota error and the overloaded model.";
+    let (tx, _rx) = unbounded_channel();
+    let ok = agy_success(words);
+    let out = within(run_with_fallback(
+        |_, model| {
+            let mut sp = agy_spec(&[("STUB_STDOUT", ok.clone())]);
+            sp.model = model.map(str::to_string);
+            sp
+        },
+        &models,
+        &tx,
+        &CancellationToken::new(),
+    ))
+    .await;
+    assert!(out.discarded.is_empty());
+    assert_eq!(out.model, None);
+    assert_eq!(record(out.outcome).final_text.as_deref(), Some(words));
+
+    // A failed run whose streamed text talks the same way: its deltas are not
+    // part of the failure text, so the chain does not advance.
+    let failed = [
+        agy_init(),
+        agy_delta(words),
+        agy_result(serde_json::json!({
+            "status": "ERROR", "response": "", "error": "the turn was aborted",
+        })),
+    ]
+    .join("\n");
+    let out = within(run_with_fallback(
+        |_, model| {
+            let mut sp = agy_spec(&[("STUB_STDOUT", failed.clone())]);
+            sp.model = model.map(str::to_string);
+            sp
+        },
+        &models,
+        &tx,
+        &CancellationToken::new(),
+    ))
+    .await;
+    assert!(out.discarded.is_empty(), "{:?}", out.discarded);
+    let r = record(out.outcome);
+    assert!(!r.success);
+    assert_eq!(r.failure_detail.as_deref(), Some("the turn was aborted"));
 }
 
 async fn missing_binary_is_not_found_with_hint(c: Ctx) {

@@ -22,7 +22,7 @@ use serde_json::Value;
 
 /// Where a [`Usage`] was read from. Serialized in `snake_case`
 /// (`codex_json_stream`, `codex_rollout`, `claude_json_result`,
-/// `opencode_message`).
+/// `opencode_message`, `agy_stream_json`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageSource {
@@ -34,6 +34,9 @@ pub enum UsageSource {
     ClaudeJsonResult,
     /// The `tokens` object of an opencode message.
     OpencodeMessage,
+    /// The `usage` object of the `result` event of an agy
+    /// `--output-format stream-json` stream (mapped by `agent-exec`).
+    AgyStreamJson,
 }
 
 /// Token counts of one run. `None` means the source did not report the count

@@ -17,9 +17,11 @@
 //! lives in the harness-rendered dispatch and consultation rules and their
 //! preferences files.
 
+mod agy;
 mod backend;
 mod consult;
 mod executor;
+mod handshake;
 mod lenient;
 mod liveness;
 mod opencode;
@@ -103,7 +105,7 @@ struct Dispatch {
 #[tool_router]
 impl Dispatch {
     #[tool(
-        description = "Delegate ONE execution step to a coding-agent backend (codex, opencode, or claude) running headless and WRITE-CAPABLE in `working_dir` — it may modify files there. Runs ASYNCHRONOUSLY: returns a task id and a `wait` command line immediately; run that command with the harness's background means to block until the run is terminal (exit 0 terminal, 2 still active at --timeout, 3 unknown id, 1 error), then read the result with dispatch_status(id). Provide a structured spec — objective (required), working_dir (required, absolute), and optional target_files / constraints / acceptance — plus optional free-form context / details; the server renders them into the backend prompt. working_dir is rejected unless it canonicalizes within the project root (widen with the DISPATCH_EXTRA_ROOTS env var). sandbox defaults to workspace-write; danger-full-access is rejected unless the server enables it. One active run per working_dir unless allow_concurrent=true. model_fallback: an optional ordered list of models tried in turn on a transient backend error (rate limit, quota, model unavailable) — dispatch_status reports final_model/fallback_history when a retry occurred; not honored by dispatch_steer. Watchdog: a fresh codex submit whose backend log never associates within ~30s (DISPATCH_RESTART_UNASSOCIATED_SECS; 0=off) AND whose working_dir shows no writes is killed and auto-resubmitted ONCE as a fresh task — the old row goes interrupted with restarted_as pointing at the successor. POLICY: initiate dispatch according to the harness-rendered dispatch preferences file (`conservative` / `preference-only` / `proactive`) — under `proactive` + `auto`, submit directly for suitable steps; this policy governs dispatch specifically and is not subject to the general write-capable delegation propose-and-wait default used elsewhere. APPROVAL: before the FIRST dispatch in a session, confirm working_dir + the step scope + the approval granularity (per-step vs batch) with the user when approval mode is ask; skip that confirmation only when approval mode is auto."
+        description = "Delegate ONE execution step to a coding-agent backend (codex, opencode, claude, or agy) running headless and WRITE-CAPABLE in `working_dir` — it may modify files there. Runs ASYNCHRONOUSLY: returns a task id and a `wait` command line immediately; run that command with the harness's background means to block until the run is terminal (exit 0 terminal, 2 still active at --timeout, 3 unknown id, 1 error), then read the result with dispatch_status(id). Provide a structured spec — objective (required), working_dir (required, absolute), and optional target_files / constraints / acceptance — plus optional free-form context / details; the server renders them into the backend prompt. working_dir is rejected unless it canonicalizes within the project root (widen with the DISPATCH_EXTRA_ROOTS env var). sandbox defaults to workspace-write; danger-full-access is rejected unless the server enables it; agy refuses read-only (headless agy runs only with every tool approved). One active run per working_dir unless allow_concurrent=true. model_fallback: an optional ordered list of models tried in turn on a transient backend error (rate limit, quota, model unavailable) — dispatch_status reports final_model/fallback_history when a retry occurred; not honored by dispatch_steer. Watchdog: a fresh codex submit whose backend log never associates within ~30s (DISPATCH_RESTART_UNASSOCIATED_SECS; 0=off) AND whose working_dir shows no writes is killed and auto-resubmitted ONCE as a fresh task — the old row goes interrupted with restarted_as pointing at the successor. POLICY: initiate dispatch according to the harness-rendered dispatch preferences file (`conservative` / `preference-only` / `proactive`) — under `proactive` + `auto`, submit directly for suitable steps; this policy governs dispatch specifically and is not subject to the general write-capable delegation propose-and-wait default used elsewhere. APPROVAL: before the FIRST dispatch in a session, confirm working_dir + the step scope + the approval granularity (per-step vs batch) with the user when approval mode is ask; skip that confirmation only when approval mode is auto."
     )]
     async fn dispatch_submit(
         &self,
@@ -128,7 +130,7 @@ impl Dispatch {
                 return Ok(err_struct(
                     ErrCode::UnknownBackend,
                     format!(
-                        "unknown backend {:?}; supported: codex, opencode, claude",
+                        "unknown backend {:?}; supported: codex, opencode, claude, agy",
                         p.backend.as_deref().unwrap_or("")
                     ),
                 ));
@@ -145,6 +147,9 @@ impl Dispatch {
             Ok(s) => s,
             Err(e) => return Ok(err_struct(ErrCode::SandboxForbidden, e)),
         };
+        if let Some(refusal) = sandbox_refusal(backend, &sandbox) {
+            return Ok(err_struct(ErrCode::InvalidParams, refusal));
+        }
 
         let allow_concurrent = p.allow_concurrent.unwrap_or(false);
         let nonce = make_nonce(&self.owner_instance);
@@ -216,6 +221,7 @@ impl Dispatch {
             prompt,
             backend_version: self.backend_version(backend),
             state_dir: self.state_dir.clone(),
+            home: self.home.clone(),
             resume_session: None,
             nonce: Some(nonce),
             rollout_path: None,
@@ -256,6 +262,13 @@ impl Dispatch {
                 return Ok(err_struct(
                     ErrCode::InvalidParams,
                     "a consultation runs on codex or claude; opencode serves executions only",
+                ));
+            }
+            Some(Backend::Agy) => {
+                return Ok(err_struct(
+                    ErrCode::InvalidParams,
+                    "agy is not a consultation backend: it cannot hide the user's MCP servers \
+                     from a run; consult codex or claude (agy serves executions only)",
                 ));
             }
             Some(b) => b,
@@ -365,6 +378,7 @@ impl Dispatch {
             prompt,
             backend_version: self.backend_version(backend),
             state_dir: self.state_dir.clone(),
+            home: self.home.clone(),
             resume_session: None,
             nonce: None,
             rollout_path: None,
@@ -547,7 +561,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "List which backend CLIs (codex, opencode, claude) are available on PATH, with their --version output and the run kinds each serves (codex and claude: execute and consult; opencode: execute), plus this server's containment configuration (project_root, extra_roots). Call this when you're unsure a backend is installed on this machine, or to check why a working_dir is being rejected."
+        description = "List which backend CLIs (codex, opencode, claude, agy) are available on PATH, with their --version output and the run kinds each serves (codex and claude: execute and consult; opencode and agy: execute), plus this server's containment configuration (project_root, extra_roots). Call this when you're unsure a backend is installed on this machine, or to check why a working_dir is being rejected."
     )]
     async fn dispatch_backends(
         &self,
@@ -555,28 +569,16 @@ impl Dispatch {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let mut report = Vec::new();
         for b in Backend::all() {
-            let entry = match agent_exec::which(b.binary()) {
+            let found = match agent_exec::which(b.binary()) {
                 Some(path) => {
                     let ver = backend::version(*b)
                         .await
                         .unwrap_or_else(|| "(unknown)".to_string());
-                    json!({
-                        "backend": b.as_str(),
-                        "available": true,
-                        "path": path.display().to_string(),
-                        "version": ver,
-                        "kinds": kinds_served(*b),
-                    })
+                    Some((path.display().to_string(), ver))
                 }
-                None => json!({
-                    "backend": b.as_str(),
-                    "available": false,
-                    "path": null,
-                    "version": null,
-                    "kinds": kinds_served(*b),
-                }),
+                None => None,
             };
-            report.push(entry);
+            report.push(backend_entry(*b, found));
         }
         Ok(json_ok(json!({
             "backends": report,
@@ -588,7 +590,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "Show a curated, live-updating timeline of what a delegated run is doing. Codex logs are read from codex's rollout; OpenCode logs are dispatch-owned normalized JSONL; Claude logs are read from the session file under ~/.claude/projects (the session id is pinned at spawn). Noise (system prompts, token counts, encrypted codex reasoning, raw tool-call output) is filtered out; signal (user/backend messages, tool-call invocations, file edits, lifecycle, and plaintext OpenCode/Claude reasoning) is kept, and never truncated per-field — only the total response is size-capped (see line_start/line_end). Works WHILE the task is still running. Page with line_start/line_end (1-based; omitted = the tail) to avoid output limits — total_lines tells you how to page. kinds filters categories (lifecycle/messages/tools/edits/reasoning/tool_results; by default codex excludes reasoning while opencode and claude include it; tool_results — raw tool-call output — is excluded by default for every backend, request it explicitly). raw=true returns the underlying JSONL. A consultation shows its backend's own session log when one was located (a codex consultation's rollout); otherwise the response says that a consultation has no live log (a claude consultation keeps none) and its reply comes from dispatch_status. A quiet log on a RUNNING task is INCONCLUSIVE, not a hang: backends sit silent for minutes inside long tool/MCP calls (e.g. a consultation at high reasoning effort). Judge liveness by dispatch_status's child_process_alive + log_last_write_age_seconds, not by log silence."
+        description = "Show a curated, live-updating timeline of what a delegated run is doing. Codex logs are read from codex's rollout; OpenCode logs are dispatch-owned normalized JSONL; Claude logs are read from the session file under ~/.claude/projects (the session id is pinned at spawn); agy logs from ~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl of the conversation the run's init event named (no live log until then). Noise (system prompts, token counts, encrypted codex reasoning, raw tool-call output) is filtered out; signal (user/backend messages, tool-call invocations, file edits, lifecycle, and plaintext OpenCode/Claude reasoning) is kept, and never truncated per-field — only the total response is size-capped (see line_start/line_end). Works WHILE the task is still running. Page with line_start/line_end (1-based; omitted = the tail) to avoid output limits — total_lines tells you how to page. kinds filters categories (lifecycle/messages/tools/edits/reasoning/tool_results; by default codex excludes reasoning while opencode, claude and agy include it; tool_results — raw tool-call output — is excluded by default for every backend, request it explicitly). raw=true returns the underlying JSONL. A consultation shows its backend's own session log when one was located (a codex consultation's rollout); otherwise the response says that a consultation has no live log (a claude consultation keeps none) and its reply comes from dispatch_status. A quiet log on a RUNNING task is INCONCLUSIVE, not a hang: backends sit silent for minutes inside long tool/MCP calls (e.g. a consultation at high reasoning effort). Judge liveness by dispatch_status's child_process_alive + log_last_write_age_seconds, not by log silence."
     )]
     async fn dispatch_logs(
         &self,
@@ -621,6 +623,19 @@ impl Dispatch {
                 return Ok(json_ok(json!({
                     "id": id, "kind": row.kind, "status": row.status, "session_pending": false, "log": "",
                     "note": "a consultation has no live log: no backend session log was located for it (a claude consultation keeps none). Its reply is returned by dispatch_status once the run is terminal.",
+                })));
+            }
+            None if row.backend == Backend::Agy.as_str() => {
+                let note = match row.session_id.as_deref().filter(|s| !s.is_empty()) {
+                    None => "no live log yet: an agy run's log is found by the conversation id its init event reports, and none has arrived; try again shortly".to_string(),
+                    Some(sid) => format!(
+                        "no live log yet: agy conversation {sid} has not written {} yet; try again shortly",
+                        agy::transcript_path(&self.home, sid).display()
+                    ),
+                };
+                return Ok(json_ok(json!({
+                    "id": id, "status": row.status, "session_id": row.session_id,
+                    "session_pending": true, "log": "", "note": note,
                 })));
             }
             None => {
@@ -665,6 +680,8 @@ impl Dispatch {
         let elide = row.parent_id.is_none().then_some(row.prompt.as_str());
         let rendered = if row.backend == "claude" {
             rollout::curate_claude(&jsonl, &kinds, elide)
+        } else if row.backend == Backend::Agy.as_str() {
+            rollout::curate_agy(&jsonl, &kinds, elide)
         } else {
             rollout::curate(&jsonl, &kinds, elide)
         };
@@ -678,7 +695,7 @@ impl Dispatch {
     }
 
     #[tool(
-        description = "Interrupt a delegated task and steer it with a NEW instruction, continuing the SAME backend session (its accumulated context + the files it already wrote are preserved when the backend supports sessions). If the task is still running it is cancelled first; then the backend resumes the session with your instruction. Creates a new linked task (parent_id = the steered task) so the turn history shows in dispatch_list. Returns the new id and a `wait` command line, as dispatch_submit does. A consultation cannot be steered (invalid_params); submit a new one instead. Use this for mid-flight 'no, do it this way instead' redirection. Inherits the parent task's allow_concurrent by default; pass allow_concurrent to override the one-run-per-working_dir guard for the resumed run — needed to steer a task in a directory that has OTHER concurrent runs (allow_concurrent=false re-enforces the guard even if the parent bypassed it)."
+        description = "Interrupt a delegated task and steer it with a NEW instruction, continuing the SAME backend session (its accumulated context + the files it already wrote are preserved when the backend supports sessions; agy resumes the conversation its init event named with --conversation). If the task is still running it is cancelled first; then the backend resumes the session with your instruction. Creates a new linked task (parent_id = the steered task) so the turn history shows in dispatch_list. Returns the new id and a `wait` command line, as dispatch_submit does. A consultation cannot be steered (invalid_params); submit a new one instead. Use this for mid-flight 'no, do it this way instead' redirection. Inherits the parent task's allow_concurrent by default; pass allow_concurrent to override the one-run-per-working_dir guard for the resumed run — needed to steer a task in a directory that has OTHER concurrent runs (allow_concurrent=false re-enforces the guard even if the parent bypassed it)."
     )]
     async fn dispatch_steer(
         &self,
@@ -869,6 +886,7 @@ impl Dispatch {
             backend_version: self
                 .backend_version(Backend::parse(&parent.backend).unwrap_or(Backend::Codex)),
             state_dir: self.state_dir.clone(),
+            home: self.home.clone(),
             resume_session: Some(session_id.clone()),
             nonce: None,
             rollout_path: parent_rollout.as_deref().map(PathBuf::from),
@@ -1009,6 +1027,15 @@ impl Dispatch {
     /// is trusted only if its cached rollout still validates as this task's — otherwise it
     /// is re-derived by identity, so a steer can never resume a poisoned / unrelated session.
     fn resolve_session_id(&self, row: &store::TaskRow) -> Option<String> {
+        if row.backend == Backend::Agy.as_str() {
+            // The conversation agy's own init event named is authoritative,
+            // whether or not its log file exists yet.
+            return row
+                .session_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+        }
         if let Some(s) = row.session_id.as_deref().filter(|s| !s.is_empty())
             && let Some(p) = row.rollout_path.as_deref()
             && Path::new(p).exists()
@@ -1029,6 +1056,14 @@ impl Dispatch {
     /// plus a not-older-than-start time floor. The floor is what avoids the circular case
     /// where a poisoned row's session_id was copied from the same stale file.
     fn rollout_is_ours(&self, row: &store::TaskRow, path: &Path) -> bool {
+        if row.backend == Backend::Agy.as_str() {
+            // The log of the conversation the run's init event named, never
+            // the directory's latest conversation.
+            return row
+                .session_id
+                .as_deref()
+                .is_some_and(|sid| agy::is_transcript_of(path, sid));
+        }
         if row.backend == "claude" {
             // Claude session ids are pinned at spawn (a dispatch-minted UUID),
             // so a filename match on <sid>.jsonl is positive identity — the
@@ -1063,6 +1098,11 @@ impl Dispatch {
     /// rollout is written); the inherited session id (steered, by `parent_id`); else —
     /// a legacy row — the newest same-cwd rollout at or after the task's start.
     fn locate_validated(&self, row: &store::TaskRow) -> Option<(PathBuf, String)> {
+        if row.backend == Backend::Agy.as_str() {
+            let sid = row.session_id.as_deref().filter(|s| !s.is_empty())?;
+            let p = agy::transcript_path(&self.home, sid);
+            return p.exists().then(|| (p, sid.to_string()));
+        }
         if row.backend == "claude" {
             let sid = row.session_id.as_deref().filter(|s| !s.is_empty())?;
             let p = harness_log::claude::claude_session_path(Path::new(&row.working_dir), sid);
@@ -1287,13 +1327,41 @@ fn reentry_refusal_at(kind: Kind, depth: u32) -> Option<CallToolResult> {
     }
 }
 
-/// The run kinds `backend` serves: codex and claude both kinds, opencode
-/// executions only.
+/// The run kinds `backend` serves: codex and claude both kinds, opencode and
+/// agy executions only.
 fn kinds_served(backend: Backend) -> Vec<&'static str> {
     match backend {
         Backend::Codex | Backend::Claude => vec![Kind::Execute.as_str(), Kind::Consult.as_str()],
-        Backend::Opencode => vec![Kind::Execute.as_str()],
+        Backend::Opencode | Backend::Agy => vec![Kind::Execute.as_str()],
     }
+}
+
+/// One `dispatch_backends` entry: the backend, whether its CLI was found
+/// (with its path and `--version`), and the run kinds it serves.
+fn backend_entry(backend: Backend, found: Option<(String, String)>) -> Value {
+    match found {
+        Some((path, version)) => json!({
+            "backend": backend.as_str(),
+            "available": true,
+            "path": path,
+            "version": version,
+            "kinds": kinds_served(backend),
+        }),
+        None => json!({
+            "backend": backend.as_str(),
+            "available": false,
+            "path": null,
+            "version": null,
+            "kinds": kinds_served(backend),
+        }),
+    }
+}
+
+/// Why `backend` cannot run an execution under `sandbox` (agy: read-only),
+/// or `None` when it can.
+fn sandbox_refusal(backend: Backend, sandbox: &str) -> Option<&'static str> {
+    let process = backend.process()?;
+    process.sandbox_refusal(agent_exec::Sandbox::parse(sandbox)?)
 }
 
 /// `<exe> wait <id> --db <db>`: the command line a harness runs to block on a
@@ -1617,7 +1685,7 @@ impl ServerHandler for Dispatch {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Delegation and consultation tools. dispatch runs one backend CLI per run, in two \
              kinds. An EXECUTION (dispatch_submit) hands a coding-agent backend (codex, opencode, \
-             or claude) a task: the backend runs headless and WRITE-CAPABLE, modifying files \
+             claude, or agy) a task: the backend runs headless and WRITE-CAPABLE, modifying files \
              under a target directory. A CONSULTATION (dispatch_consult) asks another model \
              family (codex or claude) a read-only question for an independent second opinion: \
              the backend runs in the server's directory with no MCP server of its own (codex \
@@ -1651,7 +1719,8 @@ impl ServerHandler for Dispatch {
              preserved). A quiet log on a live process is INCONCLUSIVE (long MCP/tool calls emit \
              nothing until they return) — judge by child_process_alive and \
              log_last_write_age_seconds in dispatch_status, never by silence alone. `succeeded` \
-             means exit 0, not that the change is correct — review the captured result. A fresh \
+             means the backend reported success (exit 0; for agy also a SUCCESS result event), \
+             not that the change is correct — review the captured result. A fresh \
              codex execution whose log never associates within ~30s with no working-dir writes is \
              auto-restarted once (restart_of/restarted_as link the pair; \
              DISPATCH_RESTART_UNASSOCIATED_SECS tunes, 0 disables). Each run consumes the user's \
@@ -1770,8 +1839,11 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let registry_for_shutdown = server.registry.clone();
-    let transport = rmcp::transport::io::stdio();
-    let running = server.serve(transport).await?;
+    // Antigravity sends `server/discover` before `initialize`; answer it so
+    // the library sees `initialize` first (handshake.rs).
+    let mut stdout = tokio::io::stdout();
+    let stdin = handshake::skip_discover(tokio::io::stdin(), &mut stdout).await?;
+    let running = server.serve((stdin, stdout)).await?;
     tokio::select! {
         r = running.waiting() => { r?; }
         _ = shutdown_signal() => {
@@ -2021,6 +2093,181 @@ mod tests {
         assert_eq!(kinds_served(Backend::Codex), vec!["execute", "consult"]);
         assert_eq!(kinds_served(Backend::Claude), vec!["execute", "consult"]);
         assert_eq!(kinds_served(Backend::Opencode), vec!["execute"]);
+        assert_eq!(kinds_served(Backend::Agy), vec!["execute"]);
+    }
+
+    #[test]
+    fn backends_list_agy_with_execute_only() {
+        // dispatch_backends reports every backend in this order, probing each
+        // CLI the same way; the entries are checked here without running one.
+        let names: Vec<&str> = Backend::all().iter().map(|b| b.as_str()).collect();
+        assert_eq!(names, vec!["codex", "opencode", "claude", "agy"]);
+        let missing = backend_entry(Backend::Agy, None);
+        assert_eq!(
+            missing,
+            json!({"backend": "agy", "available": false, "path": null, "version": null,
+                   "kinds": ["execute"]})
+        );
+        let found = backend_entry(Backend::Agy, Some(("/bin/agy".into(), "1.3.4".into())));
+        assert_eq!(found["available"], json!(true));
+        assert_eq!(found["version"], json!("1.3.4"));
+        assert_eq!(found["kinds"], json!(["execute"]));
+        assert_eq!(
+            backend_entry(Backend::Claude, None)["kinds"],
+            json!(["execute", "consult"])
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_refuses_a_read_only_agy_execution() {
+        let mut server = test_server();
+        let root = server.cwd.canonicalize().unwrap();
+        server.project_root = Some(root.clone());
+        let submit = |sandbox: &str| SubmitParams {
+            objective: "do it".into(),
+            working_dir: root.to_string_lossy().into_owned(),
+            backend: Some("agy".into()),
+            sandbox: Some(sandbox.into()),
+            ..SubmitParams::default()
+        };
+        let r = server
+            .dispatch_submit(Parameters(submit("read-only")))
+            .await
+            .unwrap();
+        let expected = if agent_exec::reentry::depth(backend::REENTRY_ENV) >= 1 {
+            "reentrant"
+        } else {
+            "invalid_params"
+        };
+        assert_eq!(error_code(&r).as_deref(), Some(expected));
+        if expected == "invalid_params" {
+            let text = r.content[0].as_text().unwrap().text.clone();
+            assert!(text.contains("read-only"), "{text}");
+        }
+        let rows = store::list(&server.db.lock().unwrap(), None, None, None).unwrap();
+        assert!(rows.is_empty());
+        assert!(sandbox_refusal(Backend::Agy, "read-only").is_some());
+        assert_eq!(sandbox_refusal(Backend::Agy, "workspace-write"), None);
+        assert_eq!(sandbox_refusal(Backend::Agy, "danger-full-access"), None);
+        for b in [Backend::Codex, Backend::Claude, Backend::Opencode] {
+            assert_eq!(sandbox_refusal(b, "read-only"), None);
+        }
+    }
+
+    /// A scratch home for agy logs, empty.
+    fn agy_home(tag: &str) -> PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("dispatch-agy-home-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn write_transcript(home: &Path, id: &str, content: &str) -> PathBuf {
+        let p = agy::transcript_path(home, id);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, content).unwrap();
+        p
+    }
+
+    #[tokio::test]
+    async fn agy_logs_read_the_stored_conversation_not_the_latest() {
+        let mut server = test_server();
+        let home = agy_home("logs");
+        server.home = home.clone();
+        let id = insert(&server, Kind::Execute, "agy");
+        let logs = |id: &str| LogsParams {
+            id: id.to_string(),
+            ..LogsParams::default()
+        };
+
+        // Before the init event: no live log.
+        let v = body(&server.dispatch_logs(Parameters(logs(&id))).await.unwrap());
+        assert_eq!(v["session_pending"], json!(true));
+        assert!(
+            v["note"].as_str().unwrap().starts_with("no live log yet"),
+            "{v}"
+        );
+
+        // The run's own conversation, and a newer one agy recorded as the
+        // directory's latest.
+        let ours = write_transcript(
+            &home,
+            "conv-ours",
+            r#"{"step_index":0,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"from our run"}"#,
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write_transcript(
+            &home,
+            "conv-newer",
+            r#"{"step_index":0,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"from another session"}"#,
+        );
+        let cache = agy::cli_home(&home).join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(
+            cache.join("last_conversations.json"),
+            json!({ server.cwd.to_string_lossy(): "conv-newer" }).to_string(),
+        )
+        .unwrap();
+        store::set_session(
+            &server.db.lock().unwrap(),
+            &id,
+            "conv-ours",
+            &ours.to_string_lossy(),
+        )
+        .unwrap();
+        let v = body(&server.dispatch_logs(Parameters(logs(&id))).await.unwrap());
+        assert_eq!(v["rollout_path"], json!(ours.to_string_lossy()));
+        assert_eq!(v["session_id"], json!("conv-ours"));
+        let log = v["log"].as_str().unwrap();
+        assert!(log.contains("[agy] from our run"), "{log}");
+        assert!(!log.contains("another session"), "{log}");
+
+        // A stored path that is not this conversation's log is re-derived
+        // from the conversation id, never from the directory's latest.
+        store::set_session(
+            &server.db.lock().unwrap(),
+            &id,
+            "conv-ours",
+            &agy::transcript_path(&home, "conv-newer").to_string_lossy(),
+        )
+        .unwrap();
+        let row = store::get(&server.db.lock().unwrap(), &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            server.resolve_rollout(&row),
+            Some(ours.to_string_lossy().into_owned())
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_agy_steer_resumes_the_stored_conversation() {
+        let mut server = test_server();
+        let home = agy_home("steer");
+        server.home = home.clone();
+        let id = insert(&server, Kind::Execute, "agy");
+        let row = |server: &Dispatch| {
+            store::get(&server.db.lock().unwrap(), &id)
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(server.resolve_session_id(&row(&server)), None);
+        // Known from the init event even before agy wrote its log.
+        let not_yet = agy::transcript_path(&home, "conv-1");
+        store::set_session(
+            &server.db.lock().unwrap(),
+            &id,
+            "conv-1",
+            &not_yet.to_string_lossy(),
+        )
+        .unwrap();
+        assert_eq!(
+            server.resolve_session_id(&row(&server)).as_deref(),
+            Some("conv-1")
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -2122,6 +2369,13 @@ mod tests {
             let r = server.dispatch_consult(Parameters(p)).await.unwrap();
             assert_eq!(error_code(&r).as_deref(), Some("invalid_params"));
         }
+        let r = server
+            .dispatch_consult(Parameters(ask("why?", Some("agy"))))
+            .await
+            .unwrap();
+        assert_eq!(error_code(&r).as_deref(), Some("invalid_params"));
+        let text = r.content[0].as_text().unwrap().text.clone();
+        assert!(text.contains("agy is not a consultation backend"), "{text}");
         let r = server
             .dispatch_consult(Parameters(ask("why?", Some("nope"))))
             .await

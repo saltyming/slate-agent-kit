@@ -507,6 +507,10 @@ Every error carries a stable ``code`` and a message that says how to fix it:
 ``invariant_violation``, ``conflict`` (the file changed between read and write),
 ``io_error``.
 
+A ``server/discover`` request that a client (the Antigravity CLI) sends before
+``initialize`` is answered with the JSON-RPC error ``-32601 Method not found``
+and the standard handshake then proceeds; blank lines before it are ignored.
+
 Ownership and ordering
 ----------------------
 

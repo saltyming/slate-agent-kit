@@ -15,7 +15,7 @@ Records
 `RFC-0002 <rfc-0002-installer-and-kit-layout.rst>`_ Installer and kit layout
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001.
-  Linked from: RFC-0008 (Depends), RFC-0011 (Depends), RFC-0017 (Depends), RFC-0017 (link), RFC-0018 (Depends), RFC-0022 (Depends).
+  Linked from: RFC-0008 (Depends), RFC-0011 (Depends), RFC-0017 (Depends), RFC-0017 (link), RFC-0018 (Depends), RFC-0022 (Depends), RFC-0023 (Depends).
   Superseded by: none.
 
 `RFC-0003 <rfc-0003-palette-document-system.rst>`_ palette document system
@@ -51,7 +51,7 @@ Records
 `RFC-0008 <rfc-0008-shared-backend-execution.rst>`_ Shared backend execution layer
   Status: Accepted. Implementation: complete.
   Depends: RFC-0002.
-  Linked from: RFC-0011 (Depends), RFC-0011 (link), RFC-0014 (Depends), RFC-0014 (Supersedes), RFC-0014 (link), RFC-0016 (Depends), RFC-0022 (Depends), RFC-0022 (Supersedes).
+  Linked from: RFC-0011 (Depends), RFC-0011 (link), RFC-0014 (Depends), RFC-0014 (Supersedes), RFC-0014 (link), RFC-0016 (Depends), RFC-0022 (Depends), RFC-0022 (Supersedes), RFC-0023 (Depends).
   Superseded by: RFC-0014 (in part: the guard as a re-invocation of the server binary that every ``main`` intercepts), RFC-0022 (in part: aside as a separate server with its own capture policy, failure text and re-entry marker).
 
 `RFC-0009 <rfc-0009-record-header-rules.rst>`_ Record header rules and several active phases
@@ -135,5 +135,11 @@ Records
 `RFC-0022 <rfc-0022-dispatch-absorbs-consultation.rst>`_ dispatch absorbs consultation; every run is asynchronous and waited on through the harness
   Status: Accepted. Implementation: complete.
   Depends: RFC-0008, RFC-0002, RFC-0001.
+  Linked from: RFC-0023 (Depends).
+  Superseded by: none.
+
+`RFC-0023 <rfc-0023-agy-agent-kit-fourth-kit-and-agy-backend.rst>`_ agy-agent-kit: the fourth kit, for Antigravity, and the agy backend
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0022, RFC-0008, RFC-0002.
   Linked from: none.
   Superseded by: none.

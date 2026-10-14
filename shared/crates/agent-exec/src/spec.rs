@@ -2,8 +2,12 @@
 //! and the [`RunSpec`] a server builds per attempt.
 //!
 //! These are plain values; the server chooses them (its policy) and the crate
-//! applies them. Argv construction from a `RunSpec` lives in `argv.rs`, the
-//! capture and failure-text policies in `capture.rs` and `failure.rs`.
+//! applies them. What follows from the backend alone — how the prompt is
+//! encoded on stdin ([`InputEncoding`]), how the outcome is decided
+//! ([`ResultNormaliser`]) and which sandbox levels it refuses — is a method of
+//! [`Backend`], not a choice of the server. Argv construction from a `RunSpec`
+//! lives in `argv.rs`, the capture and failure-text policies in `capture.rs`
+//! and `failure.rs`, the agy stream in `agy.rs`.
 
 use std::path::PathBuf;
 
@@ -17,6 +21,10 @@ pub enum Backend {
     Codex,
     /// Anthropic's `claude` CLI (Claude Code).
     Claude,
+    /// Google's Antigravity CLI, `agy`: executions only, never a
+    /// consultation; the prompt travels as a stream-json `user` event and the
+    /// outcome is read from the stream's `result` event.
+    Agy,
 }
 
 impl Backend {
@@ -26,33 +34,112 @@ impl Backend {
         match self {
             Backend::Codex => "codex",
             Backend::Claude => "claude",
+            Backend::Agy => "agy",
         }
     }
 
-    /// The backend's stable lowercase name (`codex`, `claude`), as recorded
-    /// in `RunRecord::backend`; the same as [`Backend::binary`].
+    /// The backend's stable lowercase name (`codex`, `claude`, `agy`), as
+    /// recorded in `RunRecord::backend`; the same as [`Backend::binary`].
     pub fn as_str(&self) -> &'static str {
         self.binary()
     }
 
     /// Every process backend, in a stable order.
     pub fn all() -> &'static [Backend] {
-        &[Backend::Codex, Backend::Claude]
+        &[Backend::Codex, Backend::Claude, Backend::Agy]
+    }
+
+    /// How the prompt is written to the backend's stdin.
+    pub fn input_encoding(&self) -> InputEncoding {
+        match self {
+            Backend::Codex | Backend::Claude => InputEncoding::Verbatim,
+            Backend::Agy => InputEncoding::AgyStreamJson,
+        }
+    }
+
+    /// How the outcome of a run of this backend is decided from its exit
+    /// status and output.
+    pub fn result_normaliser(&self) -> ResultNormaliser {
+        match self {
+            Backend::Codex | Backend::Claude => ResultNormaliser::ExitStatus,
+            Backend::Agy => ResultNormaliser::AgyStreamJson,
+        }
+    }
+
+    /// Why this backend cannot run under `sandbox`, or `None` when it can.
+    /// agy refuses [`Sandbox::ReadOnly`]: a headless agy run is possible only
+    /// with `--dangerously-skip-permissions` (it denies every unapproved tool
+    /// otherwise), and nothing then holds it to reads. `run` returns the text
+    /// as `Outcome::Spawn` without spawning; a server refuses the request
+    /// with it before that.
+    pub fn sandbox_refusal(&self, sandbox: Sandbox) -> Option<&'static str> {
+        match (self, sandbox) {
+            (Backend::Agy, Sandbox::ReadOnly) => Some(
+                "agy cannot run an execution read-only: headless agy runs only under \
+                 --dangerously-skip-permissions, which nothing then holds to reads; use \
+                 workspace-write (agy --sandbox) or danger-full-access",
+            ),
+            _ => None,
+        }
     }
 }
 
+/// How a run's prompt reaches the backend: the bytes written to stdin, which
+/// is then closed. The prompt never travels on argv.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputEncoding {
+    /// The prompt's UTF-8 bytes as they are (codex, claude).
+    Verbatim,
+    /// One stream-json line, `{"event":"user","message":{"role":"user",
+    /// "content":<prompt as a JSON string>}}`, and a newline (agy
+    /// `--input-format stream-json`).
+    AgyStreamJson,
+}
+
+impl InputEncoding {
+    /// The bytes written to stdin for `prompt`.
+    pub fn encode<'a>(&self, prompt: &'a str) -> std::borrow::Cow<'a, [u8]> {
+        match self {
+            InputEncoding::Verbatim => std::borrow::Cow::Borrowed(prompt.as_bytes()),
+            InputEncoding::AgyStreamJson => {
+                std::borrow::Cow::Owned(crate::agy::user_event_line(prompt).into_bytes())
+            }
+        }
+    }
+}
+
+/// How the outcome of a run is decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultNormaliser {
+    /// Success is exit status 0; `final_text` is the retained stdout (or, for
+    /// a structured output mode, the message parsed from it); usage comes
+    /// from the structured output modes (codex, claude).
+    ExitStatus,
+    /// stdout is an NDJSON event stream read as it is drained (agy
+    /// `--output-format stream-json`): the `init` event's `conversation_id`
+    /// is the session, reported at once as `RunEvent::Session`; `step_update`
+    /// text deltas are the retained capture; the `result` event (kept whole
+    /// up to 8 MB) decides success, `final_text`, the failure detail and the
+    /// usage (`UsageSource::AgyStreamJson`). Success needs exit 0 and a well-formed `result` with `status`
+    /// `SUCCESS`, no `error`, and not `denied_actions` with an empty
+    /// `response`.
+    AgyStreamJson,
+}
+
 /// What the backend may do to the machine. Codex receives it as `-s`; Claude
-/// as a permission mode. The ceiling that refuses `DangerFullAccess` belongs
-/// to the server.
+/// as a permission mode; agy as `--sandbox` or nothing, refusing `ReadOnly`
+/// ([`Backend::sandbox_refusal`]). The ceiling that refuses `DangerFullAccess`
+/// belongs to the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sandbox {
-    /// Reads only (codex `-s read-only`; claude `--permission-mode plan`).
+    /// Reads only (codex `-s read-only`; claude `--permission-mode plan`;
+    /// refused for agy).
     ReadOnly,
     /// Edits inside the working directory (codex `-s workspace-write`; claude
-    /// `--permission-mode acceptEdits --allowedTools Bash`).
+    /// `--permission-mode acceptEdits --allowedTools Bash`; agy `--sandbox`).
     WorkspaceWrite,
     /// No sandbox (codex `-s danger-full-access`; claude
-    /// `--dangerously-skip-permissions`).
+    /// `--dangerously-skip-permissions`; agy without `--sandbox`).
     DangerFullAccess,
 }
 
@@ -82,6 +169,9 @@ impl Sandbox {
 /// spawned it. The three codex variants apply to `Backend::Codex` only; the two
 /// claude variants to `Backend::Claude` only. A variant of the other backend
 /// adds no isolation flag (a claude run then gets the `Permissions` mapping).
+/// agy takes no isolation flag at all: it passes its process environment to
+/// the MCP servers it starts, so the re-entry marker reaches them, and a
+/// server gives it `Permissions`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Isolation {
     /// Codex `exec --ignore-user-config`: no user config, so no MCP server at
@@ -183,7 +273,8 @@ pub enum GuardMode {
 pub struct RunSpec {
     /// The backend CLI.
     pub backend: Backend,
-    /// The prompt, written to the process's stdin, which is then closed.
+    /// The prompt, written to the process's stdin in the backend's
+    /// [`InputEncoding`], after which stdin is closed.
     pub prompt: String,
     /// The process directory; for codex also passed as `-C`. `None` inherits
     /// the server's directory and adds no `-C`.
@@ -200,10 +291,11 @@ pub struct RunSpec {
     pub failure_text: FailureTextPolicy,
     /// `-m` / `--model`; `None` uses the backend's default.
     pub model: Option<String>,
-    /// Codex `-c model_reasoning_effort=`; claude `--effort`.
+    /// Codex `-c model_reasoning_effort=`; claude and agy `--effort` (agy:
+    /// not passed when the model slug already ends in an effort).
     pub reasoning_effort: Option<String>,
     /// Continue this backend session (codex `exec resume <id>`; claude
-    /// `--resume <id> --fork-session`).
+    /// `--resume <id> --fork-session`; agy `--conversation <id>`).
     pub resume_session: Option<String>,
     /// Claude only: pin the new session id with `--session-id`.
     pub pin_session: Option<String>,

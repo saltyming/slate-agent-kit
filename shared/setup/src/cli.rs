@@ -38,7 +38,8 @@ struct Common {
     /// The kit's dist/ folder (default: ./dist, else dist/ beside this program).
     #[arg(long, value_name = "DIR", overrides_with = "payload")]
     payload: Option<PathBuf>,
-    /// The harness home (default: the harness's own variable, else its default folder).
+    /// The harness home (default: the harness's own variable, else its default folder;
+    /// agy accepts only `.gemini` under HOME, or USERPROFILE on Windows).
     #[arg(long, value_name = "DIR", overrides_with = "home")]
     home: Option<PathBuf>,
     /// Where binaries go (default: ~/.local/bin).
@@ -77,7 +78,7 @@ struct KitArgs {
 struct McpArgs {
     #[command(flatten)]
     common: Common,
-    /// The harness to register with (repeatable): claude, codex or kimi.
+    /// The harness to register with (repeatable): claude, codex, kimi or agy.
     #[arg(long, value_name = "HARNESS", value_delimiter = ',')]
     harness: Vec<String>,
     /// Remove the registrations instead of installing.
@@ -169,7 +170,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> std::result::Result<P
                 for h in &a.harness {
                     harnesses.push(Harness::parse(h).ok_or_else(|| {
                         Error::usage(format!(
-                            "unknown harness `{h}`; expected claude, codex or kimi"
+                            "unknown harness `{h}`; expected claude, codex, kimi or agy"
                         ))
                     })?);
                 }

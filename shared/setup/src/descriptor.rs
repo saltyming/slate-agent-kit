@@ -92,7 +92,7 @@ impl Descriptor {
         }
         if Harness::parse(&self.harness).is_none() {
             return Err(Error::payload(format!(
-                "kit.toml: unknown harness `{}` (expected claude, codex or kimi)",
+                "kit.toml: unknown harness `{}` (expected claude, codex, kimi or agy)",
                 self.harness
             )));
         }

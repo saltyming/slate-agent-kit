@@ -12,7 +12,7 @@ use crate::binaries::{binary_path, read_only_tools};
 use crate::config::{ConfigDoc, ConfigRecord, JsonDoc, Restored, TomlDoc, restore};
 use crate::env::{Env, Harness};
 use crate::error::{Error, Result};
-use crate::harness::{self, Ctx, EditOutcome, SubagentPrefs, claude, codex, kimi};
+use crate::harness::{self, Ctx, EditOutcome, SubagentPrefs, agy, claude, codex, kimi};
 use crate::manifest::Manifest;
 use crate::report::Report;
 use crate::ui::Ui;
@@ -212,6 +212,28 @@ fn apply_config(
                 report,
             )
         }
+        // agy has no subagent default setting; only the approvals are written.
+        Harness::Agy => {
+            let mut doc = match claude::parse_settings(text.as_deref(), file) {
+                Ok(d) => d,
+                Err(e) => {
+                    report.problems.push(e);
+                    return Ok(());
+                }
+            };
+            let dispatch = registered.iter().any(|s| s == "dispatch");
+            let palette = registered.iter().any(|s| s == "palette");
+            let out = agy::settings_edits(&mut doc, file, dispatch, palette);
+            finish_edit(
+                ui,
+                out,
+                text.as_deref(),
+                || doc.render_original(),
+                file,
+                manifest,
+                report,
+            )
+        }
     }
 }
 
@@ -248,13 +270,16 @@ pub fn serve(
             Harness::Claude => claude::register(env, ui, &ctx)?,
             Harness::Codex => codex::register(env, ui, &ctx)?,
             Harness::Kimi => kimi::register(env, ui, &ctx)?,
+            Harness::Agy => agy::register(env, ui, &ctx)?,
         }
     };
     let registered = outcome.servers_done.clone();
     handle_outcome(ui, outcome, manifest, report);
 
     let palette_bin = binary_path(env, &ctx.bin_dir, "palette");
-    let tools = if ctx.servers.iter().any(|s| s == "palette") && palette_bin.is_file() {
+    // agy's palette approvals are the fixed set in `agy::PALETTE_PREAPPROVED_TOOLS`.
+    let probe = ctx.harness != Harness::Agy;
+    let tools = if probe && ctx.servers.iter().any(|s| s == "palette") && palette_bin.is_file() {
         match read_only_tools(env, &palette_bin) {
             Ok(t) => Some(t),
             Err(e) => {
@@ -395,6 +420,7 @@ pub fn unserve(
                 .iter()
                 .any(|f| f == &kimi::registry_path(home)),
         )?,
+        Harness::Agy => agy::unregister(env, ui, servers)?,
     };
     for n in outcome.notes {
         report.note(n);
@@ -412,6 +438,14 @@ pub fn unserve(
         let records: Vec<&ConfigRecord> =
             manifest.config.iter().filter(|c| c.file == file).collect();
         restore_records(&file, &records, report)?;
+    }
+    if harness == Harness::Agy {
+        // A settings file the installer created goes once only an empty object is left.
+        let file = crate::layout::Layout::new(harness, home).config_file;
+        if manifest.created_files.iter().any(|f| f == &file) && agy::remove_created_settings(&file)?
+        {
+            ui.ok(&format!("removed {}", file.display()));
+        }
     }
     Ok(())
 }

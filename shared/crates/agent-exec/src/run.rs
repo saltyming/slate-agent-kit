@@ -2,13 +2,17 @@
 //! ([`run_with_fallback`]), with what they report while running
 //! ([`RunEvent`]) and what they return ([`Outcome`], [`RunRecord`]).
 //!
-//! `run` refuses in a process marked as a guard, looks the binary up, builds
-//! the argv (`argv::command`), spawns it under the guard mode
-//! (`guard::spawn_contained`), writes the prompt to stdin and closes it while
-//! capturing stdout and stderr concurrently under the capture policy, and
-//! awaits the exit or the cancellation token, whichever comes first. It writes
-//! no file and no store: everything goes out through the event channel and the
-//! return value.
+//! `run` refuses in a process marked as a guard and a sandbox level the
+//! backend cannot run under, looks the binary up, builds the argv
+//! (`argv::command`), spawns it under the guard mode
+//! (`guard::spawn_contained`), writes the prompt to stdin in the backend's
+//! input encoding and closes it while reading stdout and stderr concurrently,
+//! and awaits the exit or the cancellation token, whichever comes first. The
+//! backend's result normaliser then decides the outcome: the exit status for
+//! codex and claude, the `result` event of the stream for agy (`agy.rs`), whose
+//! stdout reader also reports the conversation as `RunEvent::Session` while
+//! the run lasts. It writes no file and no store: everything goes out through
+//! the event channel and the return value.
 //!
 //! There is intentionally no wall-clock timeout — a backend run can take many
 //! minutes. Cancellation is the caller's `CancellationToken`: it kills the
@@ -28,13 +32,14 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
+use crate::agy;
 use crate::argv;
 use crate::capture::{self, Captured};
 use crate::discovery::{install_hint, which};
 use crate::errkind::{self, BackendErrorKind};
 use crate::failure::failure_text;
 use crate::guard::{self, Contained};
-use crate::spec::{Backend, OutputMode, RunSpec};
+use crate::spec::{Backend, OutputMode, ResultNormaliser, RunSpec};
 use harness_log::Usage;
 
 /// How long a run that was cancelled after its backend exited waits for the
@@ -69,8 +74,9 @@ pub enum RunEvent {
         /// that found no guard.
         guarded: bool,
     },
-    /// A backend session became known (a runner that creates or resumes one,
-    /// such as dispatch's opencode runner, sends it).
+    /// A backend session became known: dispatch's opencode runner sends it
+    /// after creating or resuming one, and an agy run as soon as its `init`
+    /// event names the conversation.
     Session {
         /// The backend's session id.
         session_id: String,
@@ -99,7 +105,8 @@ pub enum Outcome {
         /// How to install it.
         hint: String,
     },
-    /// The process could not be started or its stdin written.
+    /// The process could not be started or its stdin written, or the backend
+    /// refuses the run's sandbox level (`Backend::sandbox_refusal`).
     Spawn(String),
     /// Awaiting the process's exit failed.
     WaitFailed(String),
@@ -113,7 +120,7 @@ pub enum Outcome {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunRecord {
-    /// The backend's name (`codex`, `claude`, or a runner's own, e.g.
+    /// The backend's name (`codex`, `claude`, `agy`, or a runner's own, e.g.
     /// `opencode`).
     pub backend: String,
     /// The backend argv, binary first.
@@ -128,12 +135,15 @@ pub struct RunRecord {
     pub wall_ms: u64,
     /// The exit code; `None` when the process was ended by a signal.
     pub exit_code: Option<i32>,
-    /// Whether the process exited with status 0.
+    /// Whether the run succeeded, as the backend's result normaliser decided:
+    /// exit status 0 for codex and claude; for agy also a well-formed
+    /// `result` event that reports success. `exit_code` stays as observed, so
+    /// an agy run can exit 0 and still fail.
     pub success: bool,
     /// stdout as kept by the capture policy (the failure cap applied when the
-    /// run failed).
+    /// run failed); for agy, the text deltas of its event stream.
     pub stdout: String,
-    /// Bytes stdout produced in all.
+    /// Bytes stdout produced in all (for agy, bytes of text deltas).
     pub stdout_total: u64,
     /// Whether anything stdout produced is missing from `stdout`.
     pub stdout_truncated: bool,
@@ -141,19 +151,28 @@ pub struct RunRecord {
     pub stderr: String,
     /// Whether anything stderr produced is missing from `stderr`.
     pub stderr_truncated: bool,
-    /// The backend's last assistant message: all of stdout for `Default` and
-    /// `Text` on success, the result's `result` for claude `Json`, the last
-    /// `agent_message` for codex `JsonStream` (`None` when that stream was
-    /// truncated).
+    /// The run's answer, which a server reports as its result or reply: under
+    /// the exit-status normaliser the retained `stdout` itself for `Default`
+    /// and `Text` (success or failure), the result's `result` for claude
+    /// `Json` and the last `agent_message` for codex `JsonStream` (`None`
+    /// when that stream was truncated); for agy the `result` event's
+    /// `response` whole, with a note naming the denied actions when there
+    /// were any (`None` without a well-formed `result`).
     pub final_text: Option<String>,
+    /// The result normaliser's own account of a failure, which the failure
+    /// text carries before stdout: for agy the result's `error`, an
+    /// `AGY_ERROR` line, a missing or oversized `result` event, or the
+    /// actions headless agy could not get permission for. `None` under the
+    /// exit-status normaliser and on success.
+    pub failure_detail: Option<String>,
     /// The session id the backend reported (claude `Json`, codex
-    /// `JsonStream`).
+    /// `JsonStream`, the agy conversation).
     pub session_id: Option<String>,
     /// `RunSpec::backend_version`.
     pub backend_version: Option<String>,
     /// Token usage parsed from the output (claude `Json`, codex `JsonStream`,
-    /// untruncated), else `None`; a server may attach usage parsed from a
-    /// session file afterwards.
+    /// untruncated; agy's `result` event), else `None`; a server may attach
+    /// usage parsed from a session file afterwards.
     pub usage: Option<Usage>,
 }
 
@@ -345,6 +364,9 @@ async fn run_inner(
     if ct.is_cancelled() {
         return Outcome::Cancelled;
     }
+    if let Some(refusal) = spec.backend.sandbox_refusal(spec.sandbox) {
+        return Outcome::Spawn(refusal.to_string());
+    }
     if which(binary).is_none() {
         return Outcome::NotFound {
             binary: binary.to_string(),
@@ -375,10 +397,35 @@ async fn run_inner(
         guarded,
     });
 
-    let out_task = tokio::spawn(capture::read_capped(
-        child.stdout.take(),
-        spec.capture.stdout_cap,
-    ));
+    // stdout is read by the backend's normaliser: kept under the cap as it
+    // comes (exit status), or parsed as events whose text deltas are kept
+    // under the cap (agy), the conversation reported the moment it is read.
+    let stdout = child.stdout.take();
+    let stdout_cap = spec.capture.stdout_cap;
+    let out_task = match spec.backend.result_normaliser() {
+        ResultNormaliser::ExitStatus => tokio::spawn(async move {
+            StdoutRead {
+                captured: capture::read_capped(stdout, stdout_cap).await,
+                stream: None,
+            }
+        }),
+        ResultNormaliser::AgyStreamJson => {
+            let session_events = events.clone();
+            tokio::spawn(async move {
+                let mut stream = agy::read_stream(stdout, stdout_cap, move |id: &str| {
+                    let _ = session_events.send(RunEvent::Session {
+                        session_id: id.to_string(),
+                        port: None,
+                    });
+                })
+                .await;
+                StdoutRead {
+                    captured: std::mem::take(&mut stream.deltas),
+                    stream: Some(stream),
+                }
+            })
+        }
+    };
     let err_task = tokio::spawn(capture::read_capped(
         child.stderr.take(),
         spec.capture.stderr_cap,
@@ -399,9 +446,10 @@ async fn run_inner(
         abort_readers();
         return Outcome::Spawn(format!("{binary} stdin pipe unavailable"));
     };
-    let prompt = spec.prompt.as_bytes();
+    let input = spec.backend.input_encoding().encode(&spec.prompt);
+    let input: &[u8] = &input;
     let mut writer = Some(Box::pin(async move {
-        stdin.write_all(prompt).await?;
+        stdin.write_all(input).await?;
         stdin.shutdown().await
     }));
 
@@ -483,21 +531,45 @@ async fn run_inner(
         return Outcome::Cancelled;
     };
     tree.release();
-    let out: Captured = out.unwrap_or_default();
+    let StdoutRead {
+        captured: out,
+        stream,
+    } = out.unwrap_or_default();
     let err: Captured = err.unwrap_or_default();
 
-    let success = status.success();
+    let agy_outcome = stream
+        .as_ref()
+        .map(|s| agy::normalise(status.success(), s, &err.text));
+    let success = match &agy_outcome {
+        Some(n) => n.success,
+        None => status.success(),
+    };
     let (stdout, stdout_truncated) = if success {
         (out.text, out.truncated)
     } else {
         let (clipped, cut) = capture::clip(&out.text, spec.capture.failure_stdout_cap);
         (clipped, out.truncated || cut)
     };
-    let parsed = parse_output(spec.backend, spec.output_mode, &stdout, stdout_truncated);
-    let final_text = match spec.output_mode {
-        OutputMode::Json | OutputMode::JsonStream if parsed.structured => parsed.final_text,
-        _ if success => Some(stdout.clone()),
-        _ => None,
+    let parsed = match agy_outcome {
+        Some(n) => Parsed {
+            structured: true,
+            final_text: n.final_text,
+            failure_detail: n.failure_detail,
+            session_id: n.session_id,
+            usage: n.usage,
+        },
+        None => {
+            let parsed = parse_output(spec.backend, spec.output_mode, &stdout, stdout_truncated);
+            let final_text = match spec.output_mode {
+                OutputMode::Json | OutputMode::JsonStream if parsed.structured => parsed.final_text,
+                // The retained stdout is the answer, on success and failure.
+                _ => Some(stdout.clone()),
+            };
+            Parsed {
+                final_text,
+                ..parsed
+            }
+        }
     };
 
     Outcome::Record(RunRecord {
@@ -514,7 +586,8 @@ async fn run_inner(
         stdout_truncated,
         stderr: err.text,
         stderr_truncated: err.truncated,
-        final_text,
+        final_text: parsed.final_text,
+        failure_detail: parsed.failure_detail,
         session_id: parsed.session_id,
         backend_version: spec.backend_version.clone(),
         usage: parsed.usage,
@@ -539,12 +612,21 @@ enum Step {
     Exited(io::Result<std::process::ExitStatus>),
 }
 
+/// What stdout's reader produced: the retained text and, for agy, the event
+/// stream it parsed.
+#[derive(Default)]
+struct StdoutRead {
+    captured: Captured,
+    stream: Option<agy::Stream>,
+}
+
 /// What a structured output mode yields besides the raw text.
 #[derive(Default)]
 struct Parsed {
     /// Whether the (backend, mode) pair is a structured one at all.
     structured: bool,
     final_text: Option<String>,
+    failure_detail: Option<String>,
     session_id: Option<String>,
     usage: Option<Usage>,
 }
@@ -562,6 +644,7 @@ fn parse_output(backend: Backend, mode: OutputMode, stdout: &str, truncated: boo
             Parsed {
                 structured: true,
                 final_text: str_field("result"),
+                failure_detail: None,
                 session_id: str_field("session_id"),
                 usage: if truncated {
                     None
@@ -601,6 +684,7 @@ fn parse_output(backend: Backend, mode: OutputMode, stdout: &str, truncated: boo
                 structured: true,
                 // A head-truncated stream lost its later messages.
                 final_text: if truncated { None } else { last_message },
+                failure_detail: None,
                 session_id,
                 usage: if truncated {
                     None
@@ -694,6 +778,15 @@ mod tests {
                 guard::missing_message(backend.binary()),
             ] {
                 assert_eq!(errkind::classify(&text), BackendErrorKind::Other, "{text}");
+            }
+            for sandbox in [
+                crate::Sandbox::ReadOnly,
+                crate::Sandbox::WorkspaceWrite,
+                crate::Sandbox::DangerFullAccess,
+            ] {
+                if let Some(text) = backend.sandbox_refusal(sandbox) {
+                    assert_eq!(errkind::classify(text), BackendErrorKind::Other, "{text}");
+                }
             }
         }
     }

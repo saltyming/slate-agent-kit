@@ -13,7 +13,9 @@
 //!   2. `Started` transitions the row `queued` → `running` (pid, argv, backend
 //!      version); for claude it records the pinned session, for codex it starts
 //!      the attempt's association watchdog;
-//!   3. `Session` (opencode) records the session and its dispatch-owned log;
+//!   3. `Session` records the session and its log: opencode's dispatch-owned
+//!      log, or the agy conversation its `init` event named, with the
+//!      conversation's own log, while the run is still live;
 //!   4. the chain's final outcome is written back as the terminal status, with
 //!      the fallback history when attempts were discarded;
 //!   5. the task deregisters its token.
@@ -41,10 +43,12 @@ use std::time::{Duration, SystemTime};
 
 use agent_exec::{
     AttemptResult, DiscardedAttempt, FailureTextPolicy, FallbackOutcome, Outcome, RunEvent,
+    RunRecord,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
+use crate::agy;
 use crate::backend::{self, Backend};
 use crate::consult;
 use crate::liveness;
@@ -94,6 +98,9 @@ pub struct Job {
     pub prompt: String,
     pub backend_version: Option<String>,
     pub state_dir: PathBuf,
+    /// The user's home directory, under which agy keeps its conversation
+    /// logs (`crate::agy`).
+    pub home: PathBuf,
     /// When set, resume this backend session id instead of starting fresh (the
     /// `dispatch_steer` follow-up path).
     pub resume_session: Option<String>,
@@ -563,16 +570,24 @@ impl Consumer<'_> {
                         snapshot: std::mem::take(&mut a.snapshot),
                         spawn_time: a.spawn_time.unwrap_or_else(SystemTime::now),
                     }),
-                    Backend::Opencode => Next::Nothing,
+                    // agy reports its conversation as a `Session` event.
+                    Backend::Opencode | Backend::Agy => Next::Nothing,
                 }
             }
             RunEvent::Session { session_id, .. } => {
-                if job.backend == Backend::Opencode {
-                    let path = opencode::log_path(
+                let path = match job.backend {
+                    Backend::Opencode => Some(opencode::log_path(
                         job.rollout_path.as_deref(),
                         &job.state_dir,
                         &session_id,
-                    );
+                    )),
+                    // The conversation the run's own `init` event named: its
+                    // identity from the first event, never the directory's
+                    // latest conversation.
+                    Backend::Agy => Some(agy::transcript_path(&job.home, &session_id)),
+                    Backend::Codex | Backend::Claude => None,
+                };
+                if let Some(path) = path {
                     db_set_session(self.db, &job.id, &session_id, &path.to_string_lossy());
                 }
                 Next::Nothing
@@ -757,6 +772,7 @@ impl Consumer<'_> {
             prompt: new_prompt,
             backend_version: job.backend_version.clone(),
             state_dir: job.state_dir.clone(),
+            home: job.home.clone(),
             resume_session: None,
             nonce: Some(new_nonce),
             rollout_path: None,
@@ -820,8 +836,15 @@ fn terminal(backend: Backend, outcome: &Outcome, started: bool) -> Terminal {
                 store::STATUS_FAILED
             },
             exit_code: r.exit_code.map(|c| c as i64),
-            result: Some(build_result(&r.stdout, r.stdout_total, r.stdout_truncated)),
-            error: (!r.success).then(|| build_error(&r.stderr, r.stderr_truncated, r.exit_code)),
+            result: Some(execution_result(backend, r)),
+            error: (!r.success).then(|| {
+                build_error(
+                    &r.stderr,
+                    r.stderr_truncated,
+                    r.exit_code,
+                    r.failure_detail.as_deref(),
+                )
+            }),
         },
         // opencode's not-found text is its install hint alone.
         Outcome::NotFound { hint, .. } if backend == Backend::Opencode => failed(hint.clone()),
@@ -1007,6 +1030,21 @@ fn dir_changed_since(dir: &Path, since: SystemTime) -> Option<bool> {
     Some(false)
 }
 
+/// The stored result of an execution record: its `final_text`. For codex and
+/// claude that is the retained stdout, so the stdout truncation note applies
+/// to it; for agy it is the result event's whole response. A record without
+/// one (opencode or agy on failure) stores the retained stdout.
+fn execution_result(backend: Backend, r: &RunRecord) -> String {
+    match (backend, r.final_text.as_deref()) {
+        (Backend::Agy, Some(text)) => text.to_string(),
+        (_, text) => build_result(
+            text.unwrap_or(&r.stdout),
+            r.stdout_total,
+            r.stdout_truncated,
+        ),
+    }
+}
+
 fn build_result(stdout: &str, total: u64, truncated: bool) -> String {
     if truncated {
         format!(
@@ -1019,10 +1057,21 @@ fn build_result(stdout: &str, total: u64, truncated: bool) -> String {
     }
 }
 
-fn build_error(stderr: &str, truncated: bool, exit_code: Option<i32>) -> String {
+/// The stored error of a failed execution record: its exit code, the result
+/// normaliser's detail when it gave one (agy), then stderr.
+fn build_error(
+    stderr: &str,
+    truncated: bool,
+    exit_code: Option<i32>,
+    detail: Option<&str>,
+) -> String {
     let mut s = String::new();
     if let Some(c) = exit_code {
         s.push_str(&format!("exit code {c}\n"));
+    }
+    if let Some(d) = detail {
+        s.push_str(d);
+        s.push('\n');
     }
     if stderr.is_empty() {
         s.push_str("(no stderr captured)");
@@ -1214,6 +1263,7 @@ mod tests {
             prompt: prompt_with(nonce),
             backend_version: Some("v-test".to_string()),
             state_dir: dir.join("state"),
+            home: dir.join("home"),
             resume_session: None,
             nonce: nonce.map(str::to_string),
             rollout_path: None,
@@ -1782,6 +1832,166 @@ mod tests {
             Some(expected.to_string_lossy().as_ref())
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn agy_session_records_the_conversation_while_the_run_lasts() {
+        let dir = scratch("drive-agy");
+        let (db, id) = db_with_row(Backend::Agy, &dir, None);
+        let job = job(&id, Backend::Agy, &dir, None);
+        let ct = CancellationToken::new();
+        let attempt_ct = ct.child_token();
+        let attempts = StdMutex::new(Vec::new());
+        let cx = Consumer {
+            db: &db,
+            job: &job,
+            ct: &ct,
+            attempt_ct: &attempt_ct,
+            attempts: &attempts,
+            restart_after: None,
+            locate: never_found,
+        };
+        let (tx, rx) = unbounded_channel();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<()>();
+        let db2 = db.clone();
+        let id2 = id.clone();
+        let chain = async move {
+            let _ = tx.send(started(11));
+            let _ = tx.send(RunEvent::Session {
+                session_id: "conv-1".into(),
+                port: None,
+            });
+            // The row carries the conversation before the run ends.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let r = store::get(&db2.lock().unwrap(), &id2).unwrap().unwrap();
+                if r.session_id.as_deref() == Some("conv-1") {
+                    assert_eq!(r.status, store::STATUS_RUNNING);
+                    let _ = seen_tx.send(());
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "no session recorded"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let done = Outcome::Record(RunRecord {
+                backend: "agy".into(),
+                exit_code: Some(0),
+                success: true,
+                stdout: "o".into(),
+                stdout_total: 1,
+                stdout_truncated: true,
+                final_text: Some("ok, the whole response".into()),
+                session_id: Some("conv-1".into()),
+                ..RunRecord::default()
+            });
+            let _ = tx.send(RunEvent::Finished(done.clone()));
+            FallbackOutcome {
+                outcome: done,
+                model: None,
+                discarded: Vec::new(),
+            }
+        };
+        assert!(drive_bounded(&cx, chain, rx).await.is_none());
+        assert!(seen_rx.await.is_ok());
+        let r = row(&db, &id);
+        assert_eq!(r.status, store::STATUS_SUCCEEDED);
+        assert_eq!(r.session_id.as_deref(), Some("conv-1"));
+        let expected = agy::transcript_path(&job.home, "conv-1");
+        assert_eq!(
+            r.rollout_path.as_deref(),
+            Some(expected.to_string_lossy().as_ref())
+        );
+        // The result is agy's whole response, not the capped deltas.
+        assert_eq!(r.result.as_deref(), Some("ok, the whole response"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn results_are_final_text_with_codex_and_claude_unchanged() {
+        // codex and claude: final_text is the retained stdout, so the stored
+        // result is what it was when it was built from stdout.
+        for backend in [Backend::Codex, Backend::Claude] {
+            for (success, truncated) in [(true, false), (true, true), (false, false)] {
+                let r = RunRecord {
+                    exit_code: Some(if success { 0 } else { 1 }),
+                    success,
+                    stdout: "kept".into(),
+                    stdout_total: if truncated { 900 } else { 4 },
+                    stdout_truncated: truncated,
+                    final_text: Some("kept".into()),
+                    stderr: "err".into(),
+                    ..RunRecord::default()
+                };
+                let t = terminal(backend, &Outcome::Record(r.clone()), true);
+                let old = build_result(&r.stdout, r.stdout_total, r.stdout_truncated);
+                assert_eq!(t.result.as_deref(), Some(old.as_str()));
+                // A record without final_text (opencode, an older record)
+                // stores the same.
+                let bare = RunRecord {
+                    final_text: None,
+                    ..r
+                };
+                assert_eq!(
+                    terminal(backend, &Outcome::Record(bare), true)
+                        .result
+                        .as_deref(),
+                    Some(old.as_str())
+                );
+            }
+        }
+
+        // agy: the whole response; a failure keeps its exit code and leads its
+        // error with the normaliser's detail.
+        let ok = RunRecord {
+            backend: "agy".into(),
+            exit_code: Some(0),
+            success: true,
+            stdout: "capped".into(),
+            stdout_total: 999,
+            stdout_truncated: true,
+            final_text: Some("the whole response".into()),
+            ..RunRecord::default()
+        };
+        let t = terminal(Backend::Agy, &Outcome::Record(ok), true);
+        assert_eq!(t.result.as_deref(), Some("the whole response"));
+        let denied = RunRecord {
+            backend: "agy".into(),
+            exit_code: Some(0),
+            success: false,
+            stderr: "jetski: no output produced".into(),
+            final_text: Some(String::new()),
+            failure_detail: Some("RunCommand needed a permission headless agy cannot grant".into()),
+            ..RunRecord::default()
+        };
+        let t = terminal(Backend::Agy, &Outcome::Record(denied), true);
+        assert_eq!(t.status, store::STATUS_FAILED);
+        assert_eq!(t.exit_code, Some(0));
+        assert_eq!(
+            t.error.as_deref(),
+            Some(
+                "exit code 0\nRunCommand needed a permission headless agy cannot grant\n\
+                 jetski: no output produced"
+            )
+        );
+        // No result event: the streamed text stands in.
+        let none = RunRecord {
+            backend: "agy".into(),
+            exit_code: Some(3),
+            success: false,
+            stdout: "partial".into(),
+            stdout_total: 7,
+            failure_detail: Some("AGY_ERROR: x".into()),
+            ..RunRecord::default()
+        };
+        let t = terminal(Backend::Agy, &Outcome::Record(none), true);
+        assert_eq!(t.result.as_deref(), Some("partial"));
+        assert_eq!(
+            t.error.as_deref(),
+            Some("exit code 3\nAGY_ERROR: x\n(no stderr captured)")
+        );
     }
 
     #[tokio::test]

@@ -15,23 +15,16 @@ use crate::created;
 use crate::env::{Env, Harness};
 use crate::error::{Error, Result};
 use crate::harness::Ctx;
+use crate::layout::Layout;
 use crate::manifest::Manifest;
 use crate::options::Options;
 use crate::report::Report;
 use crate::serve;
 use crate::ui::Ui;
 use crate::wizard::parse_roots;
-use std::path::PathBuf;
 
 /// The manifest name of the `mcp` command.
 pub const MCP_KIT: &str = "slate-agent-kit-mcp";
-
-fn config_file(harness: Harness, home: &std::path::Path) -> PathBuf {
-    match harness {
-        Harness::Claude => home.join("settings.json"),
-        Harness::Codex | Harness::Kimi => home.join("config.toml"),
-    }
-}
 
 /// The servers `manifest` records for `harness`, or `fallback` when it records none.
 ///
@@ -53,7 +46,7 @@ fn recorded_servers(manifest: &Manifest, harness: Harness, fallback: &[String]) 
 
 /// [`recorded_servers`] of the manifest in `home`, for the summary; an unreadable manifest shows `fallback`.
 fn recorded_or(home: &std::path::Path, harness: Harness, fallback: &[String]) -> Vec<String> {
-    match Manifest::load(home, MCP_KIT, harness) {
+    match Manifest::load(&Layout::new(harness, home).manifest_dir, MCP_KIT, harness) {
         Ok(Some(m)) => recorded_servers(&m, harness, fallback),
         _ => fallback.to_vec(),
     }
@@ -66,8 +59,11 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
     harnesses.dedup();
     if opts.home.is_some() && harnesses.len() != 1 {
         return Err(Error::usage(
-            "`--home` applies to exactly one `--harness`; use CLAUDE_CONFIG_DIR, CODEX_HOME or KIMI_CODE_HOME for several",
+            "`--home` applies to exactly one `--harness`; use CLAUDE_CONFIG_DIR, CODEX_HOME or KIMI_CODE_HOME for several (agy always uses .gemini under the process home)",
         ));
+    }
+    if let (Some(home), [h]) = (&opts.home, harnesses.as_slice()) {
+        crate::layout::check_home(env, *h, home)?;
     }
     if opts.uninstall && harnesses.is_empty() {
         return Err(Error::usage(
@@ -164,11 +160,12 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
     if opts.uninstall {
         for h in &harnesses {
             let home = home_of(*h);
-            let manifest =
-                Manifest::load(&home, MCP_KIT, *h)?.unwrap_or_else(|| Manifest::new(MCP_KIT));
+            let layout = Layout::new(*h, &home);
+            let manifest = Manifest::load(&layout.manifest_dir, MCP_KIT, *h)?
+                .unwrap_or_else(|| Manifest::new(MCP_KIT));
             let names = recorded_servers(&manifest, *h, &servers);
             serve::unserve(env, ui, *h, &home, &names, &manifest, &mut report)?;
-            Manifest::delete(&home, MCP_KIT, *h)?;
+            Manifest::delete(&layout.manifest_dir, MCP_KIT, *h)?;
             created::remove_empty(ui, &manifest.created_dirs);
         }
         return Ok(report);
@@ -198,8 +195,9 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
     }
     for h in &harnesses {
         let home = home_of(*h);
-        let mut manifest =
-            Manifest::load(&home, MCP_KIT, *h)?.unwrap_or_else(|| Manifest::new(MCP_KIT));
+        let layout = Layout::new(*h, &home);
+        let mut manifest = Manifest::load(&layout.manifest_dir, MCP_KIT, *h)?
+            .unwrap_or_else(|| Manifest::new(MCP_KIT));
         let ctx = Ctx {
             harness: *h,
             home: home.clone(),
@@ -210,14 +208,13 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
         let input = serve::Input {
-            config_file: config_file(*h, &home),
+            config_file: layout.config_file.clone(),
             ctx: &ctx,
             subagent: None,
         };
         let watch = created::watch_install(
-            *h,
+            &layout,
             &created::Targets {
-                home: &home,
                 rules: false,
                 skills: false,
                 bin_dir: Some(&bin_dir),
@@ -243,7 +240,7 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
         watch.record(&mut manifest);
         manifest.roots = roots.clone();
         manifest.version = env!("CARGO_PKG_VERSION").to_string();
-        manifest.save(&home)?;
+        manifest.save(&layout.manifest_dir)?;
     }
     Ok(report)
 }

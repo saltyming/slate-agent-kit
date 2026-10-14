@@ -1,0 +1,52 @@
+---
+trigger: always_on
+description: "Antigravity Agent: Consult Preferences"
+---
+<!-- agy-agent-kit-custom:consult-prefs -->
+# Consult Preferences
+
+> Fixture template for agy-agent-kit. Edit freely; uninstall keeps this file.
+
+## Level
+
+**suggest**
+
+Values: `on-request` | `suggest` | `auto`.
+
+## Backend
+
+**codex**
+
+Values: `codex` | `claude`.
+
+## Codex model
+
+****
+
+## Codex reasoning effort
+
+****
+
+## Codex model fallback
+
+****
+
+## Claude model
+
+****
+
+## Claude reasoning effort
+
+****
+
+## Claude model fallback
+
+****
+
+## Repository overrides
+
+One line per repository.
+
+## Notes
+
+Free-form.

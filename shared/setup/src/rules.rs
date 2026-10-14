@@ -1,7 +1,8 @@
 //! Custom rule files and the combined primary file for harnesses that load only one file.
 //!
 //! Owns copying the user's own `*.md` rules into `rules/<kit>--<name>.md` with a
-//! user-owned signature, refusing to replace kit-managed files, and generating
+//! user-owned signature (after an always-on frontmatter block where the harness
+//! requires one), refusing to replace kit-managed files, and generating
 //! the combined primary file (`load = concat`) from scratch so a custom rule
 //! appears exactly once however often install or configure runs. It does not
 //! write files; `install` applies the plan.
@@ -10,7 +11,9 @@
 //! [`build_concat`].
 
 use crate::error::{Error, IoContext, Result};
-use crate::signature::{Owner, classify, ensure_custom_signature};
+use crate::signature::{
+    Owner, classify, ensure_custom_signature, ensure_custom_signature_with_frontmatter,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -65,12 +68,18 @@ pub struct Reserved {
 /// replaced. A destination that is kit-managed, or user-owned but not an
 /// earlier copy of a custom rule (a prefs file, a file the user wrote there),
 /// is refused.
+///
+/// `frontmatter` is the harness's [`crate::env::Harness::rule_frontmatter_title`]:
+/// when set, every rule starts with a closed YAML frontmatter block (the file's
+/// own, or an always-on block whose description is `<title>: <file stem>`) and
+/// the signature follows it.
 pub fn plan_custom_rules(
     kit: &str,
     rules_dir: &Path,
     folder: &Path,
     prior: &[PathBuf],
     reserved: &[Reserved],
+    frontmatter: Option<&str>,
 ) -> Result<Vec<CustomRule>> {
     let entries = fs::read_dir(folder).map_err(|e| {
         Error::usage(format!(
@@ -103,7 +112,16 @@ pub fn plan_custom_rules(
         let raw = fs::read(&src).ctx(|| format!("reading {}", src.display()))?;
         let raw = String::from_utf8(raw)
             .map_err(|_| Error::usage(format!("{} is not valid UTF-8", src.display())))?;
-        let text = ensure_custom_signature(kit, "user", &raw);
+        let text = match frontmatter {
+            Some(title) => {
+                let stem = src
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                ensure_custom_signature_with_frontmatter(kit, "user", title, &stem, &raw)
+            }
+            None => ensure_custom_signature(kit, "user", &raw),
+        };
         let dest = rules_dir.join(dest_name(kit, &name));
         let decision = match fs::read(&dest) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => CustomDecision::Create,
@@ -217,7 +235,7 @@ mod tests {
         write(&folder, "style.md", "# Style\n");
         write(&folder, "signed.md", "<!-- k-custom:mine -->\n# Signed\n");
         write(&folder, "notes.txt", "ignored");
-        let plan = plan_custom_rules("k", &rules, &folder, &[], &[]).unwrap();
+        let plan = plan_custom_rules("k", &rules, &folder, &[], &[], None).unwrap();
         assert_eq!(plan.len(), 2);
         let signed = plan
             .iter()
@@ -256,7 +274,7 @@ mod tests {
         );
         write(&rules, "k--same.md", "<!-- k-custom:user -->\n# Same\n");
         let plan =
-            plan_custom_rules("k", &rules, &folder, std::slice::from_ref(&old), &[]).unwrap();
+            plan_custom_rules("k", &rules, &folder, std::slice::from_ref(&old), &[], None).unwrap();
         let by = |n: &str| {
             plan.iter()
                 .find(|c| c.dest.ends_with(n))
@@ -292,7 +310,7 @@ mod tests {
                 reason: "it would replace a kit-managed file",
             },
         ];
-        let plan = plan_custom_rules("k", &rules, &folder, &[], &reserved).unwrap();
+        let plan = plan_custom_rules("k", &rules, &folder, &[], &reserved, None).unwrap();
         let by = |n: &str| {
             plan.iter()
                 .find(|c| c.dest.ends_with(n))
@@ -350,10 +368,54 @@ mod tests {
     }
 
     #[test]
+    fn frontmatter_harnesses_get_the_block_before_the_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("mine");
+        let rules = dir.path().join("rules");
+        fs::create_dir_all(&folder).unwrap();
+        fs::create_dir_all(&rules).unwrap();
+        write(&folder, "style.md", "# Style\n");
+        write(
+            &folder,
+            "rust.md",
+            "---\ntrigger: glob\nglobs: \"*.rs\"\n---\n# Rust\n",
+        );
+        let plan =
+            plan_custom_rules("a", &rules, &folder, &[], &[], Some("Antigravity Agent")).unwrap();
+        let text = |n: &str| {
+            plan.iter()
+                .find(|c| c.dest.ends_with(n))
+                .unwrap()
+                .text
+                .clone()
+        };
+        assert_eq!(
+            text("a--style.md"),
+            "---\ntrigger: always_on\ndescription: \"Antigravity Agent: style\"\n---\n<!-- a-custom:user -->\n# Style\n"
+        );
+        assert_eq!(
+            text("a--rust.md"),
+            "---\ntrigger: glob\nglobs: \"*.rs\"\n---\n<!-- a-custom:user -->\n# Rust\n"
+        );
+        // Installed once, the copies are recognised as the user's and stay unchanged.
+        for c in &plan {
+            fs::write(&c.dest, &c.text).unwrap();
+        }
+        let prior: Vec<PathBuf> = plan.iter().map(|c| c.dest.clone()).collect();
+        let again = plan_custom_rules("a", &rules, &folder, &prior, &[], Some("Antigravity Agent"))
+            .unwrap();
+        assert!(
+            again
+                .iter()
+                .all(|c| c.decision == CustomDecision::Unchanged)
+        );
+    }
+
+    #[test]
     fn a_missing_folder_is_a_usage_error() {
         let dir = tempfile::tempdir().unwrap();
-        let err =
-            plan_custom_rules("k", dir.path(), &dir.path().join("nope"), &[], &[]).unwrap_err();
+        let err = plan_custom_rules("k", dir.path(), &dir.path().join("nope"), &[], &[], None)
+            .unwrap_err();
         assert!(err.to_string().contains("cannot be read"));
     }
 }

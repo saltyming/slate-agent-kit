@@ -1,8 +1,9 @@
-//! Test support: a stand-in for the codex and claude CLIs in this crate's
-//! integration tests. It is never installed.
+//! Test support: a stand-in for the codex, claude and agy CLIs in this
+//! crate's integration tests. It is never installed.
 //!
-//! The tests copy this binary onto a temporary `PATH` as `codex` and `claude`
-//! and steer it through environment variables, so a "backend" can echo its
+//! The tests copy this binary onto a temporary `PATH` as `codex`, `claude` and
+//! `agy` (printing recorded agy stream-json output through `STUB_STDOUT`) and
+//! steer it through environment variables, so a "backend" can echo its
 //! stdin, print a given amount of output, exit with a given code or signal,
 //! sleep, or start a child of its own. It never links `agent_exec::run` and
 //! never starts a guard or a copy of itself that could do anything but sleep.

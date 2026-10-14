@@ -1,13 +1,14 @@
-//! Server registration and native configuration, shared across the three harnesses.
+//! Server registration and native configuration, shared across the four harnesses.
 //!
 //! Owns the per-server environment, the command lines of the harness CLIs, and
 //! the types the install steps exchange. The per-harness behaviour lives in the
-//! `claude`, `codex` and `kimi` submodules. It does not decide when to register;
+//! `claude`, `codex`, `kimi` and `agy` submodules. It does not decide when to register;
 //! `install` and `mcp` do.
 //!
 //! Main entry points: [`Ctx`], [`server_env`], [`DISPATCH_PREAPPROVED_TOOLS`],
 //! [`shell_quote`], [`Outcome`], [`SubagentPrefs`] and [`run_cli`].
 
+pub mod agy;
 pub mod claude;
 pub mod codex;
 pub mod kimi;
@@ -56,10 +57,12 @@ impl Ctx {
 
     /// The folder dispatch keeps its state in.
     pub fn state_home(&self) -> PathBuf {
-        match self.harness {
-            Harness::Claude => self.home.clone(),
-            Harness::Codex | Harness::Kimi => self.home.join("slate-agent-kit"),
-        }
+        self.layout().state_home
+    }
+
+    /// The layout of the harness home.
+    pub fn layout(&self) -> crate::layout::Layout {
+        crate::layout::Layout::new(self.harness, &self.home)
     }
 }
 

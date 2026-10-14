@@ -1,4 +1,5 @@
-//! The install manifest, `<home>/.<kit>-manifest.toml`, and the reader for the
+//! The install manifest, `.<kit>-manifest.toml` in the layout's manifest folder
+//! (the harness home; `~/.gemini/slate-agent-kit` for agy), and the reader for the
 //! older line-format manifest.
 //!
 //! Owns what an install records so uninstall can reverse it: kit and version,
@@ -117,9 +118,10 @@ pub struct Manifest {
     pub from_legacy: bool,
 }
 
-/// Path of the TOML manifest of `kit` in `home`.
-pub fn manifest_path(home: &Path, kit: &str) -> PathBuf {
-    home.join(format!(".{kit}-manifest.toml"))
+/// Path of the TOML manifest of `kit` in the manifest folder `dir`
+/// ([`crate::layout::Layout::manifest_dir`]: the harness home, or agy's state folder).
+pub fn manifest_path(dir: &Path, kit: &str) -> PathBuf {
+    dir.join(format!(".{kit}-manifest.toml"))
 }
 
 /// Paths where an earlier installer wrote its line-format manifest.
@@ -363,11 +365,11 @@ fn is_probably_custom(path: &Path) -> bool {
     // only seeds the `user` flag for listing.
     fs::read_to_string(path)
         .ok()
-        .and_then(|t| t.lines().next().map(|l| l.contains("-custom:")))
-        .unwrap_or(false)
+        .is_some_and(|t| crate::signature::signature_line(&t).contains("-custom:"))
 }
 
-/// Finds every TOML manifest, other than `own`, that lists any of `binaries`.
+/// Finds every TOML manifest, other than `own`, in the manifest folders `homes`
+/// ([`crate::layout::manifest_dirs`]) that lists any of `binaries`.
 pub fn other_manifests_listing(
     homes: &[PathBuf],
     own: &Path,

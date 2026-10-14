@@ -26,7 +26,7 @@ use crate::retire;
 use crate::rules::CustomDecision;
 use crate::serve;
 use crate::ui::Ui;
-use crate::util::{backup_file, write_atomic};
+use crate::util::{backup_file_in, write_atomic};
 use std::fs;
 use std::path::Path;
 
@@ -61,6 +61,7 @@ fn install_skill(src: &Path, files: &[std::path::PathBuf], dest: &Path) -> Resul
 
 fn write_file_action(
     ui: &mut Ui,
+    kit: &Kit,
     a: &FileAction,
     manifest: &mut Manifest,
     report: &mut Report,
@@ -72,7 +73,7 @@ fn write_file_action(
         }
         Decision::Unchanged => {}
         Decision::BackupReplace => {
-            let backup = backup_file(&a.dest)?;
+            let backup = backup_file_in(&a.dest, kit.layout.backup_dir.as_deref())?;
             manifest.record_backup(&backup, &a.dest);
             report.note(format!(
                 "{} was not managed by this kit; its previous content is saved as {}",
@@ -197,7 +198,7 @@ fn run_steps(
         ui.blank();
         ui.line("Files");
         for a in &plan.files {
-            write_file_action(ui, a, manifest, report)?;
+            write_file_action(ui, kit, a, manifest, report)?;
         }
         let written = plan
             .files
@@ -228,7 +229,7 @@ fn run_steps(
                 ui.ok(&format!("wrote {}", p.dest.display()));
             }
             (PrefsActionKind::Migrate, Some(text)) => {
-                let backup = backup_file(&p.dest)?;
+                let backup = backup_file_in(&p.dest, kit.layout.backup_dir.as_deref())?;
                 manifest.record_backup(&backup, &p.dest);
                 write_atomic(&p.dest, text.as_bytes())?;
                 ui.ok(&format!(
@@ -329,9 +330,8 @@ pub fn apply(env: &Env, ui: &mut Ui, kit: &Kit, plan: &Plan) -> Report {
     manifest.kit = kit.name().to_string();
     let mut completed = Vec::new();
     let watch = created::watch_install(
-        kit.harness,
+        &kit.layout,
         &created::Targets {
-            home: &kit.home,
             rules: true,
             skills: !desc.skills.is_empty() && plan.kind == Kind::Install,
             bin_dir: (plan.binaries.is_some() || !plan.servers.is_empty()).then_some(&kit.bin_dir),
@@ -368,10 +368,10 @@ pub fn apply(env: &Env, ui: &mut Ui, kit: &Kit, plan: &Plan) -> Report {
     let saved = if kit.prior.is_none() && manifest.is_empty() {
         Ok(())
     } else {
-        manifest.save(&kit.home)
+        manifest.save(&kit.layout.manifest_dir)
     };
     if saved.is_ok() && kit.prior.as_ref().is_some_and(|m| m.from_legacy) {
-        let _ = Manifest::delete_legacy(&kit.home, kit.name(), kit.harness);
+        let _ = Manifest::delete_legacy(&kit.layout.manifest_dir, kit.name(), kit.harness);
     }
     let progress = if completed.is_empty() {
         "nothing".to_string()

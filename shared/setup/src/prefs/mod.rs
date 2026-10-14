@@ -2,7 +2,7 @@
 //! the rename of files whose name changed, and the plan for one file.
 //!
 //! Owns turning "template + existing file + answers" into the text to write and
-//! the value changes to show, for all five prefs files and all three harnesses
+//! the value changes to show, for all five prefs files and all four harnesses
 //! the same way. It does not ask questions (`wizard`) or write files (`install`).
 //!
 //! A current file may still carry the value or the settings of a backend the

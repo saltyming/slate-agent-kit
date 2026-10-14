@@ -45,10 +45,13 @@ impl FailureTextPolicy {
 /// success, a cancellation or a missing binary (none of which is retried).
 ///
 /// `backend` is the backend's stable name (`Backend::as_str`, or a runner's
-/// own such as `opencode`, which is in no `stdout_for` list). A record that
-/// exited non-zero gives `exit_code=<code> stderr=<stderr>`, followed by
+/// own such as `opencode`, which is in no `stdout_for` list). A failed record
+/// gives `exit_code=<code> stderr=<stderr>`, then ` detail=<detail>` when the
+/// result normaliser recorded one (agy: the result's `error`, an `AGY_ERROR`
+/// line, a missing result event or the denied actions), then
 /// ` stdout=<stdout>` when `backend` is in `policy.stdout_for`. A `Spawn` or
-/// `WaitFailed` outcome gives its message.
+/// `WaitFailed` outcome gives its message. A successful record gives none, so
+/// nothing a successful response says is ever classified.
 pub fn failure_text(
     policy: &FailureTextPolicy,
     backend: &str,
@@ -57,6 +60,10 @@ pub fn failure_text(
     match outcome {
         Outcome::Record(r) if !r.success => {
             let mut text = format!("exit_code={:?} stderr={}", r.exit_code, r.stderr);
+            if let Some(detail) = &r.failure_detail {
+                text.push_str(" detail=");
+                text.push_str(detail);
+            }
             if policy.stdout_for.iter().any(|b| b.as_str() == backend) {
                 text.push_str(" stdout=");
                 match policy.stdout_tail {
@@ -190,5 +197,27 @@ mod tests {
         });
         let text = failure_text(&FailureTextPolicy::dispatch(), "opencode", &o).unwrap();
         assert_eq!(text, "exit_code=Some(1) stderr=boom");
+    }
+
+    #[test]
+    fn a_normaliser_detail_joins_the_text_and_agy_stdout_never_does() {
+        let o = Outcome::Record(RunRecord {
+            backend: "agy".into(),
+            exit_code: Some(0),
+            success: false,
+            stdout: "a reply that mentions a 429 rate limit".into(),
+            stderr: "warning".into(),
+            failure_detail: Some("RunCommand needed a permission headless agy cannot grant".into()),
+            ..RunRecord::default()
+        });
+        for policy in [FailureTextPolicy::aside(), FailureTextPolicy::dispatch()] {
+            let text = ft(&policy, Backend::Agy, &o).unwrap();
+            assert_eq!(
+                text,
+                "exit_code=Some(0) stderr=warning detail=RunCommand needed a permission headless \
+                 agy cannot grant"
+            );
+            assert_eq!(classify(&text), BackendErrorKind::Other);
+        }
     }
 }

@@ -11,6 +11,7 @@
 use crate::descriptor::Payload;
 use crate::env::{Env, Harness};
 use crate::error::{Error, Result};
+use crate::layout::Layout;
 use crate::manifest::Manifest;
 use crate::options::Options;
 use crate::prefs::{self, State, rename, schema::ValidationCtx};
@@ -26,7 +27,9 @@ pub struct Kit {
     pub harness: Harness,
     /// Harness home.
     pub home: PathBuf,
-    /// `<home>/rules`.
+    /// Where the harness keeps each kind of installed file.
+    pub layout: Layout,
+    /// The rules folder of the layout.
     pub rules_dir: PathBuf,
     /// Binary folder.
     pub bin_dir: PathBuf,
@@ -83,6 +86,9 @@ impl Kit {
         let dir = find_payload(opts)?;
         let payload = Payload::load(&dir)?;
         let harness = payload.desc.harness();
+        if let Some(h) = &opts.home {
+            crate::layout::check_home(env, harness, h)?;
+        }
         let home = opts
             .home
             .clone()
@@ -91,9 +97,11 @@ impl Kit {
             .bin_dir
             .clone()
             .unwrap_or_else(|| env.default_bin_dir());
-        let prior = Manifest::load(&home, &payload.desc.kit, harness)?;
+        let layout = Layout::new(harness, &home);
+        let prior = Manifest::load(&layout.manifest_dir, &payload.desc.kit, harness)?;
         Ok(Kit {
-            rules_dir: home.join("rules"),
+            rules_dir: layout.rules_dir.clone(),
+            layout,
             payload,
             harness,
             home,
@@ -115,10 +123,7 @@ impl Kit {
 
     /// The configuration file the installer edits.
     pub fn config_file(&self) -> PathBuf {
-        match self.harness {
-            Harness::Claude => self.home.join("settings.json"),
-            Harness::Codex | Harness::Kimi => self.home.join("config.toml"),
-        }
+        self.layout.config_file.clone()
     }
 
     /// The servers the kit registers.
@@ -128,7 +133,7 @@ impl Kit {
 
     /// The path of the manifest.
     pub fn manifest_path(&self) -> PathBuf {
-        crate::manifest::manifest_path(&self.home, self.name())
+        self.layout.manifest_path(self.name())
     }
 
     /// The Kimi model aliases in `config.toml`, when the harness is Kimi and the file parses.

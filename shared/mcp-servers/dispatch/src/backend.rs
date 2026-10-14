@@ -2,20 +2,23 @@
 //! for an execution by the two that run as processes.
 //!
 //! An execution runs the backend **write-capable**: codex executes in
-//! `-s workspace-write` and may modify files in the target directory. codex and
-//! claude are started through the `agent-exec` crate, which owns lookup, argv,
-//! spawning under the parent-death guard, capture and the fallback loop; this
-//! module only chooses the [`agent_exec::RunSpec`] values of an execution
-//! attempt ([`run_spec`]); a consultation's are in `consult.rs`. opencode is
-//! driven over HTTP by `opencode.rs`.
+//! `-s workspace-write` and may modify files in the target directory. codex,
+//! claude and agy are started through the `agent-exec` crate, which owns
+//! lookup, argv, spawning under the parent-death guard, capture, agy's stream
+//! normaliser and the fallback loop; this module only chooses the
+//! [`agent_exec::RunSpec`] values of an execution attempt ([`run_spec`]); a
+//! consultation's are in `consult.rs`. opencode is driven over HTTP by
+//! `opencode.rs`. agy serves executions only: it cannot hide the user's MCP
+//! servers from a run, so it is not a consultation backend.
 //!
 //! Anti-recursion: every process dispatch spawns carries [`REENTRY_ENV`] at
 //! this server's depth plus one ([`next_depth`]). A dispatch server at depth
 //! [`REENTRY_CEILING`] or more refuses `dispatch_submit` and `dispatch_steer`
 //! and accepts `dispatch_consult`, so a backend may consult but never start
-//! another execution. **claude** and **opencode** pass their process env to
-//! the MCP servers they boot, so the inherited marker reaches a booted
-//! dispatch. **codex** launches MCP servers with a clean env, so an execution's
+//! another execution. **claude**, **agy** and **opencode** pass their process
+//! env to the MCP servers they boot, so the inherited marker reaches a booted
+//! dispatch; an agy execution therefore sees the user's registered servers
+//! and its nested dispatch accepts only consultations. **codex** launches MCP servers with a clean env, so an execution's
 //! codex receives the marker on its command line as the environment of the
 //! `dispatch` server (`Isolation::ServerEnv`,
 //! `-c mcp_servers.dispatch.env.DISPATCH_REENTRY_DEPTH="<depth>"`); the server
@@ -78,6 +81,8 @@ pub enum Backend {
     Codex,
     Opencode,
     Claude,
+    /// The Antigravity CLI: executions only.
+    Agy,
 }
 
 impl Backend {
@@ -86,6 +91,7 @@ impl Backend {
             Backend::Codex => "codex",
             Backend::Opencode => "opencode",
             Backend::Claude => "claude",
+            Backend::Agy => "agy",
         }
     }
 
@@ -100,12 +106,18 @@ impl Backend {
             "" | "codex" => Some(Backend::Codex),
             "opencode" => Some(Backend::Opencode),
             "claude" => Some(Backend::Claude),
+            "agy" => Some(Backend::Agy),
             _ => None,
         }
     }
 
     pub fn all() -> &'static [Backend] {
-        &[Backend::Codex, Backend::Opencode, Backend::Claude]
+        &[
+            Backend::Codex,
+            Backend::Opencode,
+            Backend::Claude,
+            Backend::Agy,
+        ]
     }
 
     /// The `agent-exec` process backend, or `None` for opencode (driven over
@@ -114,6 +126,7 @@ impl Backend {
         match self {
             Backend::Codex => Some(agent_exec::Backend::Codex),
             Backend::Claude => Some(agent_exec::Backend::Claude),
+            Backend::Agy => Some(agent_exec::Backend::Agy),
             Backend::Opencode => None,
         }
     }
@@ -128,7 +141,8 @@ pub async fn version(backend: Backend) -> Option<String> {
     }
 }
 
-/// What one codex or claude attempt of a job runs with, besides the backend.
+/// What one codex, claude or agy attempt of a job runs with, besides the
+/// backend.
 pub struct AttemptSpec<'a> {
     /// The canonical working directory: the process directory and codex `-C`.
     pub working_dir: &'a Path,
@@ -142,8 +156,9 @@ pub struct AttemptSpec<'a> {
     /// Codex `--skip-git-repo-check`.
     pub skip_git_repo_check: bool,
     /// Continue this backend session (`dispatch_steer`): codex
-    /// `exec resume <id>`, claude `--resume <id> --fork-session`. The
-    /// accumulated conversation context is preserved.
+    /// `exec resume <id>`, claude `--resume <id> --fork-session`, agy
+    /// `--conversation <id>`. The accumulated conversation context is
+    /// preserved.
     pub resume_session: Option<&'a str>,
     /// Claude only: the attempt's pinned session id (`--session-id`), so its
     /// session log path under `~/.claude/projects/` is known in advance.
@@ -152,12 +167,14 @@ pub struct AttemptSpec<'a> {
     pub backend_version: Option<&'a str>,
 }
 
-/// dispatch's `RunSpec` for one codex or claude execution attempt: codex with
-/// the re-entry marker set in the `dispatch` MCP server's environment, claude
-/// with the sandbox's permission mapping
+/// dispatch's `RunSpec` for one codex, claude or agy execution attempt: codex
+/// with the re-entry marker set in the `dispatch` MCP server's environment,
+/// claude with the sandbox's permission mapping
 /// (read-only → plan; workspace-write → acceptEdits + Bash; danger-full-access →
-/// skip permissions), no output-format flags, dispatch's capture and
-/// failure-text policies, and the guard required. The prompt travels on stdin.
+/// skip permissions), agy with the marker on its process environment alone
+/// (`Isolation::Permissions`; its argv and stream are agent-exec's), no
+/// output-format flags, dispatch's capture and failure-text policies, and the
+/// guard required. The prompt travels on stdin.
 ///
 /// A sandbox string outside the three known values runs as workspace-write, the
 /// default dispatch applies at submit.
@@ -170,7 +187,7 @@ pub fn run_spec(backend: agent_exec::Backend, a: &AttemptSpec<'_>, prompt: Strin
             command: Some(crate::current_exe_path()),
             approve_tools: BACKEND_APPROVED_TOOLS.map(str::to_string).to_vec(),
         },
-        agent_exec::Backend::Claude => Isolation::Permissions,
+        agent_exec::Backend::Claude | agent_exec::Backend::Agy => Isolation::Permissions,
     };
     RunSpec {
         backend,
@@ -186,7 +203,7 @@ pub fn run_spec(backend: agent_exec::Backend, a: &AttemptSpec<'_>, prompt: Strin
         resume_session: a.resume_session.map(str::to_string),
         pin_session: match backend {
             agent_exec::Backend::Claude => a.pin_session.map(str::to_string),
-            agent_exec::Backend::Codex => None,
+            agent_exec::Backend::Codex | agent_exec::Backend::Agy => None,
         },
         skip_git_repo_check: a.skip_git_repo_check,
         env: Vec::new(),
@@ -206,10 +223,15 @@ mod tests {
         assert_eq!(Backend::parse("codex"), Some(Backend::Codex));
         assert_eq!(Backend::parse("opencode"), Some(Backend::Opencode));
         assert_eq!(Backend::parse("claude"), Some(Backend::Claude));
+        assert_eq!(Backend::parse("agy"), Some(Backend::Agy));
+        assert_eq!(Backend::parse(" AGY "), Some(Backend::Agy));
+        assert_eq!(Backend::Agy.as_str(), "agy");
+        assert_eq!(Backend::Agy.process(), Some(agent_exec::Backend::Agy));
         assert_eq!(Backend::parse("missing"), None);
         assert!(Backend::all().contains(&Backend::Codex));
         assert!(Backend::all().contains(&Backend::Opencode));
         assert!(Backend::all().contains(&Backend::Claude));
+        assert!(Backend::all().contains(&Backend::Agy));
     }
 
     fn attempt<'a>(
@@ -488,5 +510,70 @@ mod tests {
             }
         );
         assert_eq!(next_depth(), agent_exec::reentry::depth(REENTRY_ENV) + 1);
+    }
+
+    #[test]
+    fn agy_argv_carries_the_marker_on_its_environment_only() {
+        let base = [
+            "agy",
+            "--dangerously-skip-permissions",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--print-timeout",
+            "0",
+        ];
+        let with = |rest: &[&str]| strs(&base.iter().chain(rest).copied().collect::<Vec<_>>());
+        let ww = argv(
+            agent_exec::Backend::Agy,
+            &attempt(
+                "workspace-write",
+                Some("claude-opus-5-5"),
+                Some("high"),
+                None,
+                Some("pin"),
+                true,
+            ),
+        );
+        assert_eq!(
+            ww,
+            with(&[
+                "--sandbox",
+                "--model",
+                "claude-opus-5-5",
+                "--effort",
+                "high"
+            ])
+        );
+        let danger = argv(
+            agent_exec::Backend::Agy,
+            &attempt("danger-full-access", None, None, None, None, false),
+        );
+        assert_eq!(danger, with(&[]));
+        let steer = argv(
+            agent_exec::Backend::Agy,
+            &attempt("workspace-write", None, None, Some("conv-1"), None, false),
+        );
+        assert_eq!(steer, with(&["--sandbox", "--conversation", "conv-1"]));
+
+        let s = run_spec(
+            agent_exec::Backend::Agy,
+            &attempt("workspace-write", None, None, None, Some("pin"), false),
+            "p".into(),
+        );
+        assert_eq!(s.isolation, Isolation::Permissions);
+        assert_eq!(s.pin_session, None);
+        assert_eq!(s.reentry, reentry());
+        assert_eq!(s.guard, GuardMode::Required);
+        let (cmd, _) = agent_exec::command(&s);
+        let marker = cmd
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new(REENTRY_ENV))
+            .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()));
+        assert_eq!(marker, Some(next_depth().to_string()));
+        // No codex-style server override reaches agy's argv.
+        assert!(!ww.iter().any(|a| a.starts_with("mcp_servers.")));
     }
 }

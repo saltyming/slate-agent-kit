@@ -112,12 +112,13 @@ delegate
 
 subagent
   A delegate created by the harness's own mechanism: the ``Agent`` tool in
-  Claude Code, ``spawn_agent`` in Codex, the ``Agent`` tool in Kimi Code.
+  Claude Code, ``spawn_agent`` in Codex, the ``Agent`` tool in Kimi Code,
+  ``invoke_subagent`` in the Antigravity CLI.
 
 team
   A leader together with delegates that run at the same time and can message
-  each other: agent teams in Claude Code, ``AgentSwarm`` in Kimi Code. Codex has
-  no equivalent.
+  each other: agent teams in Claude Code, ``AgentSwarm`` in Kimi Code,
+  ``manage_subagents`` in the Antigravity CLI. Codex has no equivalent.
 
 consultation
   A read-only request for an opinion (``dispatch_consult``, or the harness's

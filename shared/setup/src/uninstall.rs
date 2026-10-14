@@ -92,14 +92,9 @@ fn dispose(kit_name: &str, path: &Path, kind: EntryKind) -> Option<FileDispositi
     })
 }
 
-/// Every harness home where another kit's manifest may list a shared binary.
-pub(crate) fn all_homes(env: &Env, kit: &Kit) -> Vec<PathBuf> {
-    let mut homes: Vec<PathBuf> = Harness::ALL.iter().map(|h| env.harness_home(*h)).collect();
-    homes.extend(Harness::ALL.iter().map(|h| env.default_home(*h)));
-    homes.push(kit.home.clone());
-    homes.sort();
-    homes.dedup();
-    homes
+/// Every manifest folder where another kit's manifest may list a shared binary.
+pub(crate) fn all_manifest_dirs(env: &Env, kit: &Kit) -> Vec<PathBuf> {
+    crate::layout::manifest_dirs(env, std::slice::from_ref(&kit.layout.manifest_dir))
 }
 
 /// Why a kept binary is kept, for the plan: the guard is also kept for kits that list only its servers.
@@ -152,8 +147,8 @@ pub fn plan(env: &Env, kit: &Kit, remove_user: bool) -> Plan {
         servers = kit.servers();
     }
     plan.servers = servers;
-    let own = manifest_path(&kit.home, name);
-    let homes = all_homes(env, kit);
+    let own = manifest_path(&kit.layout.manifest_dir, name);
+    let homes = all_manifest_dirs(env, kit);
     for b in &m.binaries {
         if !b.exists() {
             continue;
@@ -380,7 +375,7 @@ fn run_steps(env: &Env, ui: &mut Ui, kit: &Kit, plan: &Plan, report: &mut Report
     if kit.harness == Harness::Codex {
         legacy::remove_earlier_codex_binaries(ui, &kit.home, &kit.bin_dir)?;
     }
-    Manifest::delete(&kit.home, kit.name(), kit.harness)?;
+    Manifest::delete(&kit.layout.manifest_dir, kit.name(), kit.harness)?;
     created::remove_empty(ui, &plan.created_dirs);
     Ok(())
 }

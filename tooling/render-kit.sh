@@ -11,7 +11,7 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 usage() {
-  echo "Usage: $0 <claude|codex|kimi> [target-dir]" >&2
+  echo "Usage: $0 <claude|codex|kimi|agy> [target-dir]" >&2
   exit 2
 }
 
@@ -21,6 +21,7 @@ harness="${1:-}"
 surface_src=""
 surface_name=""
 legacy=""
+frontmatter=""
 case "$harness" in
   claude)
     target="${2:-$ROOT/kits/claude-agent-kit}"
@@ -49,6 +50,16 @@ case "$harness" in
     load="concat"
     surface_src="$ROOT/adapters/kimi/surface.md"
     surface_name="kimi-surface"
+    ;;
+  agy)
+    target="${2:-$ROOT/kits/agy-agent-kit}"
+    primary="AGENTS.md"
+    prefix="agy-agent-kit"
+    delegation_name="delegation"
+    load="rules-dir"
+    surface_src="$ROOT/adapters/agy/surface.md"
+    surface_name="agy-surface"
+    frontmatter="Antigravity Agent"
     ;;
   *) usage ;;
 esac
@@ -131,6 +142,27 @@ render() {
   fi
 }
 
+# Antigravity loads a rules-folder file only when it opens with a YAML
+# frontmatter block; a file without one is dropped without notice. The block is
+# emitted here, for that harness only, in front of the kit signature: the
+# sources stay free of text the other harnesses do not read. The description
+# is quoted, so a title containing a colon stays valid YAML.
+with_frontmatter() {
+  [ -n "$frontmatter" ] || return 0
+  file="$1"
+  title=$(sed -n 's/^# //p' "$file" | sed -n '1p')
+  [ -n "$title" ] || title=$(basename "$file" .md)
+  _fm_tmp="$file.fm-tmp.$$"
+  {
+    printf -- '---\n'
+    printf 'trigger: always_on\n'
+    printf 'description: "%s"\n' "$(printf '%s' "$frontmatter: $title" | sed 's/"/\\"/g')"
+    printf -- '---\n'
+    cat "$file"
+  } > "$_fm_tmp"
+  mv "$_fm_tmp" "$file"
+}
+
 # Substitute the entry-point and maintainer tokens, which are per kit and not
 # part of any adapter's tokens.sed.
 render_entry() {
@@ -160,6 +192,7 @@ render "$ROOT/shared/rules/constitution.md" "$dist/$primary"
 rules=""
 add_rule() {
   render "$1" "$dist/rules/${prefix}--$2.md"
+  with_frontmatter "$dist/rules/${prefix}--$2.md"
   rules="$rules \"${prefix}--$2.md\","
 }
 if [ -n "$surface_src" ]; then
@@ -187,6 +220,7 @@ skills="$skills \"memory-triage\","
 prefs=""
 for p in consult dispatch subagent git comment; do
   render "$ROOT/shared/prefs/$p-prefs.md.tmpl" "$dist/prefs/$p-prefs.md"
+  with_frontmatter "$dist/prefs/$p-prefs.md"
   prefs="$prefs \"$p\","
 done
 

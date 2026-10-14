@@ -7,8 +7,10 @@
 //! order ([`compose_prompt`]). Each attempt runs in the server's directory with
 //! no MCP server of its own: codex under `-s read-only` with
 //! `exec --ignore-user-config`, claude in safe mode with `--permission-mode
-//! plan` and only the built-in read/search/fetch tools ([`attempt`]). The
-//! stored result is the `[backend]` header, the reply and its notes
+//! plan` and only the built-in read/search/fetch tools ([`attempt`]). agy is
+//! not a consultation backend: it cannot hide the user's MCP servers from a
+//! run, and `dispatch_consult` refuses it. The stored result is the
+//! `[backend]` header, the reply (the record's `final_text`) and its notes
 //! ([`render_reply`]); a failed attempt stores [`render_failure`]'s text.
 //! Spawning, capture and the fallback loop belong to `agent_exec`; the store
 //! and the lifecycle are the executor's, shared with the execution kind.
@@ -109,6 +111,9 @@ pub fn attempt(
             },
             OutputMode::Text,
         ),
+        // Never reached: `dispatch_consult` refuses agy. Should it be, the
+        // read-only sandbox below makes agent-exec refuse the run unspawned.
+        Backend::Agy => (Isolation::Permissions, OutputMode::Default),
     };
     RunSpec {
         backend,
@@ -182,7 +187,10 @@ pub fn outcome_text(
 }
 
 /// The text of a successful run: a `[backend]` header, the reply, and the
-/// truncation, fallback and transcript notes that apply.
+/// truncation, fallback and transcript notes that apply. The reply is the
+/// record's `final_text`, which for a consultation's backends is the retained
+/// stdout; a record without one (written by an earlier release) gives its
+/// stdout.
 pub fn render_reply(
     backend: Backend,
     r: &RunRecord,
@@ -193,7 +201,8 @@ pub fn render_reply(
     if r.stdout_truncated {
         header.push_str(" (response truncated)");
     }
-    let mut body = format!("{}\n\n{}", header, r.stdout);
+    let reply = r.final_text.as_deref().unwrap_or(&r.stdout);
+    let mut body = format!("{}\n\n{}", header, reply);
     if r.stdout_truncated {
         body.push_str(&format!(
             "\n\n[response truncated after {} characters; original was {} bytes]",
@@ -456,6 +465,43 @@ mod tests {
             None,
         );
         assert_eq!(r, Ok("[codex]\n\nthe answer".to_string()));
+    }
+
+    #[test]
+    fn the_reply_is_final_text_and_reads_as_before_for_codex_and_claude() {
+        for backend in [Backend::Codex, Backend::Claude] {
+            for truncated in [false, true] {
+                let mut rec = ok_record("the answer");
+                rec.stdout_truncated = truncated;
+                // agent-exec sets final_text to the retained stdout for both
+                // consultation backends.
+                let with = RunRecord {
+                    final_text: Some(rec.stdout.clone()),
+                    ..rec.clone()
+                };
+                let note = Some("[fallback]");
+                assert_eq!(
+                    render_reply(backend, &with, note, Some("t")),
+                    render_reply(backend, &rec, note, Some("t")),
+                );
+            }
+        }
+        // The reply comes from final_text when it differs from stdout.
+        let rec = RunRecord {
+            final_text: Some("final".into()),
+            ..ok_record("stream")
+        };
+        assert_eq!(
+            render_reply(Backend::Codex, &rec, None, None),
+            "[codex]\n\nfinal"
+        );
+    }
+
+    #[test]
+    fn an_agy_attempt_would_be_refused_unspawned() {
+        let spec = attempt(Backend::Agy, "p", None, None);
+        assert_eq!(spec.sandbox, Sandbox::ReadOnly);
+        assert!(Backend::Agy.sandbox_refusal(spec.sandbox).is_some());
     }
 
     #[test]

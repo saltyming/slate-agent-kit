@@ -13,6 +13,8 @@ use palette_server::project::{ProcessEnv, Roots};
 use palette_server::server::{PaletteServer, read_only_tool_names};
 use rmcp::ServiceExt;
 
+mod handshake;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
@@ -88,7 +90,11 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let server = PaletteServer::new(Ctx::new(roots));
-    let running = server.serve(rmcp::transport::io::stdio()).await?;
+    // Antigravity sends `server/discover` before `initialize`; answer it so
+    // the library sees `initialize` first (handshake.rs).
+    let mut stdout = tokio::io::stdout();
+    let stdin = handshake::skip_discover(tokio::io::stdin(), &mut stdout).await?;
+    let running = server.serve((stdin, stdout)).await?;
     tokio::select! {
         r = running.waiting() => { r?; }
         _ = shutdown_signal() => {}

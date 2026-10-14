@@ -9,6 +9,7 @@
 
 use crate::env::Harness;
 use crate::harness::kimi;
+use crate::layout::Layout;
 use crate::manifest::Manifest;
 use crate::ui::Ui;
 use std::fs;
@@ -60,11 +61,9 @@ impl Watch {
 /// What an install may create, for [`watch_install`].
 #[derive(Debug, Clone, Copy)]
 pub struct Targets<'a> {
-    /// The harness home.
-    pub home: &'a Path,
-    /// The install writes into `<home>/rules`.
+    /// The install writes into the layout's rules folder.
     pub rules: bool,
-    /// The install writes into `<home>/skills`.
+    /// The install writes into the layout's skills folder.
     pub skills: bool,
     /// The binary folder, when binaries are installed or servers registered.
     pub bin_dir: Option<&'a Path>,
@@ -72,26 +71,41 @@ pub struct Targets<'a> {
     pub servers: bool,
 }
 
-/// Takes the snapshot for an install into `harness`.
-pub fn watch_install(harness: Harness, t: &Targets<'_>) -> Watch {
-    let mut dirs = vec![t.home.to_path_buf()];
+/// Takes the snapshot for an install into the harness home `layout` describes.
+pub fn watch_install(layout: &Layout, t: &Targets<'_>) -> Watch {
+    let home = &layout.home;
+    let mut dirs = vec![home.to_path_buf()];
     let mut files = Vec::new();
+    if layout.manual_dir != *home {
+        dirs.push(layout.manual_dir.clone());
+    }
+    if layout.manifest_dir != *home {
+        dirs.push(layout.manifest_dir.clone());
+    }
     if t.rules {
-        dirs.push(t.home.join("rules"));
+        dirs.push(layout.rules_dir.clone());
     }
     if t.skills {
-        dirs.push(t.home.join("skills"));
+        dirs.push(layout.skills_dir.clone());
     }
     if let Some(b) = t.bin_dir {
         dirs.push(b.to_path_buf());
     }
     if t.servers {
-        if harness != Harness::Claude {
-            dirs.push(t.home.join("slate-agent-kit"));
+        if layout.state_home != *home {
+            dirs.push(layout.state_home.clone());
         }
-        if harness == Harness::Kimi {
-            dirs.push(kimi::plugin_root(t.home));
-            files.push(kimi::registry_path(t.home));
+        if layout.harness == Harness::Kimi {
+            dirs.push(kimi::plugin_root(home));
+            files.push(kimi::registry_path(home));
+        }
+        if layout.harness == Harness::Agy {
+            // The approvals go into `antigravity-cli/settings.json`, which the
+            // installer creates when agy has not written it yet.
+            if let Some(parent) = layout.config_file.parent() {
+                dirs.push(parent.to_path_buf());
+            }
+            files.push(layout.config_file.clone());
         }
     }
     Watch::new(dirs, files)

@@ -15,12 +15,15 @@ docs/glossary.rst
 adapters/claude/tokens.sed
 adapters/codex/tokens.sed
 adapters/kimi/tokens.sed
+adapters/agy/tokens.sed
 adapters/claude/surface.md
 adapters/codex/surface.md
 adapters/kimi/surface.md
+adapters/agy/surface.md
 adapters/claude/inserts/models-table.md
 adapters/codex/inserts/models-table.md
 adapters/kimi/inserts/models-table.md
+adapters/agy/inserts/models-table.md
 shared/rules/constitution.md
 shared/rules/implementing/execution.md
 shared/rules/implementing/delegation.md
@@ -59,7 +62,7 @@ for path in $required; do
   fi
 done
 
-for path in kits/claude-agent-kit kits/codex-agent-kit kits/kimi-agent-kit; do
+for path in kits/claude-agent-kit kits/codex-agent-kit kits/kimi-agent-kit kits/agy-agent-kit; do
   if [ ! -d "$ROOT/$path/.git" ] && [ ! -f "$ROOT/$path/.git" ]; then
     echo "missing submodule checkout: $path" >&2
     fail=1
@@ -68,7 +71,7 @@ done
 
 # ── 2. insert integrity ───────────────────────────────────
 # Every {{@INSERT name}} marker in shared sources / surfaces must have an
-# insert file for ALL THREE adapters (empty file = no contribution; missing
+# insert file for EVERY adapter (empty file = no contribution; missing
 # file = hard error at render time — assert it here too). No orphan insert
 # files, no nested markers inside insert files.
 
@@ -78,7 +81,7 @@ markers=$(grep -rhoE '^\{\{@INSERT [a-z0-9-]+\}\}$' \
   | sed 's/{{@INSERT \([a-z0-9-]*\)}}/\1/' | sort -u)
 
 for m in $markers; do
-  for h in claude codex kimi; do
+  for h in claude codex kimi agy; do
     if [ ! -f "$ROOT/adapters/$h/inserts/$m.md" ]; then
       echo "insert file missing for marker '$m': adapters/$h/inserts/$m.md" >&2
       fail=1
@@ -86,7 +89,7 @@ for m in $markers; do
   done
 done
 
-for h in claude codex kimi; do
+for h in claude codex kimi agy; do
   for f in "$ROOT/adapters/$h/inserts/"*.md; do
     [ -e "$f" ] || continue
     name=$(basename "$f" .md)
@@ -101,7 +104,7 @@ for h in claude codex kimi; do
   done
 done
 
-# ── 3. rendered output audit (all three kits) ─────────────
+# ── 3. rendered output audit (every kit) ─────────────
 
 check_rendered_file() {
   f="$1"
@@ -121,7 +124,7 @@ check_rendered_file() {
   fi
 }
 
-for kit in claude codex kimi; do
+for kit in claude codex kimi agy; do
   kd="$ROOT/kits/${kit}-agent-kit"
   primary=AGENTS.md
   [ "$kit" = claude ] && primary=CLAUDE.md
@@ -145,11 +148,37 @@ for kit in claude codex kimi; do
   [ "$kit" = claude ] && [ -e "$kd/CLAUDE.md" ] && { echo "earlier-layout leftover: $kd/CLAUDE.md" >&2; fail=1; }
 done
 
+# ── 3b. Antigravity frontmatter and per-file limit ────────
+# Antigravity loads a rules-folder file only when it opens with a closed YAML
+# frontmatter block, and drops a file over 24,000 bytes; the manual carries no
+# block. The block is a fixed two-key shape, so the check is exact: the four
+# lines, in order, with the description quoted and the signature right after.
+
+agy_kd="$ROOT/kits/agy-agent-kit"
+for f in "$agy_kd"/dist/rules/*.md "$agy_kd"/dist/prefs/*.md; do
+  [ -f "$f" ] || continue
+  l1=$(sed -n '1p' "$f"); l2=$(sed -n '2p' "$f"); l3=$(sed -n '3p' "$f"); l4=$(sed -n '4p' "$f"); l5=$(sed -n '5p' "$f")
+  if [ "$l1" != "---" ] || [ "$l2" != "trigger: always_on" ] || [ "$l4" != "---" ] \
+     || ! printf '%s' "$l3" | grep -Eq '^description: "[^"]+"$' \
+     || ! printf '%s' "$l5" | grep -Eq '^<!-- (slate-agent-kit:common|agy-agent-kit(-custom:[a-z-]+)?) -->$'; then
+    echo "agy frontmatter malformed (want ---, trigger: always_on, description: \"...\", ---, signature): $f" >&2
+    fail=1
+  fi
+  if [ "$(wc -c < "$f")" -gt 24000 ]; then
+    echo "agy rule file over Antigravity's 24,000-byte limit: $f" >&2
+    fail=1
+  fi
+done
+if [ -f "$agy_kd/dist/AGENTS.md" ] && [ "$(sed -n '1p' "$agy_kd/dist/AGENTS.md")" = "---" ]; then
+  echo "agy manual must not carry frontmatter: $agy_kd/dist/AGENTS.md" >&2
+  fail=1
+fi
+
 # ── 4. harness-leak greps ─────────────────────────────────
 # Claude-only machinery must not leak into codex/kimi renders, and vice versa.
 # workslate must not appear in any render.
 
-for kit in codex kimi; do
+for kit in codex kimi agy; do
   leaks=$(grep -rEn 'workslate|advisor\(\)|Agent Team|ScheduleWakeup|ultracode|CLAUDE\.md' \
       "$ROOT/kits/${kit}-agent-kit/dist/rules" "$ROOT/kits/${kit}-agent-kit/dist/AGENTS.md" 2>/dev/null || true)
   if [ -n "$leaks" ]; then
@@ -159,7 +188,7 @@ for kit in codex kimi; do
   fi
 done
 
-claude_leaks=$(grep -rEn 'workslate|AgentSwarm|TodoList|apply_patch|KIMI_CODE_HOME|CODEX_HOME|update_plan|TaskOutput|disable_timeout|write_stdin|yield_time_ms' \
+claude_leaks=$(grep -rEn 'workslate|AgentSwarm|TodoList|apply_patch|KIMI_CODE_HOME|CODEX_HOME|update_plan|TaskOutput|disable_timeout|write_stdin|yield_time_ms|run_command|command_status|WaitMsBeforeAsync|invoke_subagent' \
     "$ROOT/kits/claude-agent-kit/dist/CLAUDE.md" "$ROOT/kits/claude-agent-kit/dist/rules" 2>/dev/null || true)
 if [ -n "$claude_leaks" ]; then
   echo "non-claude surface bindings leaked into claude render:" >&2
@@ -168,16 +197,23 @@ if [ -n "$claude_leaks" ]; then
 fi
 
 # The waiting means of one harness must not leak into another render.
-codex_wait_leaks=$(grep -rEn 'TaskOutput|disable_timeout|run_in_background' "$ROOT/kits/codex-agent-kit/dist/rules" "$ROOT/kits/codex-agent-kit/dist/AGENTS.md" 2>/dev/null || true)
+codex_wait_leaks=$(grep -rEn 'TaskOutput|disable_timeout|run_in_background|run_command|command_status' "$ROOT/kits/codex-agent-kit/dist/rules" "$ROOT/kits/codex-agent-kit/dist/AGENTS.md" 2>/dev/null || true)
 if [ -n "$codex_wait_leaks" ]; then
   echo "another harness's waiting means leaked into codex render:" >&2
   echo "$codex_wait_leaks" | head -5 >&2
   fail=1
 fi
-kimi_wait_leaks=$(grep -rEn -- 'write_stdin|yield_time_ms|run_in_background: true' "$ROOT/kits/kimi-agent-kit/dist/rules" "$ROOT/kits/kimi-agent-kit/dist/AGENTS.md" 2>/dev/null || true)
+kimi_wait_leaks=$(grep -rEn -- 'write_stdin|yield_time_ms|run_in_background: true|run_command|command_status' "$ROOT/kits/kimi-agent-kit/dist/rules" "$ROOT/kits/kimi-agent-kit/dist/AGENTS.md" 2>/dev/null || true)
 if [ -n "$kimi_wait_leaks" ]; then
   echo "another harness's waiting means leaked into kimi render:" >&2
   echo "$kimi_wait_leaks" | head -5 >&2
+  fail=1
+fi
+
+agy_leaks=$(grep -rEn 'TaskOutput|disable_timeout|run_in_background|write_stdin|yield_time_ms|AgentSwarm|TodoList|apply_patch|update_plan|spawn_agent|KIMI_CODE_HOME|CODEX_HOME' "$ROOT/kits/agy-agent-kit/dist/rules" "$ROOT/kits/agy-agent-kit/dist/AGENTS.md" 2>/dev/null || true)
+if [ -n "$agy_leaks" ]; then
+  echo "another harness's surface or waiting means leaked into agy render:" >&2
+  echo "$agy_leaks" | head -5 >&2
   fail=1
 fi
 
@@ -208,7 +244,7 @@ fi
 # The rules and manuals use the glossary's terms (docs/glossary.rst) and state
 # purpose and judgment, never a mandatory trigger.
 
-for kit in claude codex kimi; do
+for kit in claude codex kimi agy; do
   hits=$(grep -rniE '\b(story|stories|slice|slices|handoff|hand-off)\b|\\b(INV|GATE)-[A-Z]|whether or not the user asked|do not reconsider|use them without asking' \
       "$ROOT/kits/${kit}-agent-kit/dist/rules" "$ROOT"/kits/${kit}-agent-kit/dist/*.md 2>/dev/null || true)
   if [ -n "$hits" ]; then
@@ -288,8 +324,9 @@ corpus_bytes() {
 claude_bytes=$(corpus_bytes "$ROOT/kits/claude-agent-kit/dist/CLAUDE.md" "$ROOT"/kits/claude-agent-kit/dist/rules/*.md)
 codex_bytes=$(corpus_bytes "$ROOT/kits/codex-agent-kit/dist/AGENTS.md" "$ROOT"/kits/codex-agent-kit/dist/rules/*.md)
 kimi_bytes=$(corpus_bytes "$ROOT/kits/kimi-agent-kit/dist/AGENTS.md" "$ROOT"/kits/kimi-agent-kit/dist/rules/*.md)
+agy_bytes=$(corpus_bytes "$ROOT/kits/agy-agent-kit/dist/AGENTS.md" "$ROOT"/kits/agy-agent-kit/dist/rules/*.md)
 
-echo "standing corpus: claude=${claude_bytes}B codex=${codex_bytes}B kimi=${kimi_bytes}B"
+echo "standing corpus: claude=${claude_bytes}B codex=${codex_bytes}B kimi=${kimi_bytes}B agy=${agy_bytes}B"
 budget_check() {
   kit="$1"; n="$2"; cap="$3"
   if [ "$n" -gt "$cap" ]; then
@@ -300,6 +337,7 @@ budget_check() {
 budget_check claude "$claude_bytes" 34000
 budget_check codex "$codex_bytes" 34000
 budget_check kimi "$kimi_bytes" 33000
+budget_check agy "$agy_bytes" 34000
 
 # ── 9. rendered titles ────────────────────────────────────
 
@@ -313,6 +351,11 @@ if ! grep -n "Kimi Agent Operating Manual" "$ROOT/kits/kimi-agent-kit/dist/AGENT
   fail=1
 fi
 
+if ! grep -n "Antigravity Agent Operating Manual" "$ROOT/kits/agy-agent-kit/dist/AGENTS.md" >/dev/null 2>&1; then
+  echo "agy adapter did not render Antigravity title" >&2
+  fail=1
+fi
+
 if ! grep -n "Claude Agent Operating Manual" "$ROOT/kits/claude-agent-kit/dist/CLAUDE.md" >/dev/null 2>&1; then
   echo "claude adapter did not render Claude title" >&2
   fail=1
@@ -323,7 +366,7 @@ fi
 # what to install. Both are rendered, so a missing or malformed one means the
 # render is stale.
 
-for kit in claude codex kimi; do
+for kit in claude codex kimi agy; do
   kd="$ROOT/kits/${kit}-agent-kit"
   for f in install.sh Makefile install.ps1; do
     [ -f "$kd/$f" ] || { echo "$kit: missing entry point $f" >&2; fail=1; }
@@ -340,7 +383,7 @@ done
 
 # Parse-check the PowerShell installers when pwsh is available (advisory otherwise).
 if command -v pwsh >/dev/null 2>&1; then
-  for kit in claude codex kimi; do
+  for kit in claude codex kimi agy; do
     ps1="$ROOT/kits/${kit}-agent-kit/install.ps1"
     [ -f "$ps1" ] || continue
     errcount=$(pwsh -NoProfile -Command "\$e=[ref]\$null; \$null=[System.Management.Automation.Language.Parser]::ParseFile('$ps1', [ref]\$null, \$e); \$e.Value.Count" 2>/dev/null)

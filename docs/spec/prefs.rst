@@ -49,23 +49,24 @@ The allowed values:
 
 consult
   ``level`` (``on-request``, ``suggest``, ``auto``; default ``suggest``);
-  ``backend`` (``codex``, ``claude``); per backend ``model``, ``effort``
-  (``low``, ``medium``, ``high``, ``xhigh``, ``max``, or blank) and
-  ``fallback`` (a comma-separated model list, or blank), as
-  ``consult.codex.model`` and so on. Only the chosen backend's values are
-  asked. A file that still carries the settings of an earlier backend
-  installs; the installer reports them in one warning line and treats them,
-  and a ``backend`` value naming that backend, as blank.
+  ``backend`` (``codex``, ``claude``; ``agy`` is not a consultation backend);
+  per backend ``model``, ``effort`` (``low``, ``medium``, ``high``, ``xhigh``,
+  ``max``, or blank) and ``fallback`` (a comma-separated model list, or
+  blank), as ``consult.codex.model`` and so on. Only the chosen backend's
+  values are asked. A file that still carries the settings of an earlier
+  backend installs; the installer reports them in one warning line and treats
+  them, and a ``backend`` value naming that backend, as blank.
 
 dispatch
   ``level`` (default ``suggest``); ``backend`` (``codex``, ``opencode``,
-  ``claude``); ``model``; ``effort`` (``low``, ``medium``, ``high``, ``xhigh``,
-  or blank); ``fallback``.
+  ``claude``, ``agy``); ``model``; ``effort`` (``low``, ``medium``, ``high``,
+  ``xhigh``, or blank); ``fallback``.
 
 subagent
   ``level`` (default ``suggest``); ``model`` (blank: the harness default;
-  validated per spec/installer.rst *Native configuration*); ``effort`` (Codex
-  and Kimi only).
+  validated per spec/installer.rst *Native configuration*; for Antigravity,
+  which has no subagent default-model setting, a value the agent passes to
+  ``define_subagent``); ``effort`` (Codex and Kimi only).
 
 git
   ``signing`` (``default``, ``no-gpg-sign``, ``unset``); ``attribution``

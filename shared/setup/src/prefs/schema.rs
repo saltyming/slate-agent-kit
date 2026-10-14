@@ -53,11 +53,13 @@ pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 /// Consultation backends.
 pub const CONSULT_BACKENDS: &[&str] = &["codex", "claude"];
 /// Dispatch backends.
-pub const DISPATCH_BACKENDS: &[&str] = &["codex", "opencode", "claude"];
+pub const DISPATCH_BACKENDS: &[&str] = &["codex", "opencode", "claude", "agy"];
 /// Codex subagent efforts.
 pub const CODEX_SUBAGENT_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
 /// Kimi subagent efforts.
 pub const KIMI_SUBAGENT_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+/// agy subagent efforts (informational: agy has no subagent default setting).
+pub const AGY_SUBAGENT_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 /// Claude model aliases accepted for the subagent model.
 pub const CLAUDE_MODEL_ALIASES: &[&str] = &["sonnet", "opus", "haiku", "fable", "inherit"];
 
@@ -314,11 +316,12 @@ pub fn menu(setting: &Setting, ctx: &ValidationCtx) -> Option<Vec<String>> {
             Harness::Claude => None,
             Harness::Codex => Some(owned(CODEX_SUBAGENT_EFFORTS)),
             Harness::Kimi => Some(owned(KIMI_SUBAGENT_EFFORTS)),
+            Harness::Agy => Some(owned(AGY_SUBAGENT_EFFORTS)),
         },
         Kind::SubagentModel => match ctx.harness {
             Harness::Claude => Some(owned(CLAUDE_MODEL_ALIASES)),
             Harness::Kimi => ctx.kimi_models.clone(),
-            Harness::Codex => None,
+            Harness::Codex | Harness::Agy => None,
         },
         _ => None,
     }
@@ -453,6 +456,8 @@ pub fn validate_subagent_model(
             )),
             _ => Err("the Kimi configuration defines no [models] aliases, so a secondary model cannot be set".into()),
         },
+        // Informational: nothing is written to agy, so any model name is kept as typed.
+        Harness::Agy => Ok(()),
     }
 }
 
@@ -468,6 +473,7 @@ pub fn validate_subagent_effort(
         Harness::Claude => Err("the subagent effort is not configurable in Claude Code".into()),
         Harness::Codex => one_of(value, CODEX_SUBAGENT_EFFORTS),
         Harness::Kimi => one_of(value, KIMI_SUBAGENT_EFFORTS),
+        Harness::Agy => one_of(value, AGY_SUBAGENT_EFFORTS),
     }
 }
 

@@ -3,8 +3,10 @@
 //!
 //! Entry points: [`CapturePolicy`] (with the [`CapturePolicy::aside`] and
 //! [`CapturePolicy::dispatch`] presets) chosen by the server; `read_capped`,
-//! which `run` spawns once per stream so both are read concurrently; and
-//! `clip`, which applies the failure cap to stdout already kept. A stream is
+//! which `run` spawns once per stream so both are read concurrently;
+//! `CapBuffer`, the same cap for bytes a caller produces itself (the agy
+//! normaliser's text deltas); and `clip`, which applies the failure cap to
+//! stdout already kept. A stream is
 //! read to its end: bytes past the cap are drained, so the child never blocks
 //! on a full pipe, and discarded; the loss is reported as `truncated`, never
 //! written into the text. Character slicing never splits a code point.
@@ -114,62 +116,101 @@ pub(crate) async fn read_capped<R: AsyncRead + Unpin>(reader: Option<R>, cap: Ca
     let Some(mut r) = reader else {
         return Captured::default();
     };
-    // A character is at most four UTF-8 bytes, so `4 * limit` bytes hold at
-    // least `limit` whole characters; a tail keeps three more so that the
-    // partial character its cut may start with can be dropped.
-    let budget = match (cap.unit, cap.keep) {
-        (Unit::Bytes, _) => cap.limit,
-        (Unit::Chars, Keep::Head) => cap.limit.saturating_mul(4),
-        (Unit::Chars, Keep::Tail) => cap.limit.saturating_mul(4).saturating_add(3),
-    };
-    let mut buf: Vec<u8> = Vec::new();
+    let mut kept = CapBuffer::new(cap);
     let mut chunk = [0u8; 8192];
-    let mut total: u64 = 0;
     loop {
         let n = match r.read(&mut chunk).await {
             Ok(0) | Err(_) => break,
             Ok(n) => n,
         };
-        total += n as u64;
-        match cap.keep {
+        kept.push(&chunk[..n]);
+    }
+    kept.finish()
+}
+
+/// A stream kept under one cap as its bytes arrive: what [`read_capped`]
+/// does with a reader, for a caller that produces the bytes itself (the agy
+/// normaliser feeds it the text deltas of its event stream).
+#[derive(Debug)]
+pub(crate) struct CapBuffer {
+    cap: Cap,
+    /// How many raw bytes are retained before the final cut.
+    budget: usize,
+    buf: Vec<u8>,
+    total: u64,
+}
+
+impl CapBuffer {
+    pub(crate) fn new(cap: Cap) -> Self {
+        // A character is at most four UTF-8 bytes, so `4 * limit` bytes hold at
+        // least `limit` whole characters; a tail keeps three more so that the
+        // partial character its cut may start with can be dropped.
+        let budget = match (cap.unit, cap.keep) {
+            (Unit::Bytes, _) => cap.limit,
+            (Unit::Chars, Keep::Head) => cap.limit.saturating_mul(4),
+            (Unit::Chars, Keep::Tail) => cap.limit.saturating_mul(4).saturating_add(3),
+        };
+        CapBuffer {
+            cap,
+            budget,
+            buf: Vec::new(),
+            total: 0,
+        }
+    }
+
+    /// Take the next bytes of the stream.
+    pub(crate) fn push(&mut self, bytes: &[u8]) {
+        let n = bytes.len();
+        self.total += n as u64;
+        match self.cap.keep {
             Keep::Head => {
-                if buf.len() < budget {
-                    let take = (budget - buf.len()).min(n);
-                    buf.extend_from_slice(&chunk[..take]);
+                if self.buf.len() < self.budget {
+                    let take = (self.budget - self.buf.len()).min(n);
+                    self.buf.extend_from_slice(&bytes[..take]);
                 }
                 // else: drain and discard the overflow.
             }
             Keep::Tail => {
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.len() > budget.saturating_mul(2) {
-                    buf.drain(..buf.len() - budget);
+                self.buf.extend_from_slice(bytes);
+                if self.buf.len() > self.budget.saturating_mul(2) {
+                    self.buf.drain(..self.buf.len() - self.budget);
                 }
             }
         }
     }
-    if cap.keep == Keep::Tail && buf.len() > budget {
-        buf.drain(..buf.len() - budget);
-    }
-    let bytes_dropped = total > buf.len() as u64;
-    if cap.unit == Unit::Chars && cap.keep == Keep::Tail && bytes_dropped {
-        // The cut may have landed inside a character: skip its continuation
-        // bytes rather than decode them as replacement characters.
-        let skip = buf
-            .iter()
-            .take(3)
-            .take_while(|b| (**b & 0xC0) == 0x80)
-            .count();
-        buf.drain(..skip);
-    }
-    let decoded = String::from_utf8_lossy(&buf).into_owned();
-    let (text, chars_dropped) = match cap.unit {
-        Unit::Bytes => (decoded, false),
-        Unit::Chars => clip(&decoded, cap),
-    };
-    Captured {
-        text,
-        total,
-        truncated: bytes_dropped || chars_dropped,
+
+    /// The text kept, the bytes seen and whether anything is missing.
+    pub(crate) fn finish(self) -> Captured {
+        let CapBuffer {
+            cap,
+            budget,
+            mut buf,
+            total,
+        } = self;
+        if cap.keep == Keep::Tail && buf.len() > budget {
+            buf.drain(..buf.len() - budget);
+        }
+        let bytes_dropped = total > buf.len() as u64;
+        if cap.unit == Unit::Chars && cap.keep == Keep::Tail && bytes_dropped {
+            // The cut may have landed inside a character: skip its continuation
+            // bytes rather than decode them as replacement characters.
+            let skip = buf
+                .iter()
+                .take(3)
+                .take_while(|b| (**b & 0xC0) == 0x80)
+                .count();
+            buf.drain(..skip);
+        }
+        let decoded = String::from_utf8_lossy(&buf).into_owned();
+        let (text, chars_dropped) = match cap.unit {
+            Unit::Bytes => (decoded, false),
+            Unit::Chars => clip(&decoded, cap),
+        };
+        Captured {
+            text,
+            total,
+            truncated: bytes_dropped || chars_dropped,
+        }
     }
 }
 

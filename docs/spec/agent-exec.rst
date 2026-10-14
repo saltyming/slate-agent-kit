@@ -29,18 +29,34 @@ Definitions and model
 Backend
 ~~~~~~~
 
-``Backend`` is ``Codex`` or ``Claude``: a CLI spawned as a process with the
-prompt on stdin. Each names its binary, an install hint and a ``--version``
-probe. Opencode is not a process backend: dispatch drives ``opencode serve``
-over HTTP in its own runner and reports through the types below.
+``Backend`` is ``Codex``, ``Claude`` or ``Agy``: a CLI spawned as a process
+with the prompt on stdin. Each names its binary, an install hint and a
+``--version`` probe. ``Agy`` is the Antigravity CLI (``agy``) and serves
+execution only; dispatch refuses it for a consultation. Each backend also
+fixes how the prompt is written and how the outcome is decided:
+``Backend::input_encoding()`` is ``InputEncoding::Verbatim`` for codex and
+claude and ``InputEncoding::AgyStreamJson`` for agy (the prompt serialised as
+the one line ``{"event":"user","message":{"role":"user","content":<prompt>}}``,
+a newline, then end of input, by ``InputEncoding::encode``);
+``Backend::result_normaliser()`` is ``ResultNormaliser::ExitStatus`` for codex
+and claude and ``ResultNormaliser::AgyStreamJson`` for agy (Outcome and
+RunRecord). ``Backend::sandbox_refusal(sandbox)`` names the reason a backend
+cannot run under a sandbox level, before anything is spawned (agy: the
+read-only level, because headless agy has no read-only execution). Opencode is
+not a process backend: dispatch drives ``opencode serve`` over HTTP in its own
+runner and reports through the types below.
 
 Sandbox
 ~~~~~~~
 
 ``Sandbox`` is ``ReadOnly``, ``WorkspaceWrite`` or ``DangerFullAccess``. Codex
 receives it as ``-s``; Claude as a permission mode (``plan``; ``acceptEdits``
-with ``Bash`` allowed; ``--dangerously-skip-permissions``). The ceiling that
-refuses ``DangerFullAccess`` belongs to the server.
+with ``Bash`` allowed; ``--dangerously-skip-permissions``); Agy always runs
+with ``--dangerously-skip-permissions`` (headless agy denies every tool that
+needs a permission otherwise), adds ``--sandbox`` (its terminal sandbox) for
+``WorkspaceWrite``, adds nothing for ``DangerFullAccess``, and refuses
+``ReadOnly`` through ``Backend::sandbox_refusal`` before the spawn. The
+ceiling that refuses ``DangerFullAccess`` belongs to the server.
 
 Isolation
 ~~~~~~~~~
@@ -60,8 +76,11 @@ a backend run with ``-a never`` cannot call a tool the configuration has not
 approved; every value is a TOML string, since Codex rejects an integer there.
 For Claude: ``SafeMode { tools }`` (``--safe-mode --no-session-persistence
 --permission-mode plan --tools <list>``) or ``Permissions`` (the sandbox
-mapping alone). Every spawned process also carries the re-entry marker (see
-Re-entry).
+mapping alone). For Agy: ``Permissions`` only; agy has no configuration
+override for one run and passes its own environment to the MCP servers it
+starts, so the re-entry marker on the process environment reaches a nested
+dispatch, and a nested agy sees every server the user registered. Every
+spawned process also carries the re-entry marker (see Re-entry).
 
 OutputMode
 ~~~~~~~~~~
@@ -72,6 +91,11 @@ consultation sends), ``Json`` (Claude ``--output-format json``) or
 ``JsonStream`` (Codex ``exec --json``). ``Json`` and ``JsonStream`` are what
 usage is parsed from; the other modes yield a record whose ``usage`` is
 ``None`` unless the caller later attaches usage parsed from a session file.
+Agy takes no output mode flag from the spec: its argv always carries
+``--input-format stream-json --output-format stream-json --print-timeout 0``,
+its stdout is a stream of NDJSON events (``init``, ``step_update``,
+``result``) that the agy result normaliser reads, and its usage comes from the
+``result`` event (Usage mapping).
 
 CapturePolicy
 ~~~~~~~~~~~~~
@@ -84,7 +108,12 @@ record. The consultation policy: stdout 50 KB head by character, stderr 2 KB
 tail by character, failure stdout 2 KB head by character. The execution
 policy: stdout
 200 KB head by byte, stderr 16 KB head by byte, failure stdout the same as
-stdout.
+stdout. For agy the policy governs the retained diagnostic text only: the
+stream is read to its end whatever the cap, the ``init`` and ``result`` events
+are parsed as they arrive and kept apart from the retained capture (a
+``result`` line over 8 MB is not read and the run fails saying so), and the
+retained ``stdout`` holds the raw event lines under the cap, so the fields
+that decide the outcome are never lost to the cap.
 
 FailureTextPolicy
 ~~~~~~~~~~~~~~~~~
@@ -94,7 +123,15 @@ stdout for the backends listed in ``stdout_for`` (both kinds: Claude only,
 because Claude prints the discriminating error on stdout and exits non-zero
 with only warnings on stderr, and a codex answer that mentions a rate limit
 must not read as one), clipped to ``stdout_tail`` characters when set
-(execution: 2,000; consultation: unset, the failure capture cap applies).
+(execution: 2,000; consultation: unset, the failure capture cap applies). For
+agy the result normaliser supplies ``RunRecord.failure_detail`` first: the
+result's ``error``, the ``AGY_ERROR`` line (stdout, else the last stderr line
+that names it), ``agy ended without a result event``, ``result event was not
+well-formed``, ``agy reported status <status>``, the over-bound text, or the
+denied-actions text (each denied action's ``display_name`` and that it needed
+a permission headless agy cannot grant); stderr follows it. A successful agy
+reply is never classified, so an error-like word inside ``response`` does not
+trigger a fallback.
 
 RunSpec
 ~~~~~~~
@@ -102,11 +139,13 @@ RunSpec
 One attempt: ``backend``, ``prompt``, ``working_dir`` (optional; set as the
 process directory and, for Codex, ``-C``), ``sandbox``, ``isolation``,
 ``output_mode``, ``capture``, ``failure_text``, ``model``,
-``reasoning_effort``, ``resume_session``, ``pin_session`` (Claude
+``reasoning_effort``, ``resume_session`` (Codex ``exec resume``, Claude
+``--resume``, Agy ``--conversation``), ``pin_session`` (Claude
 ``--session-id``; with ``resume_session`` it adds ``--fork-session``),
 ``skip_git_repo_check`` (Codex), ``env`` (extra variables), ``reentry`` (the
 marker name and ceiling) and ``guard`` (``Required``, ``Preferred`` or
-``Off``; see Guard).
+``Off``; see Guard). The input encoding and the result normaliser are not
+fields: the backend fixes them (Backend).
 
 RunEvent
 ~~~~~~~~
@@ -131,21 +170,35 @@ Outcome and RunRecord
 
 ``Outcome`` is ``Record(RunRecord)`` when the process was spawned and awaited
 (success or failure), ``NotFound { binary, hint }`` when ``which`` finds
-nothing, ``Spawn(message)`` when the process could not be started or writing
-its stdin failed for a reason other than a broken pipe, ``WaitFailed(message)``
-when awaiting its exit failed, ``Cancelled`` when the token fired. A broken
-pipe on stdin (the child exited before reading the prompt) is not a failure of
-its own: the exit status and the captured output decide the outcome, so the
-child's own error text reaches the classifier. The prompt is written while
-stdout and stderr are read, so neither side can block the other.
+nothing, ``Spawn(message)`` when the process could not be started, writing
+its stdin failed for a reason other than a broken pipe, or the backend refused
+the sandbox level before the spawn (``Backend::sandbox_refusal``),
+``WaitFailed(message)`` when awaiting its exit failed, ``Cancelled`` when the
+token fired. A broken pipe on stdin (the child exited before reading the
+prompt) is not a failure of its own: the exit status and the captured output
+decide the outcome, so the child's own error text reaches the classifier. The
+prompt is written while stdout and stderr are read, so neither side can block
+the other.
+
+The backend's result normaliser decides ``success``. ``ExitStatus`` (codex,
+claude): the exit status, as before; ``final_text`` is the retained stdout
+under ``Default`` and ``Text``, on success and on failure alike, and the
+backend's last assistant message when a JSON mode gives one.
+``AgyStreamJson`` (agy): success is exit 0 and a well-formed ``result`` event
+with ``status`` ``SUCCESS``, no ``error``, and not ``denied_actions`` beside an
+empty ``response``; ``final_text`` is ``response``, with a note naming the
+denied actions appended when ``denied_actions`` is present and the response
+is not empty; the ``init`` event's ``conversation_id`` is reported as
+``RunEvent::Session`` the moment it is read and stored as ``session_id``; an
+exit-0 run the normaliser fails keeps its exit code as observed.
 
 ``RunRecord`` is the serializable result of one attempt: ``backend``,
 ``argv``, ``model``, ``reasoning_effort``, ``started_at``, ``wall_ms``,
 ``exit_code``, ``success``, ``stdout`` and ``stderr`` as kept by the capture
-policy with ``stdout_total`` and the two truncation flags, ``final_text`` (the
-backend's last assistant message when the output mode gives one),
-``session_id`` when the backend reports one, ``backend_version``, and
-``usage: Option<Usage>``.
+policy with ``stdout_total`` and the two truncation flags, ``final_text`` (as
+above), ``failure_detail`` (the normaliser's own account of a failure, when it
+has one), ``session_id`` when the backend reports one, ``backend_version``,
+and ``usage: Option<Usage>``.
 
 Usage
 ~~~~~
@@ -263,6 +316,15 @@ Claude, in this order: ``-p``; the isolation and sandbox flags (``--safe-mode
 <effort>`` when set; ``--resume <session> --fork-session`` when resuming;
 ``--session-id <id>`` when pinned. The prompt is written to stdin.
 
+Agy, in this order: ``--dangerously-skip-permissions --input-format
+stream-json --output-format stream-json --print-timeout 0``; ``--sandbox``
+unless the sandbox is ``DangerFullAccess`` (``ReadOnly`` never reaches the
+spawn); ``--model <model>`` when set; ``--effort <effort>`` when set and the
+model slug does not already name its effort (``<slug>-low``, ``-medium``,
+``-high``); ``--conversation <session>`` when resuming. The prompt is written
+to stdin as the stream-json ``user`` event and stdin is closed; the working
+directory is the process directory.
+
 Usage mapping
 ~~~~~~~~~~~~~
 
@@ -292,6 +354,13 @@ Usage mapping
   ``cache_read = tokens.cache.read``, ``cache_write_5m = tokens.cache.write``,
   ``output = tokens.output + tokens.reasoning`` (opencode reports output
   without reasoning), ``reasoning = tokens.reasoning``.
+- agy (``agent-exec``'s normaliser, source ``agy_stream_json``, the
+  ``UsageSource::AgyStreamJson`` value): from the ``result`` event's
+  ``usage``, ``input_uncached = input_tokens``, ``cache_read =
+  cache_read_tokens`` (a bucket beside input: it exceeded ``input_tokens`` in
+  a probe), ``output = output_tokens`` (reasoning included: ``total_tokens =
+  input_tokens + output_tokens`` and ``thinking_tokens`` never exceeded it),
+  ``reasoning = thinking_tokens``; agy reports no cache write.
 
 A field absent from the source leaves its bucket ``None``; a parser never
 substitutes zero. Whether a ``cache_write_5m`` count costs more than plain
@@ -304,7 +373,11 @@ Session location
 ``harness-log`` keeps the location functions the servers use today: the
 Codex home and rollout listing, session metadata, the newest interactive
 rollout for a directory, the rollout for a nonce or a session id, and the
-Claude session file for a session id.
+Claude session file for a session id. An agy run's session is its
+``conversation_id`` from the ``init`` event, and its log is
+``<home>/.gemini/antigravity-cli/brain/<conversation_id>/.system_generated/logs/transcript.jsonl``
+(``home`` from ``HOME``, ``USERPROFILE`` on Windows); dispatch resolves it
+(``dispatch-server.rst``, Transcript), the crate only reports the identity.
 
 Errors and edge cases
 ---------------------
@@ -348,11 +421,22 @@ Conformance
 -----------
 
 - argv tests per backend, isolation and output mode assert the flag set and
-  order above.
+  order above, including agy's per sandbox level, with a model slug carrying
+  its effort, and when resuming.
 - Capture and failure-text tests reproduce each server's policy numbers.
 - Spawn, capture, truncation and cancellation tests run against a stub
   executable placed on ``PATH``; a fallback test shows the attempt builder
   called before each spawn.
+- The agy normaliser is tested on recorded fixtures and synthetic streams: the
+  stdin event line with quotes, newlines and non-ASCII; success; denials with
+  an empty and with a non-empty response; ``status`` ``ERROR``; exit 3 with an
+  ``AGY_ERROR`` line; exit 0 without a ``result``; a malformed ``result``; a
+  ``result`` over the bound; events split across reads and across UTF-8
+  boundaries; output beyond the capture cap with the ``result`` still read;
+  the exit code kept on an exit-0 failure; the usage mapping and an absent
+  field; the identity reported once from ``init``; the read-only refusal; an
+  error word inside a successful response left unclassified; and, for codex
+  and claude, ``final_text`` equal to the retained stdout before and after.
 - Each usage parser has a synthetic fixture and tests for an absent field,
   the codex clamp, the opencode output sum and the rollout baseline.
 - Guard tests run on Linux and macOS; the Job Object is exercised on

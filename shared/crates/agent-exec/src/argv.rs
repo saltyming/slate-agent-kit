@@ -20,6 +20,13 @@
 //! Claude, in order: `-p`; the isolation and sandbox flags; the output-mode
 //! format flags; `--model`; `--effort`; `--resume <session> --fork-session`;
 //! `--session-id <id>`.
+//!
+//! agy, in order: `--dangerously-skip-permissions --input-format stream-json
+//! --output-format stream-json --print-timeout 0`; `--sandbox` for
+//! workspace-write; `--model`; `--effort` unless the model slug already ends
+//! in an effort; `--conversation <session>` when resuming. The output mode and
+//! the isolation add nothing; the read-only level is refused by `run` before
+//! any spawn.
 
 use tokio::process::Command;
 
@@ -33,6 +40,7 @@ pub fn command(spec: &RunSpec) -> (Command, Vec<String>) {
     let args = match spec.backend {
         Backend::Codex => codex_args(spec),
         Backend::Claude => claude_args(spec),
+        Backend::Agy => agy_args(spec),
     };
     let binary = spec.backend.binary();
     let mut cmd = Command::new(binary);
@@ -245,6 +253,62 @@ fn claude_args(spec: &RunSpec) -> Vec<String> {
     args
 }
 
+fn agy_args(spec: &RunSpec) -> Vec<String> {
+    //   --dangerously-skip-permissions: headless agy cannot ask for a
+    //                 permission and auto-denies every unapproved tool, so an
+    //                 execution runs with all tools approved.
+    //   --input-format stream-json: the prompt arrives on stdin as one `user`
+    //                 event (never on argv: a long prompt passes the Windows
+    //                 command-line limit); requires stream-json output.
+    //   --output-format stream-json: NDJSON events (init, step_update,
+    //                 result), read by the agy result normaliser.
+    //   --print-timeout 0: wait for the turn however long it takes.
+    //   --sandbox:    agy's terminal sandbox, for workspace-write. ReadOnly is
+    //                 refused before the spawn (`Backend::sandbox_refusal`); its
+    //                 argv here is the most restrictive one, never run.
+    //   --effort <e>: left out when the model slug already names an effort
+    //                 (`claude-sonnet-5-5-low`), which agy takes as is.
+    //   --conversation <id>: resume that conversation with the new prompt.
+    let mut args: Vec<String> = [
+        "--dangerously-skip-permissions",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--print-timeout",
+        "0",
+    ]
+    .iter()
+    .map(|a| a.to_string())
+    .collect();
+    if spec.sandbox != Sandbox::DangerFullAccess {
+        args.push("--sandbox".into());
+    }
+    if let Some(m) = &spec.model {
+        args.push("--model".into());
+        args.push(m.clone());
+    }
+    if let Some(eff) = &spec.reasoning_effort
+        && !spec.model.as_deref().is_some_and(slug_names_effort)
+    {
+        args.push("--effort".into());
+        args.push(eff.clone());
+    }
+    if let Some(id) = &spec.resume_session {
+        args.push("--conversation".into());
+        args.push(id.clone());
+    }
+    args
+}
+
+/// Whether an agy model slug ends in an effort level (`-low`, `-medium`,
+/// `-high`, `-xhigh`, `-max`), as the `agy models` list names them.
+fn slug_names_effort(model: &str) -> bool {
+    model
+        .rsplit_once('-')
+        .is_some_and(|(_, last)| matches!(last, "low" | "medium" | "high" | "xhigh" | "max"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -310,7 +374,7 @@ mod tests {
             sandbox,
             isolation: match backend {
                 Backend::Codex => Isolation::DisableMcpServer("dispatch".into()),
-                Backend::Claude => Isolation::Permissions,
+                Backend::Claude | Backend::Agy => Isolation::Permissions,
             },
             output_mode: OutputMode::Default,
             capture: CapturePolicy::dispatch(),
@@ -725,5 +789,101 @@ mod tests {
         // A consultation: no working_dir → no -C and no process directory
         let (cmd, _) = command(&consult_codex(None, None));
         assert_eq!(cmd.as_std().get_current_dir(), None);
+    }
+    const AGY_BASE: [&str; 8] = [
+        "agy",
+        "--dangerously-skip-permissions",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--print-timeout",
+        "0",
+    ];
+
+    fn agy(rest: &[&str]) -> Vec<String> {
+        v(&AGY_BASE.iter().chain(rest).copied().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn agy_argv_per_sandbox_level() {
+        let mut spec = dispatch_spec(Backend::Agy, Sandbox::WorkspaceWrite);
+        assert_eq!(argv(&spec), agy(&["--sandbox"]));
+        spec.sandbox = Sandbox::DangerFullAccess;
+        assert_eq!(argv(&spec), agy(&[]));
+        // Never spawned (`run` refuses it), and the most restrictive if it were.
+        spec.sandbox = Sandbox::ReadOnly;
+        assert_eq!(argv(&spec), agy(&["--sandbox"]));
+        assert!(Backend::Agy.sandbox_refusal(Sandbox::ReadOnly).is_some());
+        assert_eq!(Backend::Agy.sandbox_refusal(Sandbox::WorkspaceWrite), None);
+        assert_eq!(
+            Backend::Agy.sandbox_refusal(Sandbox::DangerFullAccess),
+            None
+        );
+        for b in [Backend::Codex, Backend::Claude] {
+            assert_eq!(b.sandbox_refusal(Sandbox::ReadOnly), None);
+        }
+        // The output mode and every isolation variant add nothing.
+        spec.sandbox = Sandbox::WorkspaceWrite;
+        spec.output_mode = OutputMode::Json;
+        spec.isolation = Isolation::DisableMcpServer("dispatch".into());
+        assert_eq!(argv(&spec), agy(&["--sandbox"]));
+        // No positional prompt: it travels on stdin.
+        assert!(!argv(&spec).iter().any(|a| a.contains("rendered spec")));
+        // The process directory is the working directory.
+        let (cmd, _) = command(&spec);
+        assert_eq!(
+            cmd.as_std().get_current_dir(),
+            Some(PathBuf::from("/w").as_path())
+        );
+    }
+
+    #[test]
+    fn agy_argv_model_effort_and_steer() {
+        let mut spec = dispatch_spec(Backend::Agy, Sandbox::WorkspaceWrite);
+        spec.model = Some("claude-sonnet-5-5".into());
+        spec.reasoning_effort = Some("low".into());
+        assert_eq!(
+            argv(&spec),
+            agy(&[
+                "--sandbox",
+                "--model",
+                "claude-sonnet-5-5",
+                "--effort",
+                "low"
+            ])
+        );
+        // A slug that carries its effort is passed as is, with no --effort.
+        for slug in [
+            "claude-sonnet-5-5-low",
+            "gpt-oss-120b-medium",
+            "gemini-3.8-flash-high",
+        ] {
+            spec.model = Some(slug.into());
+            assert_eq!(argv(&spec), agy(&["--sandbox", "--model", slug]), "{slug}");
+        }
+        spec.model = None;
+        assert_eq!(argv(&spec), agy(&["--sandbox", "--effort", "low"]));
+
+        // steer: resume the stored conversation; the new instruction goes on
+        // stdin.
+        spec.reasoning_effort = None;
+        spec.resume_session = Some("e195bb9c-conv".into());
+        spec.pin_session = Some("ignored".into());
+        spec.skip_git_repo_check = true;
+        assert_eq!(
+            argv(&spec),
+            agy(&["--sandbox", "--conversation", "e195bb9c-conv"])
+        );
+    }
+
+    #[test]
+    fn effort_suffixes_are_recognised() {
+        for yes in ["a-low", "a-medium", "a-high", "a-xhigh", "a-max"] {
+            assert!(slug_names_effort(yes), "{yes}");
+        }
+        for no in ["gemini-3.8-flash", "claude-opus-5-5", "low", "a-lowest", ""] {
+            assert!(!slug_names_effort(no), "{no}");
+        }
     }
 }

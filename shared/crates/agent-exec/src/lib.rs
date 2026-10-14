@@ -1,10 +1,12 @@
-//! Runs one headless invocation of a backend CLI (codex, claude) for the
+//! Runs one headless invocation of a backend CLI (codex, claude, agy) for the
 //! servers of this workspace and returns one record per run with the
 //! backend's token usage normalized.
 //!
 //! The crate owns binary lookup ([`which`], [`version`], [`install_hint`]),
 //! argv construction ([`command`]), spawning under the guard ([`guard`]),
-//! output capture under a policy ([`CapturePolicy`]), cancellation, failure
+//! output capture under a policy ([`CapturePolicy`]), the backend's input
+//! encoding and result normaliser ([`InputEncoding`], [`ResultNormaliser`]),
+//! cancellation, failure
 //! classification ([`errkind`], [`failure_text`]) and the model fallback loop
 //! ([`run`], [`run_with_fallback`]). A server decides what to run
 //! ([`RunSpec`]) and what to do with the result: the crate writes no file and
@@ -18,6 +20,7 @@
 //! running executable, so a program that links it needs no guard code in its
 //! `main`. A server refuses nested requests with [`reentry::refused`].
 
+mod agy;
 mod argv;
 mod capture;
 mod discovery;
@@ -38,4 +41,7 @@ pub use run::{
     AttemptResult, DiscardedAttempt, FallbackOutcome, Outcome, RunEvent, RunRecord, fallback_chain,
     run, run_with_fallback,
 };
-pub use spec::{Backend, GuardMode, Isolation, OutputMode, Reentry, RunSpec, Sandbox};
+pub use spec::{
+    Backend, GuardMode, InputEncoding, Isolation, OutputMode, Reentry, ResultNormaliser, RunSpec,
+    Sandbox,
+};
