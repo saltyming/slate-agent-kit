@@ -512,7 +512,8 @@ fn upgrading_over_a_previous_manifest_keeps_user_owned_files() {
 
     // The user edits a prefs value by hand and keeps a rule of their own beside the kit's.
     let git = sb.prefs_path("git");
-    let edited = fs::read_to_string(&git).unwrap().replace(
+    // A Windows checkout gives the payload's templates CRLF line endings.
+    let edited = read(&git).replace(
         "## Commit signing\n\n**unset**",
         "## Commit signing\n\n**no-gpg-sign**",
     );
