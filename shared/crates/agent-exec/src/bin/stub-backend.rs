@@ -11,9 +11,10 @@
 //! Modes:
 //! - `--version`: print `stub 1.0 <value>`, the value being that of the
 //!   variable named by `STUB_MARKER_NAME` (empty when unset).
-//! - `__sleep <ms> [<tag>...]`: sleep, then exit 0. Selected by argv, not by
-//!   the environment, so the child a backend starts in this mode can never
-//!   start another; the tags only make the process findable.
+//! - `__sleep <ms> <tag> [<pid-file>]`: write this process's id to
+//!   `<pid-file>` when one is given, sleep, then exit 0. Selected by argv, not
+//!   by the environment, so the child a backend starts in this mode can never
+//!   start another; the tag only makes the process findable.
 //! - anything else: the backend below.
 //!
 //! Backend variables: `STUB_ARGS_FILE` (write the argv after the binary, one
@@ -24,7 +25,8 @@
 //! `STUB_STDOUT` / `STUB_STDERR` (literal text), `STUB_STDOUT_REPEAT` /
 //! `STUB_STDERR_REPEAT` (print `STUB_FILL`, default `a`, that many times),
 //! `STUB_CHILD_TAG` (start `__sleep <STUB_CHILD_SLEEP_MS, default 120000>
-//! <tag>` as a child and write its pid to `STUB_CHILD_PID_FILE`; with
+//! <tag>` as a child, which writes its own pid to `STUB_CHILD_PID_FILE` once
+//! it runs; with
 //! `STUB_CHILD_INHERIT_STDIO=1` the child holds this process's stdout and
 //! stderr), `STUB_SLEEP_MS`, `STUB_SIGNAL` (Unix: end by
 //! raising that signal) and `STUB_EXIT` (default 0).
@@ -43,6 +45,12 @@ fn main() {
         }
         Some("__sleep") => {
             let ms = args.get(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            // Written by the child itself, so a test that reads it knows the
+            // child is running, not only created: on Windows a new process
+            // can take long to start after its parent's spawn returned.
+            if let Some(p) = args.get(3) {
+                let _ = std::fs::write(p, std::process::id().to_string());
+            }
             std::thread::sleep(Duration::from_millis(ms));
         }
         _ => backend(&args),
@@ -135,10 +143,10 @@ fn interleave(input: &mut Vec<u8>, fill: &str) {
     let _ = out.flush();
 }
 
-/// Start `<this binary> __sleep <ms> <tag>` in this process's group and
-/// write its pid to `STUB_CHILD_PID_FILE`. The child gets none of the
-/// variables that steer this binary, and no stdio of ours unless
-/// `STUB_CHILD_INHERIT_STDIO=1`.
+/// Start `<this binary> __sleep <ms> <tag> [<pid-file>]` in this process's
+/// group; the child writes its own pid to `STUB_CHILD_PID_FILE` once it runs.
+/// The child gets none of the variables that steer this binary, and no stdio
+/// of ours unless `STUB_CHILD_INHERIT_STDIO=1`.
 fn start_sleeping_child(tag: &str) {
     let Ok(me) = std::env::current_exe() else {
         return;
@@ -153,8 +161,11 @@ fn start_sleeping_child(tag: &str) {
         }
     };
     let mut cmd = std::process::Command::new(me);
-    cmd.args(["__sleep", ms.as_str(), tag])
-        .stdin(std::process::Stdio::null())
+    cmd.args(["__sleep", ms.as_str(), tag]);
+    if let Some(p) = var("STUB_CHILD_PID_FILE") {
+        cmd.arg(p);
+    }
+    cmd.stdin(std::process::Stdio::null())
         .stdout(out())
         .stderr(out());
     for (k, _) in std::env::vars_os() {
@@ -162,9 +173,5 @@ fn start_sleeping_child(tag: &str) {
             cmd.env_remove(k);
         }
     }
-    if let Ok(child) = cmd.spawn()
-        && let Some(p) = var("STUB_CHILD_PID_FILE")
-    {
-        let _ = std::fs::write(p, child.id().to_string());
-    }
+    let _ = cmd.spawn();
 }
