@@ -165,6 +165,146 @@ fn check_exit_codes() {
     assert!(!shared.path("_palette").exists());
 }
 
+const LONG_LINE: &str = "This paragraph is far longer than the width of seventy-nine columns, and it is written on one line the way a caller supplies it, far longer than the width of seventy-nine columns.";
+
+#[test]
+fn reflow_rewraps_prints_the_files_it_wrote_and_then_has_nothing_to_do() {
+    let p = Proj::valid();
+    p.replace(
+        "docs/spec/thing.rst",
+        "The scope and authority of the thing.",
+        LONG_LINE,
+    );
+    p.replace(
+        "docs/rfc/rfc-0002-beta.rst",
+        "Beta rules apply to every operation of the thing.",
+        LONG_LINE,
+    );
+    let out = bin().arg("reflow").arg(&p.root).output().expect("run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed: Vec<&str> = stdout.lines().collect();
+    assert!(
+        printed.contains(&"modified docs/spec/thing.rst"),
+        "{stdout}"
+    );
+    assert!(
+        printed.contains(&"modified docs/rfc/rfc-0002-beta.rst"),
+        "{stdout}"
+    );
+    // The staging mirror of the spec is regenerated from the rewrapped text.
+    assert!(
+        printed.contains(&"modified docs/staging/spec/thing.rst"),
+        "{stdout}"
+    );
+    assert!(
+        p.read("docs/spec/thing.rst")
+            .lines()
+            .all(|l| l.chars().count() <= 79)
+    );
+
+    let check = bin().arg("check").arg(&p.root).output().expect("run");
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+    let generate = bin().arg("generate").arg(&p.root).output().expect("run");
+    assert!(
+        String::from_utf8_lossy(&generate.stdout).contains("nothing to generate"),
+        "{}",
+        String::from_utf8_lossy(&generate.stdout)
+    );
+
+    let again = bin().arg("reflow").arg(&p.root).output().expect("run");
+    assert_eq!(again.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&again.stdout).trim(),
+        "nothing to reflow: every document is already wrapped"
+    );
+}
+
+#[test]
+fn reflow_takes_paths_and_refuses_a_bad_one_without_writing() {
+    let p = Proj::valid();
+    p.replace(
+        "docs/spec/thing.rst",
+        "The thing has one operation.",
+        LONG_LINE,
+    );
+    p.replace(
+        "docs/rfc/rfc-0002-beta.rst",
+        "Beta rules apply to every operation of the thing.",
+        LONG_LINE,
+    );
+    let before = p.snapshot();
+    for bad in ["docs/missing.rst", "docs/rfc/index.rst", "../x.rst"] {
+        let out = bin()
+            .arg("reflow")
+            .arg(&p.root)
+            .arg("docs/spec")
+            .arg(bad)
+            .output()
+            .expect("run");
+        assert_eq!(out.status.code(), Some(1), "{bad}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).starts_with("palette reflow: "),
+            "{bad}"
+        );
+        assert_eq!(p.snapshot(), before, "{bad}: nothing written");
+    }
+    let out = bin()
+        .arg("reflow")
+        .arg(&p.root)
+        .arg("docs/spec")
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("modified docs/spec/thing.rst"), "{stdout}");
+    assert!(!stdout.contains("rfc-0002-beta"), "{stdout}");
+    assert!(p.read("docs/rfc/rfc-0002-beta.rst").contains(LONG_LINE));
+}
+
+#[test]
+fn reflow_usage_and_projects_that_do_not_exist() {
+    assert_eq!(
+        bin().arg("reflow").output().expect("run").status.code(),
+        Some(2)
+    );
+    let p = Proj::valid();
+    let out = bin()
+        .arg("reflow")
+        .arg(p.path("nope"))
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(1));
+    // A checkout without `_palette/` is rewrapped from the documents it identifies, as
+    // `generate` and `check` read it, and no lock folder is made.
+    let shared = Proj::valid();
+    std::fs::remove_dir_all(shared.path("_palette")).expect("rm");
+    shared.replace(
+        "docs/spec/thing.rst",
+        "The thing has one operation.",
+        LONG_LINE,
+    );
+    let out = bin().arg("reflow").arg(&shared.root).output().expect("run");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("modified docs/spec/thing.rst"));
+    assert!(!shared.path("_palette").exists());
+}
+
 #[test]
 fn check_resolves_the_project_without_the_root_rules() {
     // The working directory is elsewhere and no root variable is set: check still works.

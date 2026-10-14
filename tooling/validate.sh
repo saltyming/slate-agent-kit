@@ -264,6 +264,17 @@ if [ -n "$retired_backend" ]; then
   fail=1
 fi
 
+# The dispatch tool descriptions and get_info name the dispatch preferences as
+# they are (a level, backend, model, effort, fallback), not the earlier
+# policies and approval modes.
+retired_policy=$(grep -rniE 'conservative|preference-only|proactive|approval mode|approval granularity' \
+    "$ROOT/shared/mcp-servers/dispatch/src" 2>/dev/null || true)
+if [ -n "$retired_policy" ]; then
+  echo "retired dispatch policy term in the dispatch sources:" >&2
+  echo "$retired_policy" | head -5 >&2
+  fail=1
+fi
+
 # ── 6. article id integrity ───────────────────────────────
 # Every referenced article (§ N, optionally with a letter suffix) must have
 # exactly one bold definition line, in the constitution.

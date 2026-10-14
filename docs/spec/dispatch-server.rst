@@ -186,15 +186,31 @@ schema upgrade (a store from before this release gives exit 1), probes no
 backend and reconciles no other row. ``--timeout`` is a non-negative finite
 number of seconds; any other value is a usage error. It reads the row every
 500 ms outside any transaction until the row is terminal or the timeout
-elapses. When the row is active and its owner pid is set and no longer
-running, it marks the row ``interrupted`` through the same conditional update
-the server's own reconciliation uses and reads the row again; a row whose
-owner pid is unset is waited on. It prints one line on stdout, ``<id> <kind>
-<status>`` followed by ``model=<final model>`` when a fallback answered and
-``restarted_as=<id>`` when set, and never the result. Exit codes: 0 terminal,
-2 still active at the timeout (the line is printed), 3 unknown id, 1 usage or
-store error (stderr says which). Liveness is by pid; a reused pid is a known
-limit, bounded by ``--timeout``.
+elapses. When the row is active and its owner pid is set and not alive by the
+liveness check below, it marks the row ``interrupted`` through the same
+conditional update the server's own reconciliation uses and reads the row
+again; a row whose owner pid is unset is waited on. It prints one line on
+stdout, ``<id> <kind> <status>`` followed by ``model=<final model>`` when a
+fallback answered and ``restarted_as=<id>`` when set, and never the result.
+Exit codes: 0 terminal, 2 still active at the timeout (the line is printed), 3
+unknown id, 1 usage or store error (stderr says which).
+
+Liveness of a row's pid compares the process with the row's own timestamp:
+``created_at`` for the owner pid, ``started_at`` for the child pid, both UTC
+to whole seconds as SQLite writes them. A pid is alive when the process runs
+(``kill(pid, 0)`` on Unix, where a refusal for permission counts as running;
+``OpenProcess`` and ``GetExitCodeProcess`` on Windows) and, when its start
+time is readable (Linux ``/proc/<pid>/stat`` with the boot time from
+``/proc/stat``, macOS ``proc_pidinfo`` with ``PROC_PIDTBSDINFO``, Windows
+``GetProcessTimes``) and the timestamp parses, it started no later than the
+timestamp plus one second. A process that started later holds a reused pid and
+the row's process is dead. A missing or malformed timestamp, or an unreadable
+start time (another user's process, another platform), leaves the running
+check alone to decide. The check is a heuristic: a replacement process that
+starts within the one-second allowance, or a clock corrected between the write
+and the check, is not told apart; ``--timeout`` still bounds a wait. The same
+check serves ``wait``, the server's reconciliation and ``child_process_alive``;
+the executor's watchdog, which follows the pid it spawned, does not use it.
 
 Run outcome
 ~~~~~~~~~~~
@@ -218,15 +234,17 @@ Tool errors are JSON ``{"error": {"code", "message"}}`` with the codes
 ``db_error`` and ``reentrant``. A reentrant refusal names the depth. A
 consultation on ``agy`` and an agy execution under ``read-only`` are
 ``invalid_params`` with the reason. When the server starts it marks every
-active row owned by a process that is not running, or by no process,
-``interrupted``; a read of an active row owned by a dead process does the
-same. On a termination signal the server cancels its own runs, which end
-``cancelled``. A quiet log on a live process is inconclusive: a backend inside
-a long tool call emits nothing until it returns; an agy run has no log at all
-until its ``init`` event has arrived. A ``server/discover`` request that a
-client (the Antigravity CLI) sends before ``initialize`` is answered with the
-JSON-RPC error ``-32601 Method not found`` and the standard handshake then
-proceeds; blank lines before it are ignored.
+active row owned by a process that is not alive, or by no process,
+``interrupted``; a read of an active row owned by a process that is not alive
+does the same. Alive is the liveness check of the wait subcommand against the
+row's ``created_at``, so a row whose owner pid was reused by a later process is
+interrupted as a dead owner's row is. On a termination signal the server
+cancels its own runs, which end ``cancelled``. A quiet log on a live process is
+inconclusive: a backend inside a long tool call emits nothing until it returns;
+an agy run has no log at all until its ``init`` event has arrived. A
+``server/discover`` request that a client (the Antigravity CLI) sends before
+``initialize`` is answered with the JSON-RPC error ``-32601 Method not found``
+and the standard handshake then proceeds; blank lines before it are ignored.
 
 Ownership and ordering
 ----------------------
@@ -253,10 +271,17 @@ Conformance
 
 The crate's tests cover the argv of each kind and backend, the prompt order of
 a consultation, the result and failure texts, the kind default on an old
-store, listing by kind, re-entry per kind, the atomic outcome write, and the
-``wait`` exit codes on a terminal, an active, an unknown and an orphaned row.
-An end-to-end check in each harness submits one run of each kind, waits
-through the harness's background means and reads the result.
+store, listing by kind, re-entry per kind, the atomic outcome write, the
+``wait`` exit codes on a terminal, an active, an unknown and an orphaned row,
+and the liveness check: this process with a timestamp after its start and
+more than the allowance before it, the one-second boundary, a missing and a
+malformed timestamp, the start-time reader on each CI operating system, and a
+reused pid through a stand-in start-time provider in ``wait``, the
+reconciliation and ``child_process_alive``. No tool description or
+``get_info`` text names a dispatch policy or approval setting other than the
+levels the dispatch preferences hold; ``validate.sh`` checks the sources for
+the retired terms. An end-to-end check in each harness submits one run of each
+kind, waits through the harness's background means and reads the result.
 
 References
 ----------

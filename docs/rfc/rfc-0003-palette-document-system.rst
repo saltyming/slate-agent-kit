@@ -30,21 +30,20 @@ phase, deliverable and state for work; RFC and ADR for decisions with their
 evidence; changesets and staging for accepted but unimplemented contracts;
 design, spec, principles and glossary for maintained truth, and contributing
 for how people and agents contribute (branches, commits, pull requests,
-verification). Each family holds
-one kind of fact, each project chooses where each family lives, and no family
-records development stages.
+verification). Each family holds one kind of fact, each project chooses where
+each family lives, and no family records development stages.
 
 Problem and context
 -------------------
 
 In a project that uses palette with a mature record discipline, the palette
-documents themselves failed in four ways: the state document grew into a log
-of decisions and results; the same fact (an item's status, a decision) was
-written in several files and they disagreed; the state document prescribed
-the next session's actions, including models and concurrency; and updates
-were left to the end of a session, so an interrupted session left them stale.
-A family defined as the destination for material moved out of decision records
-became a store with no exit.
+documents themselves failed in four ways: the state document grew into a log of
+decisions and results; the same fact (an item's status, a decision) was written
+in several files and they disagreed; the state document prescribed the next
+session's actions, including models and concurrency; and updates were left to
+the end of a session, so an interrupted session left them stale. A family
+defined as the destination for material moved out of decision records became a
+store with no exit.
 
 Evidence
 --------
@@ -60,8 +59,8 @@ Measured 2026-09-29 in that project:
   histories or evidence, the largest 12,061 lines; one file was a list of the
   day's decisions, a role the state document and the records already had.
 - The project's own policy defined the records folder as the place for
-  "investigations, verification evidence, and historical implementation
-  records moved out of decision documents".
+  "investigations, verification evidence, and historical implementation records
+  moved out of decision documents".
 - The kit's templates duplicate: the phase brief's scope list and the phase
   index list the same items; the backlog template's product principles section
   and a principles document hold the same principles.
@@ -98,8 +97,8 @@ Design
   (one approved unit and its ``Done when``), state (decisions not yet written
   into a record, questions blocking the active phase, discrepancies; one line
   each), RFC and ADR (decisions with their evidence and the full header set),
-  changeset and staging (accepted edits to maintained documents that the
-  source does not implement yet), design, spec, principles, glossary.
+  changeset and staging (accepted edits to maintained documents that the source
+  does not implement yet), design, spec, principles, glossary.
 - Every family is used. ``layout.rst`` places each family internal
   (``_palette/``, personal, not committed) or at a project path (committed,
   shared). Every document is RST in the house-style subset.
@@ -127,8 +126,8 @@ Impact and compatibility
 Implementation and transition
 -----------------------------
 
-The palette rule, the templates and the skills change together with the
-server that checks and writes the documents, and ship in the same release.
+The palette rule, the templates and the skills change together with the server
+that checks and writes the documents, and ship in the same release.
 
 Verification strategy
 ---------------------
@@ -145,8 +144,8 @@ Alternatives and costs
   records that rely on it, and the policy is prose nobody enforces.
 - Keep a reviews document per phase: it is read once, and what matters in it
   already has a place where it will be read again (backlog, rules, records).
-- A fixed set of profiles instead of per-family placement: projects already have
-  documentation folders of their own.
+- A fixed set of profiles instead of per-family placement: projects already
+  have documentation folders of their own.
 
 Open questions
 --------------

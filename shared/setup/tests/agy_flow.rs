@@ -15,17 +15,16 @@ use support::{ReleaseServer, Sandbox, read};
 
 const KIT: &str = "agy-agent-kit";
 
-/// The nine `permissions.allow` entries RFC-0023 names.
-const APPROVALS: [&str; 9] = [
+/// The `permissions.allow` entries an install adds: dispatch's five tools and
+/// the two read-only tools the stand-in palette prints for `--read-only-tools`.
+const APPROVALS: [&str; 7] = [
     "mcp(dispatch/dispatch_consult)",
     "mcp(dispatch/dispatch_status)",
     "mcp(dispatch/dispatch_list)",
     "mcp(dispatch/dispatch_logs)",
     "mcp(dispatch/dispatch_backends)",
     "mcp(palette/palette_status)",
-    "mcp(palette/palette_lint)",
-    "mcp(palette/palette_layout)",
-    "mcp(palette/palette_template)",
+    "mcp(palette/palette_read)",
 ];
 
 /// A user's own Antigravity CLI settings, with keys the installer must keep.
@@ -289,7 +288,7 @@ fn install_writes_where_agy_reads_registers_and_records_exactly_what_it_added() 
     );
     assert!(state.is_dir(), "the servers' state home exists");
 
-    // Approvals: the user's entries and keys stay, the nine are added once.
+    // Approvals: the user's entries and keys stay, the seven are added once.
     let mut want: Vec<String> = vec!["command(ls)".into(), "mcp(other/tool)".into()];
     want.extend(APPROVALS.iter().map(|s| s.to_string()));
     assert_eq!(allow_list(&settings_path(&sb)), want);
@@ -692,6 +691,129 @@ fn the_mcp_command_registers_with_agy_and_reverses_it() {
     assert!(!mcp_manifest.exists());
 }
 
+/// The dispatch approvals every install adds, in order.
+fn dispatch_approvals() -> Vec<String> {
+    APPROVALS[..5].iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn the_approvals_follow_the_palette_binary_including_a_tool_it_adds() {
+    let (mut sb, _server) = sandbox();
+    fs::create_dir_all(settings_path(&sb).parent().unwrap()).unwrap();
+    fs::write(settings_path(&sb), USER_SETTINGS).unwrap();
+    let probe = |sb: &mut Sandbox, tools: &str| {
+        sb.env
+            .child_env
+            .insert("FAKE_PALETTE_TOOLS".into(), tools.into());
+    };
+    probe(&mut sb, "palette_status,palette_read,palette_extra");
+    let out = sb.run("install", &[]);
+    assert_eq!(out.code, 0, "{}", out.out);
+
+    let mut want: Vec<String> = vec!["command(ls)".into(), "mcp(other/tool)".into()];
+    want.extend(dispatch_approvals());
+    want.extend(
+        ["palette_status", "palette_read", "palette_extra"]
+            .iter()
+            .map(|t| format!("mcp(palette/{t})")),
+    );
+    assert_eq!(allow_list(&settings_path(&sb)), want);
+    let m = read_manifest_file(&manifest_path(&sb)).unwrap();
+    assert_eq!(
+        m.config[0].added,
+        want[2..],
+        "the manifest records what was added"
+    );
+
+    // A reinstall over the existing approvals adds no duplicate.
+    let before = fs::read(settings_path(&sb)).unwrap();
+    let out = sb.run("install", &[]);
+    assert_eq!(out.code, 0, "{}", out.out);
+    assert_eq!(fs::read(settings_path(&sb)).unwrap(), before);
+
+    // A tool the binary prints later is approved once, beside the earlier entries.
+    probe(
+        &mut sb,
+        "palette_status,palette_read,palette_extra,palette_newest",
+    );
+    let out = sb.run("configure", &[]);
+    assert_eq!(out.code, 0, "{}", out.out);
+    want.push("mcp(palette/palette_newest)".into());
+    assert_eq!(allow_list(&settings_path(&sb)), want);
+    let m = read_manifest_file(&manifest_path(&sb)).unwrap();
+    assert_eq!(m.config.len(), 1);
+    // The manifest merges a later edit's entries in front of the earlier ones.
+    let mut recorded = m.config[0].added.clone();
+    recorded.sort();
+    let mut added = want[2..].to_vec();
+    added.sort();
+    assert_eq!(recorded, added);
+
+    // Uninstall takes all of them back and keeps the user's.
+    let out = sb.run("uninstall", &[]);
+    assert_eq!(out.code, 0, "{}", out.out);
+    assert_eq!(
+        allow_list(&settings_path(&sb)),
+        ["command(ls)", "mcp(other/tool)"]
+    );
+}
+
+#[test]
+fn a_palette_binary_that_cannot_list_its_tools_gets_no_approvals_and_the_note() {
+    let (mut sb, _server) = sandbox();
+    fs::create_dir_all(settings_path(&sb).parent().unwrap()).unwrap();
+    fs::write(settings_path(&sb), USER_SETTINGS).unwrap();
+    sb.env
+        .child_env
+        .insert("FAKE_PALETTE_FAIL".into(), "1".into());
+    let out = sb.run("install", &[]);
+    assert_eq!(out.code, 0, "a note, not a failure: {}", out.out);
+    assert!(
+        out.out
+            .contains("the palette read-only tools could not be read"),
+        "{}",
+        out.out
+    );
+    assert!(out.out.contains("they are not pre-approved"), "{}", out.out);
+    let mut want: Vec<String> = vec!["command(ls)".into(), "mcp(other/tool)".into()];
+    want.extend(dispatch_approvals());
+    assert_eq!(allow_list(&settings_path(&sb)), want);
+    assert_eq!(
+        agy_servers(&sb).keys().collect::<Vec<_>>(),
+        ["dispatch", "palette"],
+        "the servers are registered all the same"
+    );
+
+    // Once the binary answers, the next run adds the palette approvals.
+    sb.env.child_env.remove("FAKE_PALETTE_FAIL");
+    let out = sb.run("configure", &[]);
+    assert_eq!(out.code, 0, "{}", out.out);
+    let allow = allow_list(&settings_path(&sb));
+    assert_eq!(allow[..want.len()], want[..]);
+    assert_eq!(
+        allow[want.len()..],
+        ["mcp(palette/palette_status)", "mcp(palette/palette_read)"]
+    );
+}
+
+#[test]
+fn the_summary_names_the_palette_approvals_as_read_from_the_binary() {
+    let (sb, _server) = sandbox();
+    let out = sb.run("install", &["--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.out);
+    assert!(
+        out.out.contains("mcp(dispatch/dispatch_consult)"),
+        "{}",
+        out.out
+    );
+    assert!(
+        out.out.contains("mcp(palette/<read-only tools>)"),
+        "{}",
+        out.out
+    );
+    assert!(!settings_path(&sb).exists(), "a dry run writes nothing");
+}
+
 #[test]
 fn a_server_the_release_no_longer_ships_is_retired_from_agy() {
     let (sb, _server) = sandbox();
@@ -707,8 +829,8 @@ fn a_server_the_release_no_longer_ships_is_retired_from_agy() {
     m.config[0].added.push("mcp(aside/aside_codex)".into());
     m.save(&gemini(&sb).join("slate-agent-kit")).unwrap();
     let text = fs::read_to_string(settings_path(&sb)).unwrap().replace(
-        "\"mcp(palette/palette_template)\"",
-        "\"mcp(palette/palette_template)\",\n      \"mcp(aside/aside_codex)\"",
+        "\"mcp(palette/palette_read)\"",
+        "\"mcp(palette/palette_read)\",\n      \"mcp(aside/aside_codex)\"",
     );
     fs::write(settings_path(&sb), text).unwrap();
     let path = gemini(&sb).join("config").join("mcp_config.json");
@@ -730,7 +852,7 @@ fn a_server_the_release_no_longer_ships_is_retired_from_agy() {
     assert!(!agy_servers(&sb).contains_key("aside"));
     let allow = allow_list(&settings_path(&sb));
     assert!(!allow.iter().any(|a| a.contains("aside")), "{allow:?}");
-    assert!(allow.contains(&"mcp(palette/palette_template)".to_string()));
+    assert!(allow.contains(&"mcp(palette/palette_read)".to_string()));
     let m = read_manifest_file(&manifest_path(&sb)).unwrap();
     assert!(!m.registrations.iter().any(|r| r.server == "aside"));
     assert_eq!(m.config[0].added, APPROVALS);

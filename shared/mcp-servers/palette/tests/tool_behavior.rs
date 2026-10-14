@@ -479,8 +479,8 @@ fn record_changes_accept_single_file_families_and_project_documents() {
 fn record_update_clarifications_accumulate_revised_entries() {
     let p = Proj::valid();
     let c = &p.ctx;
-    records::record_update(c, params(&p, json!({"record": "RFC-0002", "title": "Beta rules, clarified", "clarification": true, "revision_note": "Fixed the title; nothing else"}))).expect("first");
-    records::record_update(c, params(&p, json!({"record": "RFC-0002", "sections": {"Summary": "New summary."}, "clarification": true, "revision_note": "Corrected the summary"}))).expect("second");
+    records::record_update(c, params(&p, json!({"record": "RFC-0002", "title": "Beta rules, clarified", "clarification": true, "revision_note": "Fixed the title; nothing else."}))).expect("first");
+    records::record_update(c, params(&p, json!({"record": "RFC-0002", "sections": {"Summary": "New summary."}, "clarification": true, "revision_note": "Corrected the summary. "}))).expect("second");
     let t = p.read("docs/rfc/rfc-0002-beta.rst");
     assert!(
         t.starts_with("RFC-0002: Beta rules, clarified\n===============================\n"),

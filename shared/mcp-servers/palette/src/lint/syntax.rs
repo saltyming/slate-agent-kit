@@ -20,6 +20,8 @@ use crate::util::re;
 
 static GRID_BORDER: LazyLock<Regex> = LazyLock::new(|| re(r"^\s*\+(?:[-=]+\+)+\s*$"));
 static SIMPLE_BORDER: LazyLock<Regex> = LazyLock::new(|| re(r"^\s*=+(?:\s+=+)+\s*$"));
+/// A line block line, which is also how a pipe-table row without its separator reads.
+static LINE_BLOCK: LazyLock<Regex> = LazyLock::new(|| re(r"^\s*\|(?:\s|$)"));
 static PIPE_SEPARATOR: LazyLock<Regex> =
     LazyLock::new(|| re(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$"));
 static SUBST_REF: LazyLock<Regex> = LazyLock::new(|| {
@@ -138,6 +140,21 @@ pub(super) fn check(cx: &Cx, out: &mut Vec<Finding>) {
                                 i,
                                 "tables are not allowed; use a list or a field list",
                             ));
+                        }
+                        last_table_line = Some(i);
+                        continue;
+                    }
+                    if LINE_BLOCK.is_match(text) {
+                        if last_table_line.is_none_or(|l| l + 3 < i) {
+                            // A header row followed by its separator is a pipe table.
+                            let piped = i + 1 < doc.src.len()
+                                && PIPE_SEPARATOR.is_match(doc.src.text(i + 1));
+                            let message = if piped {
+                                "tables are not allowed; use a list or a field list"
+                            } else {
+                                "line blocks and pipe-table rows are not allowed; use a list or a field list"
+                            };
+                            out.push(Finding::error("P001", f, i, message));
                         }
                         last_table_line = Some(i);
                         continue;

@@ -23,6 +23,24 @@ use crate::util::{is_kebab, slugify};
 
 const DEFAULT_SCOPE: &str = "the change this record describes";
 
+/// The kinds of check a record's `Verification` names, as the RFC and ADR templates list
+/// them.
+const VERIFICATION_KINDS: [&str; 5] = ["none", "documentation", "static", "build", "runtime"];
+
+/// The `Verification` value promotion and refresh write: `<kind> — <date>; <note>`, with
+/// the note's semicolons replaced by commas so the value stays one entry.
+fn verification_value(kind: &str, date: &str, note: &str) -> String {
+    format!("{} — {date}; {}", kind.trim(), note.replace(';', ","))
+}
+
+/// Writes the `Verification` header field of the record in `src`. The one writer of the
+/// field after creation: promotion and refresh both call it.
+fn write_verification(src: &mut Source, rel: &str, kind: &str, date: &str, note: &str) -> Res<()> {
+    edit::set_header_field(src, "Verification", &verification_value(kind, date, note))
+        .map(|_| ())
+        .map_err(|m| PalError::parse(rel, 1, m))
+}
+
 fn record_path(s: &Session<'_, '_>, id: RecId) -> PathBuf {
     s.snap
         .loc
@@ -262,7 +280,7 @@ pub fn record_create(ctx: &Ctx, p: RecordCreateParams) -> Res<WriteResult> {
             lines.extend(edit::heading_lines(2, &t));
             lines.push(String::new());
             match given.remove(&t) {
-                Some(text) if !text.trim().is_empty() => lines.extend(edit::verbatim_lines(&text)),
+                Some(text) if !text.trim().is_empty() => lines.extend(edit::wrapped_lines(&text)),
                 _ => lines.push("None.".to_string()),
             }
         }
@@ -456,7 +474,7 @@ pub fn record_update(ctx: &Ctx, p: RecordUpdateParams) -> Res<WriteResult> {
                 let body = if text.trim().is_empty() {
                     vec!["None.".to_string()]
                 } else {
-                    edit::verbatim_lines(text)
+                    edit::wrapped_lines(text)
                 };
                 edit::replace_section_body(&mut src, &doc, idx, &body);
             }
@@ -475,7 +493,9 @@ pub fn record_update(ctx: &Ctx, p: RecordUpdateParams) -> Res<WriteResult> {
             }
         }
         if clarification {
-            let entry = format!("{} — {}", s.today, note.replace(';', ","));
+            // Entries are joined with `; `, so a closing period would read `.;`.
+            let text = note.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+            let entry = format!("{} — {}", s.today, text.replace(';', ","));
             let value = if old_revised.trim() == "none" {
                 entry
             } else {
@@ -558,6 +578,9 @@ pub fn changeset_edit(ctx: &Ctx, p: ChangesetEditParams) -> Res<WriteResult> {
         }
         let path = changeset_path(s, id);
         let existing = s.snap.files.iter().position(|f| f.path == path);
+        // The body's prose is wrapped before it is parsed and spliced, so the stored
+        // text and every cached line range agree.
+        let body = edit::wrapped_lines(&body).join("\n");
         let block = changeset::edit_lines(
             kind,
             &target,
@@ -841,20 +864,14 @@ pub fn changeset_promote(ctx: &Ctx, p: ChangesetPromoteParams) -> Res<WriteResul
                     .and_then(|v| v.split_once(" — ").map(|(_, r)| r.trim().to_string()))
             })
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        let verification = format!(
-            "{} — {}; {}",
-            p.verification.trim(),
-            s.today,
-            ver_note.replace(';', ",")
-        );
         for (name, value) in [
             ("Implementation", format!("{impl_kind} — {scope}")),
             ("Implementers", implementers),
-            ("Verification", verification),
         ] {
             edit::set_header_field(&mut rsrc, name, &value)
                 .map_err(|m| PalError::parse(&rrel, 1, m))?;
         }
+        write_verification(&mut rsrc, &rrel, &p.verification, &s.today, &ver_note)?;
         s.put(&rpath, &rsrc)?;
         Ok(Vec::new())
     })
@@ -864,10 +881,41 @@ pub fn changeset_promote(ctx: &Ctx, p: ChangesetPromoteParams) -> Res<WriteResul
 /// `complete`.
 const REFRESH_VALUES: [&str; 4] = ["partial", "in-progress", "abandoned", "not-applicable"];
 
+/// The `verification` and `verification_note` arguments of a refresh: the kind and the
+/// one-line note together, or neither.
+fn refresh_verification(p: &RecordRefreshParams) -> Res<Option<(String, String)>> {
+    match (p.verification.as_deref(), p.verification_note.as_deref()) {
+        (None, None) => Ok(None),
+        (Some(_), None) => Err(PalError::invalid(
+            "verification needs verification_note: the limit of the check, in one line",
+        )),
+        (None, Some(_)) => Err(PalError::invalid(format!(
+            "verification_note needs verification: {}",
+            VERIFICATION_KINDS.join(", ")
+        ))),
+        (Some(kind), Some(note)) => {
+            let kind = kind.trim();
+            if !VERIFICATION_KINDS.contains(&kind) {
+                return Err(PalError::invalid(format!(
+                    "verification must be {}, got `{kind}`",
+                    VERIFICATION_KINDS.join(", ")
+                )));
+            }
+            let note = edit::one_line(note);
+            if note.is_empty() {
+                return Err(PalError::invalid(
+                    "verification_note is empty; state the limit of the check in one line",
+                ));
+            }
+            Ok(Some((kind.to_string(), note)))
+        }
+    }
+}
+
 /// `palette_record_refresh`: the record's change has landed outside a changeset, so
 /// `Implementation` (and `Implementers` when given) and the `Superseded` status are
-/// brought in line with the documents. `Revised`, `Verification` and `Accepted` record
-/// events and are never written here.
+/// brought in line with the documents, and `Verification` is written when a kind and a
+/// note are given. `Revised` and `Accepted` record events and are never written here.
 pub fn record_refresh(ctx: &Ctx, p: RecordRefreshParams) -> Res<WriteResult> {
     run_write(ctx, &p.project, p.dry_run.unwrap_or(false), |s| {
         let (id, rec) = find_record(s, &p.record)?;
@@ -877,6 +925,7 @@ pub fn record_refresh(ctx: &Ctx, p: RecordRefreshParams) -> Res<WriteResult> {
                 "{id} is {status}; only a record that has been accepted has a change that lands"
             )));
         }
+        let verification = refresh_verification(&p)?;
         let given = match p.implementation.as_deref().map(str::trim) {
             None | Some("") => None,
             Some(v) if v == "complete" || REFRESH_VALUES.contains(&v) => Some(v.to_string()),
@@ -933,15 +982,17 @@ pub fn record_refresh(ctx: &Ctx, p: RecordRefreshParams) -> Res<WriteResult> {
         let path = s.snap.files[rec.file].path.clone();
         let rel = s.rel(&path);
         let mut src = s.source(&path)?;
-        let mut set = |name: &str, value: &str| {
-            edit::set_header_field(&mut src, name, value).map_err(|m| PalError::parse(&rel, 1, m))
-        };
-        set("Implementation", &format!("{token} — {scope}"))?;
+        let to_err = |m: String| PalError::parse(&rel, 1, m);
+        edit::set_header_field(&mut src, "Implementation", &format!("{token} — {scope}"))
+            .map_err(to_err)?;
         if let Some(who) = &implementers {
-            set("Implementers", who)?;
+            edit::set_header_field(&mut src, "Implementers", who).map_err(to_err)?;
+        }
+        if let Some((kind, note)) = &verification {
+            write_verification(&mut src, &rel, kind, &s.today, note)?;
         }
         if superseded {
-            set("Status", "Superseded")?;
+            edit::set_header_field(&mut src, "Status", "Superseded").map_err(to_err)?;
         }
         s.put(&path, &src)?;
         Ok(Vec::new())

@@ -52,13 +52,13 @@ Evidence
 - ``_palette/.gitignore`` as ``palette_init`` writes it: ``*``.
 - The templates (``shared/workflows/palette/templates/``, 2026-09-30): every
   family has a title or status signature that identifies it (``RFC-NNNN:``,
-  ``ADR-NNNN:``, ``Changeset:``, ``Glossary —``, ``Principles —``, ``:Status:
-  Contract`` for a specification, ``:Status: Maintained`` with a title ending in
-  ``design`` for a design document, ``Backlog —``, ``State —``, ``Phase N —``
-  in a ``phase-N`` folder, ``Deliverable N:`` in a ``deliverables`` folder).
-  Staging mirrors carry the same signature as the document they mirror, so the
-  staging family is recognized by its folder name and its ``spec`` and
-  ``design`` subfolders.
+  ``ADR-NNNN:``, ``Changeset:``, ``Glossary —``, ``Principles —``,
+  ``:Status: Contract`` for a specification, ``:Status: Maintained`` with a
+  title ending in ``design`` for a design document, ``Backlog —``, ``State —``,
+  ``Phase N —`` in a ``phase-N`` folder, ``Deliverable N:`` in a
+  ``deliverables`` folder). Staging mirrors carry the same signature as the
+  document they mirror, so the staging family is recognized by its folder name
+  and its ``spec`` and ``design`` subfolders.
 
 Goals and non-goals
 -------------------
@@ -109,8 +109,8 @@ Impact and compatibility
   findings; naming the folder ``staging`` or adding a layout resolves it.
 - A document that carries a record title (``RFC-NNNN:``, ``ADR-NNNN:``) but is
   not a palette record is classified as one and fails the template check; the
-  inference has no other signal. Such a project adds a layout, which places
-  the palette families and leaves the rest alone.
+  inference has no other signal. Such a project adds a layout, which places the
+  palette families and leaves the rest alone.
 
 Implementation and transition
 -----------------------------
@@ -132,9 +132,9 @@ Alternatives and costs
 
 - Commit ``_palette/layout.rst``. Rejected: the layout is internal, and a
   project's check must not depend on one person's folder.
-- A second, committed configuration file naming the shared paths. Rejected:
-  the documents already identify themselves; a second file is one more thing
-  to keep in step.
+- A second, committed configuration file naming the shared paths. Rejected: the
+  documents already identify themselves; a second file is one more thing to
+  keep in step.
 
 Open questions
 --------------

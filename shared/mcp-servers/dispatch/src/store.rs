@@ -604,14 +604,16 @@ pub fn active_ids_for_plan(conn: &Connection, plan_id: &str) -> rusqlite::Result
     rows.collect()
 }
 
-/// (id, owner_pid) for every active task — boot reconciliation reads this and
-/// the caller decides which owners are dead (liveness lives in main, which has
-/// the platform-specific `kill(pid, 0)`).
-pub fn active_owners(conn: &Connection) -> rusqlite::Result<Vec<(String, Option<i64>)>> {
+/// (id, owner_pid, created_at) for every active task — boot reconciliation
+/// reads this and the caller decides which owners are dead (liveness lives in
+/// `liveness`, which has the platform-specific process checks). `created_at`
+/// is the SQLite text the row was inserted with, the time its owner was already
+/// running at.
+pub fn active_owners(conn: &Connection) -> rusqlite::Result<Vec<(String, Option<i64>, String)>> {
     let mut stmt = conn.prepare(
-        "SELECT id, owner_pid FROM dispatch_tasks WHERE status IN ('queued', 'running')",
+        "SELECT id, owner_pid, created_at FROM dispatch_tasks WHERE status IN ('queued', 'running')",
     )?;
-    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
     rows.collect()
 }
 
@@ -837,6 +839,48 @@ CREATE TABLE dispatch_counters (scope TEXT PRIMARY KEY, next_id INTEGER NOT NULL
         );
         assert_eq!(get(&c, &id2).unwrap().unwrap().status, STATUS_SUCCEEDED);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// `active_owners` lists only active rows, each with its owner pid and the
+    /// `created_at` text SQLite wrote, which reconciliation compares with the
+    /// owner's start time.
+    #[test]
+    fn active_owners_returns_the_owner_pid_and_created_at_of_active_rows() {
+        let mut c = Connection::open_in_memory().unwrap();
+        init(&c).unwrap();
+        let mut insert =
+            |owner: i64| match insert_queued(&mut c, &sample_task(), owner, "i", None).unwrap() {
+                InsertOutcome::Created(id) => id,
+                InsertOutcome::Conflict(_) => panic!("expected Created"),
+            };
+        let queued = insert(41);
+        let done = insert(42);
+        c.execute(
+            "UPDATE dispatch_tasks SET status = ?1 WHERE id = ?2",
+            params![STATUS_SUCCEEDED, done],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE dispatch_tasks SET owner_pid = NULL, created_at = '2026-10-14 06:23:41' \
+             WHERE id = ?1",
+            params![queued],
+        )
+        .unwrap();
+        assert_eq!(
+            active_owners(&c).unwrap(),
+            vec![(queued.clone(), None, "2026-10-14 06:23:41".to_string())]
+        );
+        let again = {
+            c.execute(
+                "UPDATE dispatch_tasks SET owner_pid = 43 WHERE id = ?1",
+                params![queued],
+            )
+            .unwrap();
+            active_owners(&c).unwrap()
+        };
+        assert_eq!(again[0].1, Some(43));
+        let stored = get(&c, &queued).unwrap().unwrap().created_at;
+        assert_eq!(again[0].2, stored);
     }
 
     /// `restart_of` round-trips through insert + read, the successor is

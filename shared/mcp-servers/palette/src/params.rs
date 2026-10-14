@@ -410,7 +410,7 @@ pub struct RecordCreateParams {
     /// Maintained documents this record changes.
     #[serde(default, deserialize_with = "lenient")]
     pub changes: Option<Vec<ChangeIn>>,
-    /// Section title to text; sections not given state `None.`.
+    /// Section title to text; sections not given state `None.`. Paragraphs, list items and definition bodies are wrapped at 79 columns when written.
     #[serde(default, deserialize_with = "lenient")]
     pub sections: Option<BTreeMap<String, String>>,
 }
@@ -449,7 +449,7 @@ pub struct RecordUpdateParams {
     /// New Changes list.
     #[serde(default, deserialize_with = "lenient")]
     pub changes: Option<Vec<ChangeIn>>,
-    /// Section title to new text; replaces that section's content.
+    /// Section title to new text; replaces that section's content. Paragraphs, list items and definition bodies are wrapped at 79 columns when written.
     #[serde(default, deserialize_with = "lenient")]
     pub sections: Option<BTreeMap<String, String>>,
     /// New status: Proposed, Accepted (needs `accepted_by`), Rejected or Withdrawn.
@@ -481,7 +481,7 @@ pub struct ChangesetEditParams {
     pub document: String,
     /// The section title (prefixed by parent titles and " / " when not unique); for `create`, the new document's title.
     pub target: String,
-    /// The edit body in changeset syntax: the new section title underlined with `^`, then its text; subsections use `"`. For `replace_body`, the title (which may rename the section) and its text, with no further heading. For `create`, the header fields, then top-level sections underlined with `^`. Not used by `delete` or `remove`.
+    /// The edit body in changeset syntax: the new section title underlined with `^`, then its text; subsections use `"`. For `replace_body`, the title (which may rename the section) and its text, with no further heading. For `create`, the header fields, then top-level sections underlined with `^`. Not used by `delete` or `remove`. Paragraphs, list items and definition bodies are wrapped at 79 columns when written.
     pub body: Option<String>,
 }
 
@@ -547,4 +547,8 @@ pub struct RecordRefreshParams {
     pub implementation_scope: Option<String>,
     /// Who implemented it; omit to keep the current value.
     pub implementers: Option<String>,
+    /// `none`, `documentation`, `static`, `build` or `runtime`: the strongest check the landed change has had. Written as `<kind> — <today>; <verification_note>` and given together with `verification_note` or not at all; omit both to keep the current Verification.
+    pub verification: Option<String>,
+    /// The limit of the verification, in one line (semicolons are replaced by commas); required with `verification`, refused without it.
+    pub verification_note: Option<String>,
 }

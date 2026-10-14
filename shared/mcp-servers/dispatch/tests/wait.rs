@@ -218,3 +218,89 @@ fn without_db_the_store_is_resolved_as_the_server_does() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&empty);
 }
+
+/// Sets a row's `created_at` to a SQLite expression such as
+/// `datetime('now', '-10 seconds')`.
+fn set_created_at(conn: &Connection, id: &str, expr: &str) {
+    conn.execute(
+        &format!("UPDATE dispatch_tasks SET created_at = {expr} WHERE id = ?1"),
+        [id],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_row_older_than_its_owner_pid_is_reconciled_with_the_real_start_time_reader() {
+    // The owner pid is this running test process, but the row was written in
+    // 2000: no process running now can be that row's owner. This holds only
+    // where the operating system's start time can be read, so it fails on a
+    // platform whose reader does not work.
+    let dir = scratch("reused");
+    let (db, mut conn) = new_store(&dir);
+    let id = row(
+        &mut conn,
+        store::Kind::Execute,
+        "running",
+        Some(i64::from(std::process::id())),
+    );
+    set_created_at(&conn, &id, "'2000-01-01 00:00:00'");
+    let o = wait(&id, &db, &["--timeout", "10"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(stdout(&o), format!("{id} execute interrupted\n"));
+    let after = store::get(&conn, &id).unwrap().unwrap();
+    assert_eq!(after.status, store::STATUS_INTERRUPTED);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn another_process_start_time_is_read_and_compared_with_the_rows_created_at() {
+    // A long-lived child stands for an owner: `dispatch wait` on an active row
+    // that this test process owns runs until it is killed.
+    let sleeper_dir = scratch("sleeper");
+    let (sleeper_db, mut sleeper_conn) = new_store(&sleeper_dir);
+    let sleeper_row = row(
+        &mut sleeper_conn,
+        store::Kind::Execute,
+        "running",
+        Some(i64::from(std::process::id())),
+    );
+    let mut sleeper = dispatch()
+        .args(["wait", &sleeper_row, "--db"])
+        .arg(&sleeper_db)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = i64::from(sleeper.id());
+
+    let dir = scratch("sleeper-rows");
+    let (db, mut conn) = new_store(&dir);
+    let older = row(&mut conn, store::Kind::Execute, "running", Some(pid));
+    let newer = row(&mut conn, store::Kind::Execute, "running", Some(pid));
+    // The child started moments ago, so a row from ten seconds ago predates it.
+    // The newer row is dated a few seconds ahead so that SQLite's whole seconds
+    // and the one-second rounding of a Linux start time cannot make the
+    // test depend on how long ago the child started.
+    set_created_at(&conn, &older, "datetime('now', '-10 seconds')");
+    set_created_at(&conn, &newer, "datetime('now', '+5 seconds')");
+
+    let o = wait(&older, &db, &["--timeout", "10"]);
+    let replaced = (o.status.code(), stdout(&o));
+    let o = wait(&newer, &db, &["--timeout", "1"]);
+    let kept = (o.status.code(), stdout(&o));
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+
+    assert_eq!(
+        replaced,
+        (Some(0), format!("{older} execute interrupted\n"))
+    );
+    assert_eq!(kept, (Some(2), format!("{newer} execute running\n")));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&sleeper_dir);
+}

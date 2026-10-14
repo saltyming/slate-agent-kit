@@ -202,8 +202,10 @@ pub fn is_iso_datetime(s: &str) -> bool {
         && m.parse::<u32>().is_ok_and(|m| m < 60)
 }
 
-/// Splits `text` into words at whitespace, except inside backtick spans (`` `a b` `` and
-/// ``` ``a b`` ```), so an inline literal or a hyperlink is never broken across lines.
+/// Splits `text` into words at ASCII whitespace, except inside backtick spans (`` `a b` ``
+/// and ``` ``a b`` ```), so an inline literal or a hyperlink is never broken across lines,
+/// and after a backslash, whose escaped space stays in its word. A backslash escapes the
+/// next character outside an inline literal, so an escaped backtick opens no span.
 pub fn split_words(text: &str) -> Vec<String> {
     #[derive(PartialEq)]
     enum Span {
@@ -218,6 +220,16 @@ pub fn split_words(text: &str) -> Vec<String> {
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
+        if c == '\\' && span != Span::Double {
+            cur.push(c);
+            match chars.get(i + 1) {
+                Some(n) if n.is_ascii_whitespace() => cur.push(' '),
+                Some(n) => cur.push(*n),
+                None => {}
+            }
+            i += 2;
+            continue;
+        }
         if c == '`' {
             let double = chars.get(i + 1) == Some(&'`');
             match (&span, double) {
@@ -238,7 +250,7 @@ pub fn split_words(text: &str) -> Vec<String> {
                 (Span::Double, false) => {}
             }
         }
-        if c.is_whitespace() && span == Span::None {
+        if c.is_ascii_whitespace() && span == Span::None {
             if !cur.is_empty() {
                 words.push(std::mem::take(&mut cur));
             }
@@ -253,14 +265,48 @@ pub fn split_words(text: &str) -> Vec<String> {
     words
 }
 
+/// Joins words that a line must not break between (see [`crate::rst::may_break_between`])
+/// into one token with single spaces, so a wrapper moves them together.
+pub fn glue_words(words: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut prev: &str = "";
+    for w in words {
+        match out.last_mut() {
+            Some(last) if !crate::rst::may_break_between(prev, w) => {
+                last.push(' ');
+                last.push_str(w);
+            }
+            _ => out.push(w.clone()),
+        }
+        prev = w;
+    }
+    out
+}
+
 /// Wraps `text` at word boundaries to at most `width` columns per line; the first line
 /// starts after `first_prefix_len` characters already present, continuation lines are
-/// indented by `indent` spaces.
+/// indented by `indent` spaces. A word that does not fit stands alone on its line, and
+/// no line begins or ends where that would read as other markup ([`glue_words`]).
 pub fn wrap_words(text: &str, first_prefix_len: usize, indent: usize, width: usize) -> Vec<String> {
+    wrap_tokens(
+        &glue_words(&split_words(text)),
+        first_prefix_len,
+        indent,
+        width,
+    )
+}
+
+/// Wraps ready-made tokens as [`wrap_words`] does; each token goes on one line whole.
+pub fn wrap_tokens(
+    words: &[String],
+    first_prefix_len: usize,
+    indent: usize,
+    width: usize,
+) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
     let mut cur_len = first_prefix_len;
-    for word in split_words(text) {
+    for word in words {
         let wl = word.chars().count();
         if !cur.is_empty() && cur_len + 1 + wl > width {
             lines.push(std::mem::take(&mut cur));
@@ -270,11 +316,11 @@ pub fn wrap_words(text: &str, first_prefix_len: usize, indent: usize, width: usi
             if !lines.is_empty() {
                 cur.push_str(&" ".repeat(indent));
             }
-            cur.push_str(&word);
+            cur.push_str(word);
             cur_len += wl;
         } else {
             cur.push(' ');
-            cur.push_str(&word);
+            cur.push_str(word);
             cur_len += 1 + wl;
         }
     }
@@ -323,6 +369,24 @@ mod tests {
     }
 
     #[test]
+    fn a_done_or_pending_label_never_starts_a_wrapped_line() {
+        // Greedy wrapping at 20 columns would start the second line with `done:`.
+        for label in ["done:", "Pending", "DONE"] {
+            let text = format!("the first item is {label} - and more words follow here");
+            let lines = wrap_words(&text, 0, 0, 20);
+            assert!(lines.len() > 1, "{lines:?}");
+            for line in &lines[1..] {
+                let first = line.split_whitespace().next().unwrap_or_default();
+                let bare = first.trim_end_matches(':');
+                assert!(
+                    !bare.eq_ignore_ascii_case("done") && !bare.eq_ignore_ascii_case("pending"),
+                    "{lines:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn wrapping() {
         let w = wrap_words("aaa bbb ccc ddd", 0, 2, 8);
         assert_eq!(w, vec!["aaa bbb", "  ccc", "  ddd"]);
@@ -333,5 +397,36 @@ mod tests {
         assert_eq!(split_words("``a `b c` d`` e"), vec!["``a `b c` d``", "e"]);
         let w = wrap_words("x `a <b.rst>`_ yyyyyyyy", 0, 2, 12);
         assert_eq!(w, vec!["x", "  `a <b.rst>`_", "  yyyyyyyy"]);
+    }
+
+    #[test]
+    fn escapes_and_unicode_spaces_stay_in_their_words() {
+        // An escaped backtick opens no span; an escaped space stays in its word.
+        assert_eq!(split_words("a \\`b c"), vec!["a", "\\`b", "c"]);
+        assert_eq!(split_words("``x``\\ s tail"), vec!["``x``\\ s", "tail"]);
+        // A backslash inside an inline literal is not an escape.
+        assert_eq!(split_words("``a\\`` b"), vec!["``a\\``", "b"]);
+        // Only ASCII whitespace separates words.
+        assert_eq!(split_words("a\u{a0}b c\td"), vec!["a\u{a0}b", "c", "d"]);
+    }
+
+    #[test]
+    fn words_a_line_must_not_break_between_are_glued() {
+        let w = split_words("a - b 1. c foo:: d");
+        assert_eq!(glue_words(&w), vec!["a -", "b 1.", "c", "foo:: d"]);
+        // A rule alone on a line would underline the line above, so it neither starts
+        // nor ends a line: it travels with the words around it.
+        assert_eq!(
+            glue_words(&split_words("a ---- b c")),
+            vec!["a ---- b", "c"]
+        );
+        assert_eq!(
+            wrap_words("aaa bbb - ccc", 0, 0, 7),
+            vec!["aaa", "bbb -", "ccc"]
+        );
+        assert_eq!(
+            wrap_words("aaaa ==== bbbb cc", 0, 0, 9),
+            vec!["aaaa ==== bbbb", "cc"]
+        );
     }
 }

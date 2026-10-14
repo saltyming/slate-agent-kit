@@ -58,8 +58,9 @@ Evidence
   the user's custom rules; ``configure`` appends them again on every run.
 - ``kits/claude-agent-kit/install.sh`` documents ``CLAUDE_DIR`` and ``BIN_DIR``
   overrides in its help text and assigns both unconditionally.
-- ``tooling/kit-scripts/configure-prefs.sh`` prompts eleven aside questions in a
-  row with no validation, including models for backends the user did not pick.
+- ``tooling/kit-scripts/configure-prefs.sh`` prompts eleven aside questions in
+  a row with no validation, including models for backends the user did not
+  pick.
 - Binaries go to ``~/.local/bin`` on Unix and to ``%USERPROFILE%\.local\bin``
   (Claude) or ``%CODEX_HOME%\slate-agent-kit\bin`` (Codex) on Windows.
 - Harness-native subagent defaults: Claude Code ``CLAUDE_CODE_SUBAGENT_MODEL``
@@ -67,8 +68,8 @@ Evidence
   ``default_subagent_model`` and ``default_subagent_reasoning_effort``
   (https://learn.chatgpt.com/docs/config-file/config-reference, and present in
   the Codex 0.157.0 binary); Kimi Code ``[secondary_model]`` with
-  ``default_model`` naming an alias of ``[models]``, where an unknown alias makes
-  the configuration invalid and session startup fails
+  ``default_model`` naming an alias of ``[models]``, where an unknown alias
+  makes the configuration invalid and session startup fails
   (https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/config-files.html).
 
 Goals and non-goals
@@ -110,9 +111,9 @@ The installer is a Rust crate in the slate workspace, shipped prebuilt for the
 same platforms as aside and dispatch. It reads a per-kit descriptor rendered by
 slate, installs the kit's payload, obtains and registers the MCP servers, runs
 the prefs wizard and writes native configuration. The kit entry points download
-the installer for their platform (or build it from a slate checkout) and hand it
-the payload. The exact contract is ``spec/installer.rst`` and ``spec/prefs.rst``
-in this record's changeset.
+the installer for their platform (or build it from a slate checkout) and hand
+it the payload. The exact contract is ``spec/installer.rst`` and
+``spec/prefs.rst`` in this record's changeset.
 
 Impact and compatibility
 ------------------------
@@ -138,9 +139,8 @@ Verification strategy
 
 - ``cargo test`` on Linux, macOS and Windows covers every configuration edit
   against fixture files, including comment preservation and invalid input.
-- Install, reinstall over the previous release, configure and uninstall run
-  for all three harnesses against an isolated ``HOME`` with stand-in harness
-  CLIs.
+- Install, reinstall over the previous release, configure and uninstall run for
+  all three harnesses against an isolated ``HOME`` with stand-in harness CLIs.
 - The same answers produce the same prefs files in all three harnesses.
 
 Alternatives and costs

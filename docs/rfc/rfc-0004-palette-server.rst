@@ -74,8 +74,8 @@ Non-goals:
 Requirements and invariants
 ---------------------------
 
-- Writes stay inside the project's ``_palette/`` and the paths its layout names,
-  and inside the allowed roots.
+- Writes stay inside the project's ``_palette/`` and the paths its layout
+  names, and inside the allowed roots.
 - Checking and regenerating the shared families depends on no file under
   ``_palette/``: where the layout is absent, the families are found from the
   documents themselves.
@@ -117,8 +117,7 @@ Alternatives and costs
 
 - Prose rules and a lint only: detects drift after the fact and leaves the
   multi-file update to the agent.
-- A Python checker: depends on each machine's Python and docutils
-  installation.
+- A Python checker: depends on each machine's Python and docutils installation.
 
 Open questions
 --------------

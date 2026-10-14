@@ -300,8 +300,12 @@ fn preview_config(kit: &Kit, plan: &Plan) -> Vec<(PathBuf, Vec<String>)> {
             let Ok(mut doc) = claude::parse_settings(text.as_deref(), &file) else {
                 return Vec::new();
             };
+            let palette = plan
+                .servers
+                .iter()
+                .any(|s| s == "palette")
+                .then_some(placeholder.as_slice());
             let dispatch = plan.servers.iter().any(|s| s == "dispatch");
-            let palette = plan.servers.iter().any(|s| s == "palette");
             agy::settings_edits(&mut doc, &file, dispatch, palette)
         }
     };
@@ -536,7 +540,7 @@ pub fn build(
         roots: choices.roots.clone(),
         files,
         stale,
-        retire: retire::plan(env, kit),
+        retire: retire::plan(env, &retire::Context::for_kit(kit)),
         prefs: prefs_plans,
         custom,
         custom_dir,

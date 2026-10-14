@@ -126,6 +126,7 @@ Contract
 --------
 Commands
 ~~~~~~~~
+
 ``slate-setup install``
   Full install or reinstall.
 
@@ -146,11 +147,14 @@ entry point), ``--home <dir>`` (for agy only its own folder, Harness homes),
 <paths>`` (an OS path list), ``--set <key>=<value>`` (repeatable; keys in
 spec/prefs.rst), ``--custom-rules <dir|none>``, ``--yes``, ``--dry-run``.
 ``mcp`` also takes ``--harness <name>`` (repeatable or comma-separated),
-``--uninstall`` and ``--slate-version``; it records its registrations and
-edits in ``.slate-agent-kit-mcp-manifest.toml`` in the harness's manifest
-folder (the home; ``~/.gemini/slate-agent-kit`` for agy) and never removes
-binaries. The environment variable ``CUSTOM_RULES_DIR`` seeds
-``--custom-rules`` and is never required.
+``--uninstall`` and ``--slate-version``; it records its registrations, edits
+and installed binaries in ``.slate-agent-kit-mcp-manifest.toml`` in the
+harness's manifest folder (the home; ``~/.gemini/slate-agent-kit`` for agy).
+Before registering it retires the servers that manifest recorded and the run
+no longer registers, as install does (Legacy cleanup, Retired servers), with
+the plan in its summary; it removes a binary only through that retirement.
+The environment variable ``CUSTOM_RULES_DIR`` seeds ``--custom-rules`` and is
+never required.
 
 Terminal experience
 ~~~~~~~~~~~~~~~~~~~
@@ -253,6 +257,7 @@ Payload files and signatures
 
 Server registration
 ~~~~~~~~~~~~~~~~~~~
+
 Environment per server:
 
 - dispatch: ``SLATE_AGENT_STATE_HOME`` (Claude: the Claude home; Codex, Kimi
@@ -266,12 +271,16 @@ The roots question is asked for every harness. For Kimi, whose plugin runtime
 starts servers outside any project, an empty answer is allowed only after a
 warning that dispatch and palette will reject every project.
 
+The palette server's read-only tools are the names the installed binary prints
+for ``palette --read-only-tools``, probed once per run for every harness; a
+probe that fails writes no palette approvals for any harness and the summary
+says so.
+
 ``claude``
   ``claude mcp remove <server> -s user`` then
   ``claude mcp add <server> -s user --transport stdio -e <K=V>... -- <binary>``.
-  The palette server's read-only tools (the names printed by
-  ``palette --read-only-tools``) and dispatch's consultation and read tools
-  (``dispatch_consult``, ``dispatch_status``, ``dispatch_list``,
+  The palette server's read-only tools and dispatch's consultation and read
+  tools (``dispatch_consult``, ``dispatch_status``, ``dispatch_list``,
   ``dispatch_logs``, ``dispatch_backends``) are added to ``permissions.allow``
   in ``settings.json`` as ``mcp__<server>__<tool>``, in one edit. When the home
   is not the default, the CLI runs with ``CLAUDE_CONFIG_DIR`` set to it if the
@@ -305,15 +314,14 @@ warning that dispatch and palette will reject every project.
   <binary>`` (the flags before the name), run with the process home, so agy
   writes ``~/.gemini/config/mcp_config.json`` itself. Then dispatch's
   consultation and read tools (``dispatch_consult``, ``dispatch_status``,
-  ``dispatch_list``, ``dispatch_logs``, ``dispatch_backends``) and the palette
-  server's read-only tools (``palette_status``, ``palette_lint``,
-  ``palette_layout``, ``palette_template``, a fixed list in the agy module)
-  are added to ``permissions.allow`` in ``~/.gemini/antigravity-cli/settings.json``
-  as ``mcp(<server>/<tool>)``, in one edit that creates the file and the
-  ``permissions`` object when absent and keeps every other key and the user's
-  own entries; the edit is recorded in the manifest and reversed at uninstall
-  and retirement. A missing ``agy`` turns the registration into a report of
-  the commands, as for the other harnesses.
+  ``dispatch_list``, ``dispatch_logs``, ``dispatch_backends``, a fixed list)
+  and the palette server's read-only tools as probed are added to
+  ``permissions.allow`` in ``~/.gemini/antigravity-cli/settings.json`` as
+  ``mcp(<server>/<tool>)``, in one edit that creates the file and the
+  ``permissions`` object when absent, adds no entry already present, and keeps
+  every other key and the user's own entries; the edit is recorded in the
+  manifest and reversed at uninstall and retirement. A missing ``agy`` turns
+  the registration into a report of the commands, as for the other harnesses.
 
 Native configuration
 ~~~~~~~~~~~~~~~~~~~~
@@ -357,13 +365,15 @@ manifest folder (``layout::manifest_dirs``). An older line-format manifest
 
 Uninstall
 ~~~~~~~~~
+
 - Removes the kit-managed files and folders the manifest lists after checking
   their signatures; lists the user-owned ones and removes them only if the
   user chooses to (default: keep).
 - Unregisters the servers, removes the Kimi plugin entry and the Claude and
-  Antigravity permission entries it added (for Antigravity the nine
-  ``mcp(<server>/<tool>)`` strings, and a ``settings.json`` the installer
-  created when nothing else was written into it).
+  Antigravity permission entries it added (for Antigravity the
+  ``mcp(<server>/<tool>)`` strings the manifest recorded, and a
+  ``settings.json`` the installer created when nothing else was written into
+  it).
 - Restores each edited configuration key to its recorded previous value, or
   removes it if it did not exist, but only when its current value is still the
   one the installer wrote; otherwise it reports the key and leaves it.
@@ -375,6 +385,7 @@ Uninstall
 
 Legacy cleanup
 ~~~~~~~~~~~~~~
+
 ``workslate`` (claude)
   Removes the hook entries in ``settings.json`` whose command contains
   ``workslate`` and ``--hook=``, or ``[workslate-task-verify]``, after backing
@@ -390,27 +401,37 @@ Earlier installer locations
 Retired servers
   A server the previous manifest recorded and the descriptor no longer lists
   (``aside`` from releases before 26.10.1) is retired on install and
-  configure, also with ``--binaries skip``. For Claude Code and Codex the
-  recorded servers are the manifest's registrations; for Kimi, whose manifest
-  records the plugin and not its servers, they are the ``mcpServers`` of the
-  installer's plugin; a server whose binary the manifest lists counts too. In
-  order: the configuration keys recorded for that server (those under
+  configure, also with ``--binaries skip``; ``mcp`` retires, the same way and
+  in the same order, a server its own manifest recorded that the run no longer
+  registers. For Claude Code, Codex and Antigravity the recorded servers are
+  the manifest's registrations; for Kimi, whose manifest records the plugin and
+  not its servers, they are the ``mcpServers`` of the installer's plugin; a
+  server whose binary the manifest lists counts too. In order: the
+  configuration keys recorded for that server (those under
   ``mcp_servers.<server>`` and the list entries ``mcp__<server>`` and
   ``mcp__<server>__<tool>``) are restored, newest first, each only while it
   holds what the installer wrote, and from a shared list only those entries;
   the server is unregistered (``claude mcp remove <server> -s user``, ``codex
   mcp remove <server>`` with ``CODEX_HOME``, or its entry and keyword removed
-  from ``kimi.plugin.json`` with ``SKILL.md`` rewritten); its binary is
-  removed unless another kit's manifest in any harness home lists it, and a
-  kept binary is reported and no longer recorded by this kit. The keys come
-  before the unregistration because ``codex mcp remove`` deletes the server's
-  whole table. A removal the CLI runs and refuses (it also refuses a server
-  that is not registered) is reported with its message and the command to run
-  by hand, and the registration is no longer recorded; a CLI that cannot run
-  keeps the registration and the binary recorded, prints the commands and
-  retries on the next run; a failed key restore or binary removal is a
-  problem. The manifest changes only for the parts that succeeded, and the
-  summary lists each server, its binary and each key before anything changes.
+  from ``kimi.plugin.json`` with ``SKILL.md`` rewritten); its binary, when the
+  retiring manifest lists it, is removed unless another manifest in any
+  harness's manifest folder, a kit's or an ``mcp`` one, lists it, and a kept
+  binary is reported and no longer recorded by the retiring manifest; a binary
+  the retiring manifest does not list is left in place. An ``mcp`` run over
+  several harnesses does not count its own manifests that retire the same
+  server as keeping the binary: it unregisters the server in every harness
+  first and then removes the binary once, and while one of those harnesses
+  still has the server registered the binary stays recorded in each of them
+  and the next run retries; a binary already gone when its removal comes counts
+  as removed. The keys come before the unregistration because ``codex mcp
+  remove`` deletes the server's whole table. A removal the CLI runs and refuses
+  (it also refuses a server that is not registered) is reported with its
+  message and the command to run by hand, and the registration is no longer
+  recorded; a CLI that cannot run keeps the registration and the binary
+  recorded, prints the commands and retries on the next run; a failed key
+  restore or binary removal is a problem. The manifest changes only for the
+  parts that succeeded, and the summary lists each server, its binary and each
+  key, with the decision on the binary, before anything changes.
 
 Entry points
 ~~~~~~~~~~~~
@@ -473,6 +494,7 @@ a removed or renamed one is not.
 
 Conformance
 -----------
+
 ``cargo test -p slate-setup`` covers the descriptor, the manifest, the prefs
 parser, migration and rename, the configuration edits for each harness, the
 retirement of a recorded server on each harness, and the install, reinstall,
@@ -483,8 +505,14 @@ uninstall that keeps the user's permission entries and unknown keys, the
 ownership classification of files with a frontmatter block (BOM, CRLF, an
 unclosed block), the ``--home`` refusal, shared binaries kept in both
 directions, ``mcp`` and retirement, and a layout regression that keeps the
-three earlier harnesses' install, uninstall and ``mcp`` outputs byte-identical;
-the tests pass on Linux, macOS and Windows.
+three earlier harnesses' install, uninstall and ``mcp`` outputs
+byte-identical. ``mcp`` retirement is covered on each harness over a manifest
+recording a server as a registration alone and with its binary, with a second
+installation sharing the binary, with ``--dry-run``, repeated, with a refusing
+CLI and with a failed binary removal, and the installed binaries recorded; the
+agy approvals follow the stand-in palette's tool list, an added tool included,
+with the probe failure note, the user's entries kept and no duplicate on
+reinstall. The tests pass on Linux, macOS and Windows.
 
 References
 ----------

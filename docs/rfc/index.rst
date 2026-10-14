@@ -117,7 +117,7 @@ Records
 `RFC-0019 <rfc-0019-changesets-under-the-document-root.rst>`_ Changesets edit any document under the document root, and Replace body: keeps subsections
   Status: Accepted. Implementation: complete.
   Depends: RFC-0004, RFC-0013, RFC-0007.
-  Linked from: RFC-0020 (Depends), RFC-0020 (link), RFC-0021 (Depends), RFC-0021 (link).
+  Linked from: RFC-0020 (Depends), RFC-0020 (link), RFC-0021 (Depends), RFC-0021 (link), RFC-0024 (Depends).
   Superseded by: none.
 
 `RFC-0020 <rfc-0020-acceptance-setting-in-contributing.rst>`_ An Acceptance setting decides whether Accepted must carry the time
@@ -129,17 +129,23 @@ Records
 `RFC-0021 <rfc-0021-generate-and-refresh-tools.rst>`_ Generation and derived header fields on demand
   Status: Accepted. Implementation: complete.
   Depends: RFC-0004, RFC-0019.
-  Linked from: none.
+  Linked from: RFC-0024 (Depends).
   Superseded by: none.
 
 `RFC-0022 <rfc-0022-dispatch-absorbs-consultation.rst>`_ dispatch absorbs consultation; every run is asynchronous and waited on through the harness
   Status: Accepted. Implementation: complete.
   Depends: RFC-0008, RFC-0002, RFC-0001.
-  Linked from: RFC-0023 (Depends).
+  Linked from: RFC-0023 (Depends), RFC-0024 (Depends).
   Superseded by: none.
 
 `RFC-0023 <rfc-0023-agy-agent-kit-fourth-kit-and-agy-backend.rst>`_ agy-agent-kit: the fourth kit, for Antigravity, and the agy backend
   Status: Accepted. Implementation: complete.
   Depends: RFC-0022, RFC-0008, RFC-0002.
-  Linked from: none.
+  Linked from: RFC-0024 (Depends).
+  Superseded by: none.
+
+`RFC-0024 <rfc-0024-release-hardening-of-palette-dispatch-and-installer.rst>`_ Release hardening: layout moves, refresh verification, 79-column prose, mcp retirement, wait liveness, agy approvals
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0023, RFC-0022, RFC-0021, RFC-0019.
+  Linked from: ADR-0002 (Depends).
   Superseded by: none.

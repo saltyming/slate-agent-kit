@@ -150,9 +150,79 @@ static ITEM_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static DIRECTIVE_RE: LazyLock<Regex> =
     LazyLock::new(|| re(r"^\.\.[ \t]+[A-Za-z0-9][\w+:.-]*::(\s|$)"));
+/// A bullet or enumerator marker with the spaces after it, at the start of a line's text.
+static LIST_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"^(?:[-*+•‣⁃]|(?:\d+|#|[A-Za-z]|[ivxlcdmIVXLCDM]+)[.)]|\((?:\d+|#|[A-Za-z]|[ivxlcdmIVXLCDM]+)\))[ \t]+",
+    )
+});
+/// A grid or simple table border.
+static TABLE_BORDER_RE: LazyLock<Regex> =
+    LazyLock::new(|| re(r"^(?:\+[-=+]+\+?|=+(?:[ \t]+=+)+)$"));
 
-fn indent_of(s: &str) -> usize {
+/// The number of leading spaces and tabs of `s`.
+pub fn indent_of(s: &str) -> usize {
     s.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+}
+
+/// Whether `text` (a line without its indentation) opens a list item or a field, as the
+/// scanner reads it: a bullet, an enumerator or a field marker followed by a space or
+/// the end of the line.
+pub fn is_item_start(text: &str) -> bool {
+    ITEM_MARKER_RE.is_match(text)
+}
+
+/// The width of the bullet or enumerator marker that opens `text`, with the spaces after
+/// it; `None` when `text` opens no list item, or the item's text starts on the next line.
+pub fn list_marker_width(text: &str) -> Option<usize> {
+    LIST_MARKER_RE
+        .find(text)
+        .map(|m| m.as_str().chars().count())
+}
+
+/// Whether `text` (a line without its indentation) opens a field: `:Name: value`.
+pub fn is_field_start(text: &str) -> bool {
+    FIELD_RE.is_match(text)
+}
+
+/// Whether `text` is a grid or simple table border, or opens a table row or a line
+/// block.
+pub fn is_table_line(text: &str) -> bool {
+    let t = text.trim();
+    TABLE_BORDER_RE.is_match(t) || t.starts_with('|') || t.starts_with("+-") || t.starts_with("+=")
+}
+
+/// Whether a wrapped line may end with the word `prev` and the next one begin with the
+/// word `next`. A break is refused where the new line would read as other markup: `next`
+/// would open a list item, a field, a comment, a table or a line block, be a rule that
+/// underlines `prev`'s line as a title, or be a `done`/`pending` label that the work
+/// documents' status-marker rule (P009) reads at a line start; or where `prev` is such a
+/// rule, which would then
+/// stand alone and underline the line above it, ends in an escape (a backslash, with or
+/// without the escaped space) or ends in `::`, which would end the line with a literal
+/// block introducer.
+pub fn may_break_between(prev: &str, next: &str) -> bool {
+    let bare = prev.trim_end_matches([' ', '\t']);
+    let escapes = bare.chars().rev().take_while(|c| *c == '\\').count();
+    // A rule left alone on its line would underline the line above it.
+    if escapes % 2 == 1 || prev.ends_with("::") || adornment_char(prev).is_some() {
+        return false;
+    }
+    !(is_item_start(next)
+        || is_table_line(next)
+        || next == ".."
+        || next == "::"
+        || next == "__"
+        || next.starts_with(">>>")
+        || is_status_label(next)
+        || adornment_char(next).is_some())
+}
+
+/// Whether `word` is `done` or `pending`, in any case, bare or with a trailing colon:
+/// at a line start, followed by a colon or a dash, P009 reads it as a status marker.
+fn is_status_label(word: &str) -> bool {
+    let w = word.trim_end_matches(':');
+    w.eq_ignore_ascii_case("done") || w.eq_ignore_ascii_case("pending")
 }
 
 /// Returns the adornment character when `s` is an underline/overline candidate.
@@ -499,7 +569,7 @@ impl Doc {
     /// paragraph, a definition body) continues on lines at its first line's indent, so
     /// a definition term and its body, or a list item and the next, stay apart.
     /// List-table cells are text lines whose markers open blocks of their own.
-    fn prose_blocks(&self) -> Vec<std::ops::Range<usize>> {
+    pub(crate) fn prose_blocks(&self) -> Vec<std::ops::Range<usize>> {
         let mut out = Vec::new();
         let n = self.src.len();
         let mut i = 0;
@@ -774,6 +844,56 @@ mod tests {
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].target, "x.rst");
         assert_eq!(l[0].line, 3);
+    }
+
+    #[test]
+    fn what_opens_a_list_item_a_field_or_a_table() {
+        for t in [
+            "- x", "1.", "(a) x", ":Name: v", "mild.", "10. x", "• x", "A) x",
+        ] {
+            assert!(is_item_start(t), "{t}");
+        }
+        for t in ["-x", "e.g. x", "1.5", ":ref:`x`", "--"] {
+            assert!(!is_item_start(t), "{t}");
+        }
+        assert_eq!(list_marker_width("- x"), Some(2));
+        assert_eq!(list_marker_width("10.  x"), Some(5));
+        assert_eq!(list_marker_width("(a) x"), Some(4));
+        assert_eq!(list_marker_width("• x"), Some(2));
+        assert_eq!(list_marker_width("-"), None);
+        assert_eq!(list_marker_width("text"), None);
+        assert!(is_field_start(":Status: Accepted") && is_field_start(":Empty:"));
+        assert!(!is_field_start(":ref:`a b` text"));
+        for t in ["+---+---+", "| a | b |", "=== ===", "+===+", "|"] {
+            assert!(is_table_line(t), "{t}");
+        }
+        for t in ["a | b", "===", "-- x", "plain"] {
+            assert!(!is_table_line(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn a_wrapped_line_must_not_read_as_other_markup() {
+        // The new line would open a list item, a comment, a rule, a table or a field.
+        for next in [
+            "-", "1.", "(i)", "civil.", "..", "::", "----", "...", "|", "+--", ":x:", "__", ">>>",
+            "done", "Done:", "PENDING", "pending:",
+        ] {
+            assert!(!may_break_between("word", next), "{next}");
+        }
+        for next in [
+            "word", "e.g.", "-x", "--", "→", "`a b`", "foo::", "done.", "undone",
+        ] {
+            assert!(may_break_between("word", next), "{next}");
+        }
+        // The old line would end in an escape or a literal introducer, or be a rule.
+        for prev in ["``a``\\", "a\\ ", "foo::", "----"] {
+            assert!(!may_break_between(prev, "word"), "{prev}");
+        }
+        assert!(
+            may_break_between("a\\\\", "word"),
+            "an escaped backslash is no escape"
+        );
     }
 
     #[test]

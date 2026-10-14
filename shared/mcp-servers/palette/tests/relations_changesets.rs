@@ -713,7 +713,9 @@ fn edit_body_links_hold_in_staging_and_after_promotion() {
         "target": "Contract", "body": format!("Rules\n^^^^^\n\nThe beta rules apply to every operation.\n\n{link}\n")
     }))).expect("replace");
     assert!(p.errors().is_empty(), "{}", show(&p.errors()));
-    assert!(p.read("docs/staging/spec/thing.rst").contains(link));
+    // The write tool wraps the edit body at 79 columns, so the sentence may span lines.
+    let flat = |rel: &str| p.read(rel).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat("docs/staging/spec/thing.rst").contains(link));
     assert!(
         p.read("docs/staging/spec/extra.rst")
             .contains("`the rules <thing.rst#rules>`_")
@@ -730,7 +732,7 @@ fn edit_body_links_hold_in_staging_and_after_promotion() {
         ),
     )
     .expect("promote");
-    assert!(p.read("docs/spec/thing.rst").contains(link));
+    assert!(flat("docs/spec/thing.rst").contains(link));
     assert!(
         p.read("docs/spec/extra.rst")
             .contains("`the rules <thing.rst#rules>`_")

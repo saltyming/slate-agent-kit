@@ -11,3 +11,9 @@ Records
   Depends: RFC-0018.
   Linked from: none.
   Superseded by: none.
+
+`ADR-0002 <adr-0002-line-blocks-status-labels-and-revised-notes.rst>`_ P001 reports line blocks, wrapping keeps status labels off line starts, and Revised notes lose their closing period
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0024.
+  Linked from: none.
+  Superseded by: none.

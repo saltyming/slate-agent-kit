@@ -163,7 +163,14 @@ fn run_steps(
     }
 
     if !plan.retire.is_empty() {
-        retire::apply(env, ui, kit, &plan.retire, manifest, report)?;
+        retire::apply(
+            env,
+            ui,
+            &retire::Context::for_kit(kit),
+            &plan.retire,
+            manifest,
+            report,
+        )?;
         completed.push("retired servers".into());
     }
 

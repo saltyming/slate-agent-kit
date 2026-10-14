@@ -112,8 +112,8 @@ Alternatives and costs
 
 - Keep memory rules per project: each project reinvents them, and the harness's
   invitation to save corrections is left unchanged.
-- Automatic cleanup: deletes rules that were compensating for missing kit rules,
-  which is how the regression happened.
+- Automatic cleanup: deletes rules that were compensating for missing kit
+  rules, which is how the regression happened.
 
 Open questions
 --------------

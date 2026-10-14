@@ -50,6 +50,35 @@ fn p001_tables() {
 }
 
 #[test]
+fn p001_line_blocks_and_pipe_rows_without_a_separator() {
+    for block in [
+        "| a | b |\n",
+        "| a | b |\n| 1 | 2 |\n",
+        "| first line\n| second line\n",
+        "|\n",
+    ] {
+        failing(
+            "P001",
+            "principles.rst",
+            "line blocks and pipe-table rows are not allowed",
+            |p| {
+                p.mutate("docs/principles.rst", |s| format!("{s}\n{block}"));
+            },
+        );
+    }
+}
+
+#[test]
+fn p001_a_pipe_inside_prose_or_a_literal_is_not_a_line_block() {
+    let p = Proj::valid();
+    p.mutate("docs/principles.rst", |s| {
+        format!("{s}\nValues are ``a | b`` or a|b.\n\n::\n\n   | a | b |\n")
+    });
+    let f = p.lint();
+    assert!(!f.iter().any(|x| x.rule == "P001"), "{}", show(&f));
+}
+
+#[test]
 fn p001_directive_substitution_footnote_citation() {
     failing("P001", "glossary.rst", "directive `note::`", |p| {
         p.mutate("docs/glossary.rst", |s| format!("{s}\n.. note:: careful\n"));

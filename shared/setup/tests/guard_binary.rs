@@ -8,6 +8,8 @@ mod support;
 
 use slate_setup::binaries::exe_name;
 use slate_setup::env::Harness;
+use slate_setup::manifest::Manifest;
+use slate_setup::mcp::MCP_KIT;
 use slate_setup::ui::{Ui, new_sink, sink_text};
 use std::fs;
 use support::{ReleaseServer, Sandbox, fake_cli};
@@ -233,13 +235,24 @@ fn mcp_places_the_guard_and_never_registers_it() {
     let names: Vec<String> = sb.added_servers().into_iter().map(|(n, _)| n).collect();
     assert_eq!(names.len(), 4);
     assert!(names.iter().all(|n| n != GUARD), "{names:?}");
-    let manifest = fs::read_to_string(
-        sb.env
-            .default_home(Harness::Claude)
-            .join(".slate-agent-kit-mcp-manifest.toml"),
+    // The manifest lists the guard among the installed binaries, as the kit's
+    // does, so it has an owner; nothing is registered for it.
+    let manifest = Manifest::load(
+        &sb.env.default_home(Harness::Claude),
+        MCP_KIT,
+        Harness::Claude,
     )
-    .unwrap();
-    assert!(!manifest.contains(GUARD), "{manifest}");
+    .unwrap()
+    .expect("the mcp manifest");
+    assert_eq!(
+        manifest.lists_binary(&guard_path(&sb)),
+        !cfg!(windows),
+        "{manifest:?}"
+    );
+    assert!(
+        manifest.registrations.iter().all(|r| r.server != GUARD),
+        "{manifest:?}"
+    );
 }
 
 #[test]

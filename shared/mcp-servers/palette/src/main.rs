@@ -2,7 +2,8 @@
 //!
 //! Owns argument handling and process startup only. `palette` serves MCP,
 //! `palette check <project>` prints lint findings, `palette generate <project>` writes the
-//! generated files, `palette --read-only-tools` prints
+//! generated files, `palette reflow <project> [paths]` rewraps the prose of existing
+//! documents, `palette --read-only-tools` prints
 //! the read tool names and `palette --version` prints the version. The work is in the
 //! `palette_server` library.
 
@@ -27,6 +28,10 @@ fn main() {
             Some(p) if args.len() == 2 => palette_server::cli::generate(p),
             _ => usage(),
         },
+        Some("reflow") => match args.get(1) {
+            Some(p) => palette_server::cli::reflow(p, &args[2..]),
+            None => usage(),
+        },
         Some("--read-only-tools") if args.len() == 1 => {
             for name in read_only_tool_names() {
                 println!("{name}");
@@ -48,6 +53,9 @@ fn usage() -> i32 {
         "       palette check <project>  print lint findings; exit 1 on an error (needs no _palette/)"
     );
     eprintln!("       palette generate <project>  write the indexes and staging documents");
+    eprintln!(
+        "       palette reflow <project> [paths]  rewrap the prose of the project's documents at 79 columns"
+    );
     eprintln!("       palette --read-only-tools");
     eprintln!("       palette --version");
     2

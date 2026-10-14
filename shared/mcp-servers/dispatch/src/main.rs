@@ -51,7 +51,7 @@ use rmcp::{
 use serde_json::{Value, json};
 
 use backend::Backend;
-use liveness::process_alive;
+use liveness::{parse_sqlite_utc, row_pid_alive_since};
 use params::{
     BackendsParams, CancelParams, ConsultParams, ListParams, LogsParams, StatusParams, SteerParams,
     SubmitParams,
@@ -105,7 +105,7 @@ struct Dispatch {
 #[tool_router]
 impl Dispatch {
     #[tool(
-        description = "Delegate ONE execution step to a coding-agent backend (codex, opencode, claude, or agy) running headless and WRITE-CAPABLE in `working_dir` — it may modify files there. Runs ASYNCHRONOUSLY: returns a task id and a `wait` command line immediately; run that command with the harness's background means to block until the run is terminal (exit 0 terminal, 2 still active at --timeout, 3 unknown id, 1 error), then read the result with dispatch_status(id). Provide a structured spec — objective (required), working_dir (required, absolute), and optional target_files / constraints / acceptance — plus optional free-form context / details; the server renders them into the backend prompt. working_dir is rejected unless it canonicalizes within the project root (widen with the DISPATCH_EXTRA_ROOTS env var). sandbox defaults to workspace-write; danger-full-access is rejected unless the server enables it; agy refuses read-only (headless agy runs only with every tool approved). One active run per working_dir unless allow_concurrent=true. model_fallback: an optional ordered list of models tried in turn on a transient backend error (rate limit, quota, model unavailable) — dispatch_status reports final_model/fallback_history when a retry occurred; not honored by dispatch_steer. Watchdog: a fresh codex submit whose backend log never associates within ~30s (DISPATCH_RESTART_UNASSOCIATED_SECS; 0=off) AND whose working_dir shows no writes is killed and auto-resubmitted ONCE as a fresh task — the old row goes interrupted with restarted_as pointing at the successor. POLICY: initiate dispatch according to the harness-rendered dispatch preferences file (`conservative` / `preference-only` / `proactive`) — under `proactive` + `auto`, submit directly for suitable steps; this policy governs dispatch specifically and is not subject to the general write-capable delegation propose-and-wait default used elsewhere. APPROVAL: before the FIRST dispatch in a session, confirm working_dir + the step scope + the approval granularity (per-step vs batch) with the user when approval mode is ask; skip that confirmation only when approval mode is auto."
+        description = "Delegate ONE execution step to a coding-agent backend (codex, opencode, claude, or agy) running headless and WRITE-CAPABLE in `working_dir` — it may modify files there. Runs ASYNCHRONOUSLY: returns a task id and a `wait` command line immediately; run that command with the harness's background means to block until the run is terminal (exit 0 terminal, 2 still active at --timeout, 3 unknown id, 1 error), then read the result with dispatch_status(id). Provide a structured spec — objective (required), working_dir (required, absolute), and optional target_files / constraints / acceptance — plus optional free-form context / details; the server renders them into the backend prompt. working_dir is rejected unless it canonicalizes within the project root (widen with the DISPATCH_EXTRA_ROOTS env var). sandbox defaults to workspace-write; danger-full-access is rejected unless the server enables it; agy refuses read-only (headless agy runs only with every tool approved). One active run per working_dir unless allow_concurrent=true. model_fallback: an optional ordered list of models tried in turn on a transient backend error (rate limit, quota, model unavailable) — dispatch_status reports final_model/fallback_history when a retry occurred; not honored by dispatch_steer. Watchdog: a fresh codex submit whose backend log never associates within ~30s (DISPATCH_RESTART_UNASSOCIATED_SECS; 0=off) AND whose working_dir shows no writes is killed and auto-resubmitted ONCE as a fresh task — the old row goes interrupted with restarted_as pointing at the successor. Whether and when to dispatch is decided by the dispatch rule and the installed dispatch preferences (level on-request | suggest | auto, backend, model, effort, fallback); this tool runs a step once that decision is made."
     )]
     async fn dispatch_submit(
         &self,
@@ -939,13 +939,17 @@ impl Dispatch {
     /// Returns the refreshed row when a transition happened. The conditional
     /// `mark_interrupted` makes the race with a normal terminal write safe.
     fn live_reconcile(&self, row: &store::TaskRow) -> Option<store::TaskRow> {
-        if !store::is_active(&row.status) {
-            return None;
-        }
-        // owner_pid is always recorded at insert; a missing one is a legacy row
-        // that boot reconciliation owns — don't guess here.
-        let owner_dead = matches!(row.owner_pid, Some(p) if !process_alive(p as i32));
-        if !owner_dead {
+        self.live_reconcile_with(row, row_pid_alive_since)
+    }
+
+    /// [`Self::live_reconcile`] with the liveness check supplied by `alive`
+    /// (the owner pid and the row's `created_at`), for tests.
+    fn live_reconcile_with(
+        &self,
+        row: &store::TaskRow,
+        alive: impl Fn(i64, Option<SystemTime>) -> bool,
+    ) -> Option<store::TaskRow> {
+        if !store::is_active(&row.status) || !owner_gone(row, alive) {
             return None;
         }
         let conn = self.db.lock().ok()?;
@@ -973,8 +977,8 @@ impl Dispatch {
     /// auto-restarted: `restarted_as`, the successor's id.
     fn augment_observability(&self, v: &mut Value, row: &store::TaskRow) {
         if store::is_active(&row.status) {
-            if let Some(pid) = row.child_pid {
-                v["child_process_alive"] = json!(process_alive(pid as i32));
+            if let Some(alive) = child_alive(row, row_pid_alive_since) {
+                v["child_process_alive"] = json!(alive);
             }
             let rollout = self.resolve_rollout(row);
             v["log_associated"] = json!(rollout.is_some());
@@ -1480,41 +1484,6 @@ fn trim_to_start_line(jsonl: String, start_line: Option<i64>) -> String {
     }
 }
 
-/// Parse a SQLite `datetime('now')` string ("YYYY-MM-DD HH:MM:SS", UTC) into a
-/// `SystemTime`, without pulling in a date crate. Returns None on any malformed field.
-/// Uses Howard Hinnant's days-from-civil algorithm.
-fn parse_sqlite_utc(s: &str) -> Option<SystemTime> {
-    let (date, time) = s.trim().split_once(' ')?;
-    let mut d = date.split('-');
-    let y: i64 = d.next()?.parse().ok()?;
-    let mo: i64 = d.next()?.parse().ok()?;
-    let da: i64 = d.next()?.parse().ok()?;
-    let mut t = time.split(':');
-    let h: i64 = t.next()?.parse().ok()?;
-    let mi: i64 = t.next()?.parse().ok()?;
-    let se: i64 = t.next()?.parse().ok()?;
-    if !(1..=12).contains(&mo)
-        || !(1..=31).contains(&da)
-        || !(0..=23).contains(&h)
-        || !(0..=59).contains(&mi)
-        || !(0..=60).contains(&se)
-    {
-        return None;
-    }
-    let yy = if mo <= 2 { y - 1 } else { y };
-    let era = (if yy >= 0 { yy } else { yy - 399 }) / 400;
-    let yoe = yy - era * 400;
-    let mp = (mo + 9) % 12; // Mar=0 … Feb=11
-    let doy = (153 * mp + 2) / 5 + da - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    let secs = days * 86400 + h * 3600 + mi * 60 + se;
-    if secs < 0 {
-        return None;
-    }
-    Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs as u64))
-}
-
 fn env_truthy(key: &str) -> bool {
     std::env::var(key)
         .map(|v| {
@@ -1645,21 +1614,52 @@ fn parse_extra_roots() -> Vec<PathBuf> {
     }
 }
 
+/// Whether the process that owns `row` is gone. `alive` is given the owner pid
+/// and the row's `created_at`, the time the owner was already running at, so a
+/// process that reused the pid later reads as gone. A row without an owner pid
+/// is a legacy row that boot reconciliation owns: not judged here.
+fn owner_gone(row: &store::TaskRow, alive: impl Fn(i64, Option<SystemTime>) -> bool) -> bool {
+    matches!(row.owner_pid, Some(p) if !alive(p, parse_sqlite_utc(&row.created_at)))
+}
+
+/// Whether the spawned child of `row` is still its child, or `None` before a
+/// child pid is recorded. `alive` is given the child pid and the row's
+/// `started_at`, written once the child existed.
+fn child_alive(
+    row: &store::TaskRow,
+    alive: impl Fn(i64, Option<SystemTime>) -> bool,
+) -> Option<bool> {
+    let pid = row.child_pid?;
+    Some(alive(
+        pid,
+        row.started_at.as_deref().and_then(parse_sqlite_utc),
+    ))
+}
+
 /// Boot reconciliation: a freshly started server owns no running child, so any
 /// `queued`/`running` row whose owner process is gone is stranded — mark it
 /// interrupted. Rows owned by a still-live peer server are left untouched.
 fn reconcile(conn: &rusqlite::Connection) {
+    reconcile_with(conn, row_pid_alive_since);
+}
+
+/// [`reconcile`] with the liveness check supplied by `alive` (the owner pid and
+/// the row's `created_at`), for tests.
+fn reconcile_with(
+    conn: &rusqlite::Connection,
+    alive: impl Fn(i64, Option<SystemTime>) -> bool,
+) -> usize {
     let actives = match store::active_owners(conn) {
         Ok(a) => a,
         Err(e) => {
             tracing::warn!("dispatch: reconcile read failed: {e}");
-            return;
+            return 0;
         }
     };
     let mut reconciled = 0usize;
-    for (id, owner_pid) in actives {
+    for (id, owner_pid, created_at) in actives {
         let dead = match owner_pid {
-            Some(pid) => !process_alive(pid as i32),
+            Some(pid) => !alive(pid, parse_sqlite_utc(&created_at)),
             None => true,
         };
         if dead {
@@ -1676,6 +1676,7 @@ fn reconcile(conn: &rusqlite::Connection) {
     if reconciled > 0 {
         tracing::info!("dispatch: reconciled {reconciled} stranded task(s) to interrupted");
     }
+    reconciled
 }
 
 // ── ServerHandler ─────────────────────────────────────────
@@ -1724,10 +1725,10 @@ impl ServerHandler for Dispatch {
              codex execution whose log never associates within ~30s with no working-dir writes is \
              auto-restarted once (restart_of/restarted_as link the pair; \
              DISPATCH_RESTART_UNASSOCIATED_SECS tunes, 0 disables). Each run consumes the user's \
-             backend quota. The behavioral policy — when to dispatch or consult, the preferred \
-             backend, models and effort, and whether to confirm working_dir, step scope, and \
-             approval granularity before the first dispatch of a session — lives in the \
-             harness-rendered dispatch and consultation rules and their preferences files.",
+             backend quota. Whether and when to dispatch or consult is decided by the \
+             harness-rendered dispatch and consultation rules and the installed preferences \
+             (level on-request | suggest | auto, backend, model, effort, fallback); these tools \
+             run a step once that decision is made.",
         )
     }
 
@@ -2450,6 +2451,175 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .starts_with("a consultation has no live log")
+        );
+    }
+
+    // ── tool descriptions ─────────────────────────────────
+
+    #[test]
+    fn the_submit_description_defers_to_the_dispatch_rule_and_preferences() {
+        let router = Dispatch::tool_router();
+        let tool = router.get("dispatch_submit").expect("dispatch_submit");
+        let description = tool.description.as_deref().expect("a description");
+        assert!(
+            description.contains(
+                "decided by the dispatch rule and the installed dispatch preferences \
+                 (level on-request | suggest | auto, backend, model, effort, fallback)"
+            ),
+            "{description}"
+        );
+    }
+
+    #[test]
+    fn get_info_defers_to_the_rules_and_the_installed_preferences() {
+        let info = test_server().get_info();
+        let text = info.instructions.expect("instructions");
+        assert!(
+            text.contains("(level on-request | suggest | auto, backend, model, effort, fallback)"),
+            "{text}"
+        );
+    }
+
+    // ── liveness by start time ────────────────────────────
+
+    /// A liveness check for a running process that a stand-in reader says
+    /// started at `start`.
+    fn running_since(start: SystemTime) -> impl Fn(i64, Option<SystemTime>) -> bool {
+        move |pid, recorded| liveness::alive_since_by(pid as i32, recorded, |_| Some(start))
+    }
+
+    fn row_of(server: &Dispatch, id: &str) -> store::TaskRow {
+        store::get(&server.db.lock().unwrap(), id).unwrap().unwrap()
+    }
+
+    /// The row's `created_at` parsed: SQLite wrote the text.
+    fn created_of(server: &Dispatch, id: &str) -> SystemTime {
+        parse_sqlite_utc(&row_of(server, id).created_at).expect("SQLite's datetime('now') parses")
+    }
+
+    fn set_column(server: &Dispatch, id: &str, column: &str, value: &str) {
+        server
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                &format!("UPDATE dispatch_tasks SET {column} = ?1 WHERE id = ?2"),
+                rusqlite::params![value, id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn boot_reconciliation_interrupts_a_row_whose_owner_pid_was_reused() {
+        let server = test_server();
+        let id = insert(&server, Kind::Execute, "codex");
+        let created = created_of(&server, &id);
+        let reconcile =
+            |start: SystemTime| reconcile_with(&server.db.lock().unwrap(), running_since(start));
+        // The owner started before the row, in the row's second, or one second after.
+        assert_eq!(reconcile(created - Duration::from_secs(60)), 0);
+        assert_eq!(reconcile(created), 0);
+        assert_eq!(reconcile(created + Duration::from_secs(1)), 0);
+        assert_eq!(row_of(&server, &id).status, store::STATUS_QUEUED);
+        // A process that started later than that is not the owner.
+        assert_eq!(reconcile(created + Duration::from_secs(2)), 1);
+        let row = row_of(&server, &id);
+        assert_eq!(row.status, store::STATUS_INTERRUPTED);
+        assert!(
+            row.error
+                .unwrap_or_default()
+                .contains("reconciled at startup")
+        );
+    }
+
+    #[test]
+    fn boot_reconciliation_judges_by_pid_alone_when_created_at_does_not_parse() {
+        let server = test_server();
+        let id = insert(&server, Kind::Execute, "codex");
+        set_column(&server, &id, "created_at", "not a time");
+        let later = SystemTime::now() + Duration::from_secs(3600);
+        let n = reconcile_with(&server.db.lock().unwrap(), running_since(later));
+        assert_eq!(n, 0);
+        assert_eq!(row_of(&server, &id).status, store::STATUS_QUEUED);
+    }
+
+    #[test]
+    fn boot_reconciliation_with_the_real_readers_tells_this_process_from_an_older_row() {
+        let server = test_server();
+        let current = insert(&server, Kind::Execute, "codex");
+        let old = insert(&server, Kind::Consult, "claude");
+        // A row written in 2000 cannot be owned by this process, whatever its pid.
+        set_column(&server, &old, "created_at", "2000-01-01 00:00:00");
+        reconcile(&server.db.lock().unwrap());
+        assert_eq!(row_of(&server, &old).status, store::STATUS_INTERRUPTED);
+        assert_eq!(row_of(&server, &current).status, store::STATUS_QUEUED);
+    }
+
+    #[test]
+    fn read_time_reconciliation_interrupts_a_row_whose_owner_pid_was_reused() {
+        let server = test_server();
+        let id = insert(&server, Kind::Execute, "codex");
+        let created = created_of(&server, &id);
+        let row = row_of(&server, &id);
+        assert!(
+            server
+                .live_reconcile_with(&row, running_since(created - Duration::from_secs(5)))
+                .is_none()
+        );
+        let after = server
+            .live_reconcile_with(&row, running_since(created + Duration::from_secs(3600)))
+            .expect("the reused pid is reconciled");
+        assert_eq!(after.status, store::STATUS_INTERRUPTED);
+        assert!(
+            after
+                .error
+                .clone()
+                .unwrap_or_default()
+                .contains("reconciled at read time")
+        );
+        // A terminal row is left alone, whatever the reader says.
+        assert!(
+            server
+                .live_reconcile_with(&after, running_since(created + Duration::from_secs(3600)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_childs_liveness_follows_its_start_time_against_started_at() {
+        let server = test_server();
+        let id = insert(&server, Kind::Execute, "codex");
+        let own = i64::from(std::process::id());
+        assert_eq!(
+            child_alive(&row_of(&server, &id), running_since(SystemTime::now())),
+            None,
+            "no child pid yet"
+        );
+        store::mark_running(&server.db.lock().unwrap(), &id, Some(own), "argv", None).unwrap();
+        let row = row_of(&server, &id);
+        let started = parse_sqlite_utc(row.started_at.as_deref().expect("started_at is set"))
+            .expect("SQLite's datetime('now') parses");
+        assert_eq!(
+            child_alive(&row, running_since(started - Duration::from_secs(1))),
+            Some(true)
+        );
+        assert_eq!(
+            child_alive(&row, running_since(started + Duration::from_secs(1))),
+            Some(true)
+        );
+        assert_eq!(
+            child_alive(&row, running_since(started + Duration::from_secs(2))),
+            Some(false),
+            "a process that started after the child was recorded is another process"
+        );
+        set_column(&server, &id, "started_at", "not a time");
+        assert_eq!(
+            child_alive(
+                &row_of(&server, &id),
+                running_since(started + Duration::from_secs(3600))
+            ),
+            Some(true),
+            "a malformed started_at leaves the pid check alone"
         );
     }
 }

@@ -10,11 +10,12 @@ use std::path::{Path, PathBuf};
 
 use super::{Ctx, Session, WriteResult, run_init, run_write};
 use crate::changeset::Changeset;
-use crate::docs::Role;
+use crate::docs::{DocFile, Role};
 use crate::edit;
 use crate::errors::{ErrCode, PalError, Res};
-use crate::layout::{Family, Layout, Placement, normalize_path};
+use crate::layout::{Family, Layout, Locations, Placement, normalize_path};
 use crate::params::{InitParams, LayoutSetParams};
+use crate::records::RecId;
 use crate::rst::{Doc, Pos, split_anchor};
 use crate::schema::schemas;
 use crate::text::{Eol, Source};
@@ -210,6 +211,59 @@ pub fn layout_set(ctx: &Ctx, p: LayoutSetParams) -> Res<WriteResult> {
     })
 }
 
+/// How a changeset is named in a refusal: its record, else its project-relative path.
+fn changeset_label(f: &DocFile) -> String {
+    f.name
+        .strip_suffix(".rst")
+        .and_then(RecId::parse)
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| f.rel.clone())
+}
+
+/// Refuses a move after which a changeset's target would be one a changeset may not
+/// edit under the new placement (the document root moved, the target lies inside the
+/// staging folder or another family's folder, or its mirror would take a reserved
+/// mirror's place), and a move while a changeset cannot be read, since its targets are
+/// then unknown. Every changeset counts, whatever its record's status. Runs before any
+/// file moves, so a refusal leaves the layout, the sources and the mirrors untouched.
+/// A target that is already refused is not caused by the move and is not listed.
+fn refuse_stranded_targets(
+    s: &Session<'_, '_>,
+    fam: Family,
+    placement: &Placement,
+    new_loc: &Locations,
+) -> Res<()> {
+    let mut stranded: Vec<String> = Vec::new();
+    for (idx, f) in s.snap.files.iter().enumerate() {
+        if f.role != Role::Changeset {
+            continue;
+        }
+        let Some(cs) = Changeset::parse(&s.snap, idx) else {
+            stranded.push(format!("{}: unreadable", changeset_label(f)));
+            continue;
+        };
+        let label = cs
+            .record()
+            .map_or_else(|| changeset_label(f), |id| id.to_string());
+        for de in cs.docs.iter().filter(|de| de.target.is_some()) {
+            if let Err(why) = new_loc.resolve_target(&de.doc) {
+                let lead = format!("`{}` cannot be edited by a changeset: ", de.doc);
+                let reason = why.strip_prefix(&lead).unwrap_or(&why);
+                stranded.push(format!("{label}: {} — {reason}", de.doc));
+            }
+        }
+    }
+    if stranded.is_empty() {
+        return Ok(());
+    }
+    Err(PalError::invariant(format!(
+        "placing {} at `{}` would strand changeset targets or hide a changeset that cannot be read, so nothing was moved. Fix or move these first:\n  {}",
+        fam.key(),
+        placement.text(),
+        stranded.join("\n  ")
+    )))
+}
+
 fn move_family(s: &mut Session<'_, '_>, fam: Family, placement: Placement) -> Res<Vec<String>> {
     if s.snap.layout.placement(fam) == placement {
         return Err(PalError::invalid(format!(
@@ -222,6 +276,7 @@ fn move_family(s: &mut Session<'_, '_>, fam: Family, placement: Placement) -> Re
     let old_loc = s.snap.loc.clone();
     let new_layout = s.snap.layout.with_placement(fam, placement.clone());
     let new_loc = new_layout.locations(&root);
+    refuse_stranded_targets(s, fam, &placement, &new_loc)?;
     // Where each file of the family goes.
     let mut moved: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
     for f in &s.snap.files {

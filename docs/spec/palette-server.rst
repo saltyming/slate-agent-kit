@@ -206,21 +206,22 @@ Each finding has a rule id, a severity (``error`` or ``warning``), a file, a
 line and a message.
 
 ``P001`` RST subset (error)
-  A table, a directive other than a comment, an overlined title, an underline
-  shorter than its title, a heading level out of the house-style order, a
-  substitution, a footnote or a citation. ``.. list-table::`` and
-  ``.. code-block::`` are not reported in RFC, ADR, changeset, staging,
-  design, spec, principles, glossary and contributing documents; ``P017``
-  checks them there. The mirror of a document outside the families is not
-  checked by either.
+  A table, a line block (a line opening with ``|`` followed by a space or
+  nothing, which is also how a pipe-table row without its separator reads), a
+  directive other than a comment, an overlined title, an underline shorter than
+  its title, a heading level out of the house-style order, a substitution, a
+  footnote or a citation. ``.. list-table::`` and ``.. code-block::`` are not
+  reported in RFC, ADR, changeset, staging, design, spec, principles, glossary
+  and contributing documents; ``P017`` checks them there. The mirror of a
+  document outside the families is not checked by either.
 
 ``P002`` Structure (error)
   A missing, extra or out-of-order required section; a missing or out-of-order
   required field; a value outside the field's allowed values. The optional
-  fields are ``Amends`` on a record (absent or in its place after
-  ``Related``) and ``Acceptance`` in the contributing document's ``Records``
-  section (absent or in its place after ``Amends``); a field the template
-  places in a section, found in the header or another section, is reported.
+  fields are ``Amends`` on a record (absent or in its place after ``Related``)
+  and ``Acceptance`` in the contributing document's ``Records`` section (absent
+  or in its place after ``Amends``); a field the template places in a section,
+  found in the header or another section, is reported.
 
 ``P003`` Identity (error)
   File name, number and title disagree; a file name that is not lowercase
@@ -229,10 +230,10 @@ line and a message.
 ``P004`` Links (error)
   A link whose target file or anchor does not exist; a link from a project path
   into ``_palette/``. Links in table cells are checked like any other; a link
-  whose text and target wrap over lines within one block is one link; a link
-  in a changeset's edit body is read from the edit's target document, whatever
-  family or none it belongs to, against the documents as the record's edits
-  and its ``Depends`` closure leave them.
+  whose text and target wrap over lines within one block is one link; a link in
+  a changeset's edit body is read from the edit's target document, whatever
+  family or none it belongs to, against the documents as the record's edits and
+  its ``Depends`` closure leave them.
 
 ``P005`` Relations
   A link to a record created later (error); a relation cycle (error); a
@@ -254,15 +255,15 @@ line and a message.
   ``contributing.rst`` with its sections: an error when the family's document
   is not on disk, when a section neither exists, nor is added by the record's
   own changeset, nor exists once the changesets of the record's ``Depends``
-  closure are applied, or when the entry says ``created`` (only design and
-  spec documents are created by a changeset). Any other project document, as
-  a project-relative path to a ``.md`` or ``.rst`` file with what changes in
-  the parenthetical: an error when the file does not exist, the path is
-  absolute, has ``..`` or a backslash, lies inside ``_palette/``, names a
-  source file, names a record or another palette document, or names a family
-  document by its real path instead of its logical name. The parenthetical of
-  such an entry is free text; whether a changeset may edit the document is
-  decided when a changeset names it, not here.
+  closure are applied, or when the entry says ``created`` (only design and spec
+  documents are created by a changeset). Any other project document, as a
+  project-relative path to a ``.md`` or ``.rst`` file with what changes in the
+  parenthetical: an error when the file does not exist, the path is absolute,
+  has ``..`` or a backslash, lies inside ``_palette/``, names a source file,
+  names a record or another palette document, or names a family document by its
+  real path instead of its logical name. The parenthetical of such an entry is
+  free text; whether a changeset may edit the document is decided when a
+  changeset names it, not here.
 
 ``P007`` Changesets (error)
   A target a changeset may not edit (the rule the target fails is named); an
@@ -297,9 +298,9 @@ line and a message.
   project, or a project path inside ``_palette/``; a staging placement that
   contains another family's placement, or a family placed inside the staging
   folder, or placed at the same path as another family, in which case the
-  staging placement is dropped and every write tool and generation refuse
-  until the layout is corrected; a missing ``checker``. ``checker`` is a
-  setting, not a family.
+  staging placement is dropped and every write tool and generation refuse until
+  the layout is corrected; a missing ``checker``. ``checker`` is a setting, not
+  a family.
 
 ``P013`` Backlog (error)
   A duplicate item id; ``in-phase-<N>`` without a phase ``<N>`` file; a
@@ -319,28 +320,27 @@ line and a message.
   outside the palette folders.
 
 ``P016`` Acceptance
-  An ``Accepted`` value that names who accepted the record but not the date
-  and time: an error when the contributing document's ``Records`` section
-  states ``:Acceptance: who-and-time``, nothing when it states
-  ``:Acceptance: who``, a warning when the field, the section or the document
-  is absent.
+  An ``Accepted`` value that names who accepted the record but not the date and
+  time: an error when the contributing document's ``Records`` section states
+  ``:Acceptance: who-and-time``, nothing when it states ``:Acceptance: who``, a
+  warning when the field, the section or the document is absent.
 
 ``P017`` Directive structure (error)
   In a family that admits them, a ``list-table`` or ``code-block`` that
-  docutils would reject or read differently. A ``list-table`` takes an
-  optional title argument and only the options ``:header-rows:`` (a
-  non-negative integer) and ``:widths:`` (``auto`` or positive integers, one
-  per column), each at most once, directly after the directive line; a blank
-  line, then a body that is one two-level list starting at the options'
-  column: rows start with ``* -`` at the body's indent, further cells with
-  ``-`` two columns deeper, one space separates a marker from the cell text,
-  and cell content continues four columns deeper or more. Every row has as
-  many cells as the first; ``:header-rows:`` greater than zero is less than
-  the number of rows. A ``code-block`` takes exactly one language argument
-  (one token of letters, digits and ``_ + . # -``) and no option; a blank
-  line, then non-blank content indented deeper than the directive. Neither is
-  indented with tabs. Each cell's content is scanned like the rest of the
-  document, on its own; code-block content is not checked.
+  docutils would reject or read differently. A ``list-table`` takes an optional
+  title argument and only the options ``:header-rows:`` (a non-negative
+  integer) and ``:widths:`` (``auto`` or positive integers, one per column),
+  each at most once, directly after the directive line; a blank line, then a
+  body that is one two-level list starting at the options' column: rows start
+  with ``* -`` at the body's indent, further cells with ``-`` two columns
+  deeper, one space separates a marker from the cell text, and cell content
+  continues four columns deeper or more. Every row has as many cells as the
+  first; ``:header-rows:`` greater than zero is less than the number of rows. A
+  ``code-block`` takes exactly one language argument (one token of letters,
+  digits and ``_ + . # -``) and no option; a blank line, then non-blank content
+  indented deeper than the directive. Neither is indented with tabs. Each
+  cell's content is scanned like the rest of the document, on its own;
+  code-block content is not checked.
 
 Read tools
 ~~~~~~~~~~
@@ -376,6 +376,10 @@ allocated; and runs as one transaction:
 
 - it takes a per-project lock (``_palette/.palette.lock``), waiting at most 10
   seconds, else fails with ``locked``;
+- it wraps the prose fragments it receives (record sections, changeset edit
+  bodies, phase, deliverable and state text, backlog bodies) at 79 columns as
+  ``palette reflow`` does, before parsing and splicing them, and never rewraps
+  the rest of a file;
 - it parses every file it will change and fails with ``parse_error`` (naming
   the file and line) when one does not parse, changing nothing;
 - it changes only the lines its operation concerns and keeps each file's line
@@ -389,24 +393,31 @@ allocated; and runs as one transaction:
 Tools:
 
 ``palette_init``
-  Creates ``_palette/``, ``_palette/.gitignore`` (``*``), ``layout.rst`` from the
-  given placements, and empty backlog and state documents. Fails with
+  Creates ``_palette/``, ``_palette/.gitignore`` (``*``), ``layout.rst`` from
+  the given placements, and empty backlog and state documents. Fails with
   ``already_initialized`` when a layout exists.
 
 ``palette_layout_set``
   Moves one family to a new placement, moving its files and rewriting every
   link to them. Requires ``confirmed_by_user: true``; carries the destructive
-  annotation.
+  annotation. Before anything moves it parses every changeset, of every
+  record's status, and checks each target that is valid today against the new
+  placement with the rules the parser applies: inside the new document root,
+  outside the new staging folder and every family folder, and with a mirror
+  that takes no reserved mirror's place. A move that would make a target
+  invalid, or one made while a changeset does not parse, is refused with
+  ``invariant_violation`` listing ``<record>: <target> — <rule>`` or
+  ``<record>: unreadable``, and nothing moves.
 
 ``palette_backlog_add``
   Adds an item (title, type, source, priority signal, depends, body); returns
   ``B-<n>``.
 
 ``palette_backlog_update``
-  Changes an item's fields. Status moves only
-  ``proposed`` → ``approved`` → ``in-phase-<N>`` → ``done``, or to ``dropped``
-  from any status; ``in-phase-<N>`` requires phase ``<N>`` to be active, and
-  an item in one phase does not move to another.
+  Changes an item's fields. Status moves only ``proposed`` → ``approved`` →
+  ``in-phase-<N>`` → ``done``, or to ``dropped`` from any status;
+  ``in-phase-<N>`` requires phase ``<N>`` to be active, and an item in one
+  phase does not move to another.
 
 ``palette_phase_open``
   Creates ``phase-<N>/phase.rst`` from goal, reason, assumptions and exit
@@ -414,8 +425,8 @@ Tools:
   to ``in-phase-<N>``. Several phases may be active at once.
 
 ``palette_deliverable_create`` and ``palette_deliverable_update``
-  Write a deliverable for one backlog item in an active phase and link it
-  from the item.
+  Write a deliverable for one backlog item in an active phase and link it from
+  the item.
 
 ``palette_phase_close``
   Takes, for every item in the phase, ``done`` with an outcome pointer or
@@ -429,46 +440,54 @@ Tools:
   ``D-<n>``, ``Q-<n>`` or ``X-<n>``.
 
 ``palette_state_resolve``
-  Resolves an entry: a decision ``graduated`` to a record or document (the entry
-  becomes a one-line pointer), a question ``answered`` (it becomes a decision)
-  or ``withdrawn``, a discrepancy ``fixed`` (removed).
+  Resolves an entry: a decision ``graduated`` to a record or document (the
+  entry becomes a one-line pointer), a question ``answered`` (it becomes a
+  decision) or ``withdrawn``, a discrepancy ``fixed`` (removed).
 
 ``palette_record_create``
   Allocates the next number of ``rfc`` or ``adr``, writes the record from the
-  template with the given fields and sections, and sets the time-varying
-  fields to their initial values. A ``supersedes`` entry takes ``partial:
-  true`` to replace a part; only a whole entry sets the older record to
-  ``Superseded``.
+  template with the given fields and sections, and sets the time-varying fields
+  to their initial values. A ``supersedes`` entry takes ``partial: true`` to
+  replace a part; only a whole entry sets the older record to ``Superseded``.
 
 ``palette_record_update``
   Changes a record. A draft or proposed record may change freely. An accepted
   record's body changes only with ``clarification: true`` (a mechanical
   correction), which adds a ``Revised`` entry. Status moves ``Draft`` →
-  ``Proposed`` → ``Accepted`` (requires ``accepted_by`` and writes
-  ``Accepted`` as ``<who> (<YYYY-MM-DDTHH:MMZ>)`` with the current UTC time),
-  or to ``Rejected`` or ``Withdrawn``; ``Superseded`` is set only through a
-  newer record's whole ``Supersedes`` entry. ``supersedes`` entries take
-  ``partial`` as in ``palette_record_create``.
+  ``Proposed`` → ``Accepted`` (requires ``accepted_by`` and writes ``Accepted``
+  as ``<who> (<YYYY-MM-DDTHH:MMZ>)`` with the current UTC time), or to
+  ``Rejected`` or ``Withdrawn``; ``Superseded`` is set only through a newer
+  record's whole ``Supersedes`` entry. ``supersedes`` entries take ``partial``
+  as in ``palette_record_create``. A ``Revised`` entry is
+  ``<YYYY-MM-DD> — <note>`` with the note's semicolons replaced by commas and
+  its closing periods and spaces dropped, since entries are joined with ``; ``.
 
 ``palette_record_refresh``
   States that an Accepted record's change has landed outside a changeset and
   brings its derived fields in line. Input: ``record``, optional
   ``implementation`` (``partial``, ``in-progress``, ``abandoned`` or
   ``not-applicable``; ``complete`` is the default), ``implementation_scope``,
-  ``implementers``. Without a given value: no changeset or no edit remaining
-  sets ``Implementation`` to ``complete``; edits remaining with the current
-  token ``partial`` keeps ``partial``; edits remaining with any other token
-  is refused, naming ``palette_changeset_promote``. A given value is written
-  as given whether or not edits remain; ``complete`` with edits remaining is
-  refused. It sets the status to ``Superseded`` when a newer record's whole
-  ``Supersedes`` entry names the record. It never writes ``Revised``,
-  ``Verification`` or ``Accepted``; a Draft or Proposed record is refused.
+  ``implementers``, and ``verification`` (``none``, ``documentation``,
+  ``static``, ``build`` or ``runtime``) with ``verification_note``. Without a
+  given value: no changeset or no edit remaining sets ``Implementation`` to
+  ``complete``; edits remaining with the current token ``partial`` keeps
+  ``partial``; edits remaining with any other token is refused, naming
+  ``palette_changeset_promote``. A given value is written as given whether or
+  not edits remain; ``complete`` with edits remaining is refused. Given
+  together, ``verification`` and a non-empty ``verification_note`` (its
+  semicolons replaced as promotion replaces them) write ``Verification`` as
+  ``<kind> — <YYYY-MM-DD>; <note>`` through promotion's writer; one without the
+  other, or an empty note, is ``invalid_params``; with neither the field is
+  kept. It sets the status to ``Superseded`` when a newer record's whole
+  ``Supersedes`` entry names the record. It never writes ``Revised`` or
+  ``Accepted`` and never changes the body; a Draft or Proposed record is
+  refused.
 
 ``palette_changeset_edit``
   Adds, replaces or removes one edit in a record's changeset. ``kind`` is
   ``replace``, ``replace_body``, ``insert_after``, ``insert_into``, ``delete``
-  or ``create``; ``document`` is a target as the changeset section writes it;
-  a target the changeset may not edit is refused with the rule it fails.
+  or ``create``; ``document`` is a target as the changeset section writes it; a
+  target the changeset may not edit is refused with the rule it fails.
 
 ``palette_changeset_promote``
   Merges implemented edits of a record into their maintained documents, removes
@@ -478,10 +497,10 @@ Tools:
   promoted for design and spec documents only.
 
 ``palette_generate``
-  Regenerates every index and staging document that is missing or differs
-  from what the server would generate, as ``palette generate`` does, and
-  returns the diff; with nothing to regenerate it returns an empty file list
-  and says ``nothing to generate``.
+  Regenerates every index and staging document that is missing or differs from
+  what the server would generate, as ``palette generate`` does, and returns the
+  diff; with nothing to regenerate it returns an empty file list and says
+  ``nothing to generate``.
 
 Command line
 ~~~~~~~~~~~~
@@ -491,10 +510,34 @@ Command line
   is an error, 0 otherwise; it resolves the project without the root rules and
   needs no ``_palette/``.
 - ``palette generate <project>`` regenerates every index and staging document
-  of the project under the same lock and transaction as the write tools (without
-  the lock when ``_palette/`` does not exist), prints the paths it wrote, and
-  exits 1 on an error; it is how a repository without an MCP session, or a CI
-  checkout, produces its generated files.
+  of the project under the same lock and transaction as the write tools
+  (without the lock when ``_palette/`` does not exist), prints the paths it
+  wrote, and exits 1 on an error; it is how a repository without an MCP
+  session, or a CI checkout, produces its generated files.
+- ``palette reflow <project> [<path>...]`` rewraps, at 79 columns, every
+  document the layout places and the server does not generate (the layout,
+  indexes and staging excepted), or only the given project-relative files and
+  folders, under the same lock and transaction as the write tools (without the
+  lock, and with the families found from the documents, when ``_palette/`` does
+  not exist): it regenerates staging from the rewrapped text, lints the result,
+  writes only the files that changed, prints their paths and exits 1 on an
+  error or on a path that is absolute, contains ``..`` or names no document.
+  Only paragraphs, list items and definition bodies change, and only in their
+  line breaks; titles and their underlines, field lists, definition terms,
+  literal blocks with the paragraph that introduces them, directives with their
+  whole indented extent (list-table cells included), tables, comments with
+  their bodies and blank lines keep their bytes. A backtick-delimited span is
+  one token, a link target split over lines is rejoined without a space,
+  escapes are kept, a token longer than the width stands on its own line, and
+  no line is made to start with a list, field, table or comment marker, a title
+  rule, or ``done`` or ``pending`` (in any case, with or without a colon),
+  which the status-marker rule (P009) reads at a line start. The scanned
+  structure of every document (block kinds, titles, fields, links, directives)
+  is the same before and after, or the document is refused and nothing is
+  written; a second run changes nothing, and ``palette generate`` afterwards
+  has nothing to generate. Findings of the rules that count physical lines
+  (P011) or read one line (P009, P010) may change and are reported as usual. It
+  is the only operation that rewraps an existing document.
 - ``palette --read-only-tools`` prints the read tool names.
 - ``palette --version``.
 
@@ -518,10 +561,12 @@ The server is the only writer of ``Implementation``, ``Verification``,
 ``Implementers``, ``Revised``, generated indexes and staging. Promotion writes
 ``Implementation``, ``Implementers`` and ``Verification`` as edits land;
 ``palette_record_refresh`` writes ``Implementation``, ``Implementers`` and the
-``Superseded`` status from the documents as they stand, for a record whose
-change lands outside a changeset; ``palette_generate`` rewrites the indexes
-and staging that drifted. Any other text in a palette document may also be
-edited by hand; the next lint reports what drifted.
+``Superseded`` status from the documents as they stand, and ``Verification``
+when given, for a record whose change lands outside a changeset;
+``palette_generate`` rewrites the indexes and staging that drifted;
+``palette reflow`` changes only line breaks inside prose. Any other text in a
+palette document may also be edited by hand; the next lint reports what
+drifted.
 
 Compatibility
 -------------
@@ -535,9 +580,17 @@ Conformance
 
 ``cargo test`` covers every lint rule with synthetic fixtures, including the
 failures that motivated the document system (an oversized state, a status
-recorded in two files, a dependency cycle) reproduced at small scale; every write tool's
-success, dry run, and failure partway (every file unchanged); CRLF files; and
-the project resolution rules. The tests pass on Linux, macOS and Windows.
+recorded in two files, a dependency cycle) reproduced at small scale; every
+write tool's success, dry run, and failure partway (every file unchanged);
+CRLF files; and the project resolution rules. It also covers a layout move
+refused for a stranded target, a target inside the new staging folder, a
+colliding mirror and an unreadable changeset, with changesets of each status,
+the refusal leaving every file unchanged; ``palette_record_refresh`` with and
+without the verification arguments and each refusal; and the wrapping on the
+house-style constructs (untouched bytes outside prose, the same scanned
+structure, idempotence, a write tool's one-line paragraph stored wrapped, and
+promotion of every edit kind after a reflow). The tests pass on Linux, macOS
+and Windows.
 
 References
 ----------

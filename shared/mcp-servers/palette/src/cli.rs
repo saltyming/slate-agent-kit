@@ -1,8 +1,9 @@
 //! Command-line entry points that do not need the MCP server.
 //!
-//! Owns `palette check <project>` (read-only lint) and `palette generate <project>`
-//! (regenerates the indexes and staging documents). Both resolve the project without
-//! the root rules. Entry points: [`check`], [`generate`].
+//! Owns `palette check <project>` (read-only lint), `palette generate <project>`
+//! (regenerates the indexes and staging documents) and `palette reflow <project>
+//! [paths]` (rewraps the prose of the project's documents). All resolve the project
+//! without the root rules. Entry points: [`check`], [`generate`], [`reflow`].
 
 use std::path::PathBuf;
 
@@ -66,6 +67,41 @@ pub fn generate(project: &str) -> i32 {
         }
         Err(e) => {
             eprintln!("palette generate: {e}");
+            1
+        }
+    }
+}
+
+/// Rewraps the prose of the documents of `project` at 79 columns, or of those under
+/// `paths` (project-relative files or folders), under the same lock and all-or-nothing
+/// transaction as the write tools (indexes and staging regenerated from the rewrapped
+/// text, the result linted, only changed files written). Prints the paths it wrote and
+/// returns the process exit code (0 on success, 1 on error).
+pub fn reflow(project: &str, paths: &[String]) -> i32 {
+    let abs: PathBuf = std::env::current_dir().unwrap_or_default().join(project);
+    let root: PathBuf = match canonical_dir(&abs.to_string_lossy()) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("palette reflow: {e}");
+            return 1;
+        }
+    };
+    let ctx = Ctx::new(Roots {
+        project_root: Some(root.clone()),
+        extra_roots: Vec::new(),
+    });
+    match ops::reflow::reflow(&ctx, &root.to_string_lossy(), paths) {
+        Ok(result) => {
+            if let Some(m) = &result.message {
+                println!("{m}");
+            }
+            for (file, action) in &result.files {
+                println!("{action} {file}");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("palette reflow: {e}");
             1
         }
     }

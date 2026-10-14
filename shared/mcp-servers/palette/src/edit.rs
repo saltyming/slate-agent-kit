@@ -9,8 +9,9 @@ use crate::rst::{Doc, Field, HOUSE_CHARS};
 use crate::text::Source;
 use crate::util::wrap_words;
 
-/// Column at which generated prose wraps.
-pub const WRAP_COLUMN: usize = 80;
+/// Column at which generated prose wraps: the house style's 79. The write tools' helpers
+/// below and the rewrap of existing prose ([`crate::reflow::WIDTH`]) use the same width.
+pub const WRAP_COLUMN: usize = 79;
 
 /// A collapsed single-line form of user text: whitespace runs become one space.
 pub fn one_line(s: &str) -> String {
@@ -60,6 +61,13 @@ pub fn verbatim_lines(text: &str) -> Vec<String> {
         v.pop();
     }
     v
+}
+
+/// A fragment of text a write tool received, kept as written except that its prose
+/// (paragraphs, list items and definition bodies) is wrapped at [`WRAP_COLUMN`]; titles,
+/// field lists, literal blocks, directives, tables and comments are left as given.
+pub fn wrapped_lines(text: &str) -> Vec<String> {
+    crate::reflow::wrap_fragment(&verbatim_lines(text))
 }
 
 /// Replaces the lines of `field` with `:Name: value`. Returns whether anything changed.

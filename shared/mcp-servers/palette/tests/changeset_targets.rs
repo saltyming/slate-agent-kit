@@ -411,7 +411,10 @@ fn edit_body_links_are_read_from_the_document_they_change() {
         ),
     )
     .expect("move rfc");
-    assert!(p.read("docs/changeset/rfc-0002.rst").contains(
+    // The write tool wrapped the edit body at 79 columns, so the sentence spans lines.
+    let changeset = p.read("docs/changeset/rfc-0002.rst");
+    let flat = changeset.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains(
         "`alpha <../records/rfc-0001-alpha.rst>`_ and `the guide <coding-style.rst#naming>`_"
     ));
     assert_clean(&p);

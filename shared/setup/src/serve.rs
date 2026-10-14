@@ -1,7 +1,8 @@
 //! Server registration and native configuration as one step, and its reversal.
 //!
 //! Owns the sequence shared by `install`, `configure` and `mcp`: register the
-//! servers with the harness, read the palette server's read-only tools, then
+//! servers with the harness, read the palette server's read-only tools (for
+//! every harness; a failed read approves none and is noted), then
 //! edit the harness configuration file and record every edited key. Also owns
 //! the reverse for `uninstall`, and the restore of recorded keys that `retire`
 //! reuses for one server at a time. It does not choose servers or values.
@@ -222,7 +223,11 @@ fn apply_config(
                 }
             };
             let dispatch = registered.iter().any(|s| s == "dispatch");
-            let palette = registered.iter().any(|s| s == "palette");
+            let palette = registered
+                .iter()
+                .any(|s| s == "palette")
+                .then_some(tools)
+                .flatten();
             let out = agy::settings_edits(&mut doc, file, dispatch, palette);
             finish_edit(
                 ui,
@@ -277,9 +282,7 @@ pub fn serve(
     handle_outcome(ui, outcome, manifest, report);
 
     let palette_bin = binary_path(env, &ctx.bin_dir, "palette");
-    // agy's palette approvals are the fixed set in `agy::PALETTE_PREAPPROVED_TOOLS`.
-    let probe = ctx.harness != Harness::Agy;
-    let tools = if probe && ctx.servers.iter().any(|s| s == "palette") && palette_bin.is_file() {
+    let tools = if ctx.servers.iter().any(|s| s == "palette") && palette_bin.is_file() {
         match read_only_tools(env, &palette_bin) {
             Ok(t) => Some(t),
             Err(e) => {

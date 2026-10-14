@@ -6,7 +6,9 @@
 //! `USERPROFILE` on Windows), the `permissions.allow` entries for dispatch's
 //! consultation and read tools and palette's read-only tools, and the removal
 //! of a settings file the installer created once nothing of anyone else's is
-//! left in it. It does not edit `config/mcp_config.json`; only the CLI does.
+//! left in it. The palette tool names are the ones `palette --read-only-tools`
+//! prints, which the caller reads; dispatch's five are fixed. It does not edit
+//! `config/mcp_config.json`; only the CLI does.
 //!
 //! Main entry points: [`register`], [`unregister`], [`settings_edits`],
 //! [`permission_entries`], [`add_args`], [`remove_args`] and
@@ -24,18 +26,6 @@ use crate::manifest::Registration;
 use crate::ui::Ui;
 use crate::util::read_text_opt;
 use std::path::Path;
-
-/// The palette tools pre-approved for agy: the read-only ones.
-///
-/// agy grants approval per tool as `mcp(<server>/<tool>)`, and RFC-0023 names
-/// these four; Claude Code and Codex read the same set from
-/// `palette --read-only-tools`.
-pub const PALETTE_PREAPPROVED_TOOLS: [&str; 4] = [
-    "palette_status",
-    "palette_lint",
-    "palette_layout",
-    "palette_template",
-];
 
 /// `agy mcp remove <server>`.
 pub fn remove_args(server: &str) -> Vec<String> {
@@ -162,10 +152,12 @@ pub fn unregister(env: &Env, ui: &mut Ui, servers: &[String]) -> Result<Outcome>
     Ok(out)
 }
 
-/// The `permissions.allow` entries for the servers registered: dispatch's
-/// consultation and read tools, then palette's read-only tools, as
-/// `mcp(<server>/<tool>)`.
-pub fn permission_entries(dispatch: bool, palette: bool) -> Vec<String> {
+/// The `permissions.allow` entries for the servers registered, as
+/// `mcp(<server>/<tool>)`: dispatch's consultation and read tools when
+/// `dispatch`, then `palette_tools`, the names `palette --read-only-tools`
+/// printed, when the palette server is registered and its tools could be read
+/// (`None` otherwise, which approves no palette tool).
+pub fn permission_entries(dispatch: bool, palette_tools: Option<&[String]>) -> Vec<String> {
     let mut out = Vec::new();
     if dispatch {
         out.extend(
@@ -174,26 +166,23 @@ pub fn permission_entries(dispatch: bool, palette: bool) -> Vec<String> {
                 .map(|t| format!("mcp(dispatch/{t})")),
         );
     }
-    if palette {
-        out.extend(
-            PALETTE_PREAPPROVED_TOOLS
-                .iter()
-                .map(|t| format!("mcp(palette/{t})")),
-        );
+    if let Some(tools) = palette_tools {
+        out.extend(tools.iter().map(|t| format!("mcp(palette/{t})")));
     }
     out
 }
 
 /// Edits `settings.json`: adds the approvals of the registered servers to
-/// `permissions.allow`, in one edit, and touches nothing else.
+/// `permissions.allow`, in one edit, and touches nothing else. An entry already
+/// in the list is not added again.
 pub fn settings_edits(
     doc: &mut JsonDoc,
     file: &Path,
     dispatch: bool,
-    palette: bool,
+    palette_tools: Option<&[String]>,
 ) -> EditOutcome {
     let mut out = EditOutcome::default();
-    let entries = permission_entries(dispatch, palette);
+    let entries = permission_entries(dispatch, palette_tools);
     if entries.is_empty() {
         return out;
     }
@@ -263,10 +252,23 @@ mod tests {
         );
     }
 
+    fn palette_tools() -> Vec<String> {
+        [
+            "palette_status",
+            "palette_lint",
+            "palette_layout",
+            "palette_template",
+        ]
+        .iter()
+        .map(|t| t.to_string())
+        .collect()
+    }
+
     #[test]
-    fn the_nine_approvals() {
+    fn the_approvals_are_the_five_dispatch_tools_and_the_names_the_palette_binary_printed() {
+        let tools = palette_tools();
         assert_eq!(
-            permission_entries(true, true),
+            permission_entries(true, Some(&tools)),
             [
                 "mcp(dispatch/dispatch_consult)",
                 "mcp(dispatch/dispatch_status)",
@@ -279,20 +281,38 @@ mod tests {
                 "mcp(palette/palette_template)",
             ]
         );
-        assert_eq!(permission_entries(false, true).len(), 4);
-        assert!(permission_entries(false, false).is_empty());
+        assert_eq!(permission_entries(false, Some(&tools)).len(), 4);
+        assert!(permission_entries(false, None).is_empty());
+        assert!(permission_entries(false, Some(&[])).is_empty());
+    }
+
+    #[test]
+    fn a_tool_the_palette_binary_adds_is_approved_and_a_missing_list_approves_none() {
+        let mut tools = palette_tools();
+        tools.push("palette_extra".to_string());
+        let entries = permission_entries(true, Some(&tools));
+        assert_eq!(
+            entries.last().map(String::as_str),
+            Some("mcp(palette/palette_extra)")
+        );
+        assert_eq!(entries.len(), 10);
+        // The probe failed: dispatch's five only.
+        let entries = permission_entries(true, None);
+        assert_eq!(entries.len(), 5);
+        assert!(entries.iter().all(|e| e.starts_with("mcp(dispatch/")));
     }
 
     #[test]
     fn settings_edits_touch_only_the_allow_list() {
         let file = Path::new("settings.json");
         let text = "{\n  \"agentMode\": \"fast\",\n  \"permissions\": {\n    \"allow\": [\"command(ls)\"],\n    \"deny\": []\n  },\n  \"toolPermission\": {}\n}\n";
+        let tools = palette_tools();
         let mut doc = parse_settings(Some(text), file).unwrap();
-        let out = settings_edits(&mut doc, file, true, true);
+        let out = settings_edits(&mut doc, file, true, Some(&tools));
         assert!(out.refusals.is_empty());
         assert_eq!(out.changes.len(), 1);
         assert_eq!(out.changes[0].path, ["permissions", "allow"]);
-        assert_eq!(out.changes[0].added, permission_entries(true, true));
+        assert_eq!(out.changes[0].added, permission_entries(true, Some(&tools)));
         let new = doc.render_original();
         assert!(new.starts_with("{\n  \"agentMode\": \"fast\",\n  \"permissions\""));
         assert!(new.contains("\"command(ls)\""));
@@ -303,15 +323,22 @@ mod tests {
             "submitting keeps its prompt"
         );
         // A second run adds nothing.
-        let again = settings_edits(&mut doc, file, true, true);
+        let again = settings_edits(&mut doc, file, true, Some(&tools));
         assert!(again.changes.is_empty());
+        assert_eq!(doc.render_original(), new);
+        // A tool the binary has added since is the only entry a third run adds.
+        let mut more = tools.clone();
+        more.push("palette_extra".to_string());
+        let third = settings_edits(&mut doc, file, true, Some(&more));
+        assert_eq!(third.changes.len(), 1);
+        assert_eq!(third.changes[0].added, ["mcp(palette/palette_extra)"]);
     }
 
     #[test]
     fn a_non_array_allow_list_is_refused() {
         let file = Path::new("settings.json");
         let mut doc = parse_settings(Some("{\"permissions\":{\"allow\":\"x\"}}"), file).unwrap();
-        let out = settings_edits(&mut doc, file, true, false);
+        let out = settings_edits(&mut doc, file, true, None);
         assert_eq!(out.refusals.len(), 1);
         assert!(doc.render_original().contains("\"allow\": \"x\""));
     }

@@ -7,7 +7,10 @@
 //! agy, which takes its flags before the server name and follows `HOME`
 //! (`USERPROFILE` on Windows). It appends every invocation to the file named by
 //! `FAKE_CLI_LOG` and fails when `FAKE_CLI_FAIL` is a substring of the
-//! arguments. It is test support only.
+//! arguments. As the palette server it prints `palette_status` and
+//! `palette_read` for `--read-only-tools`, the comma-separated names in
+//! `FAKE_PALETTE_TOOLS` instead when that is set, and fails when
+//! `FAKE_PALETTE_FAIL` is set. It is test support only.
 
 use slate_setup::config::{ConfigDoc, TomlDoc};
 use slate_setup::json::Json;
@@ -215,7 +218,14 @@ fn main() {
         return;
     }
     if args.first().map(String::as_str) == Some("--read-only-tools") {
-        println!("palette_status\npalette_read");
+        if std::env::var_os("FAKE_PALETTE_FAIL").is_some() {
+            eprintln!("fake palette: refusing --read-only-tools");
+            std::process::exit(1);
+        }
+        match std::env::var("FAKE_PALETTE_TOOLS") {
+            Ok(list) => list.split(',').for_each(|t| println!("{t}")),
+            Err(_) => println!("palette_status\npalette_read"),
+        }
         return;
     }
     record(&args);

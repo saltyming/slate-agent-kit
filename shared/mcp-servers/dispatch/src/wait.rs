@@ -9,7 +9,8 @@
 //! 500 ms outside any transaction, probes no backend, reconciles no other row
 //! and cancels nothing. Its one write is the server's own conditional
 //! `interrupted` transition (`store::mark_interrupted`) for the waited row
-//! when that row is active and its recorded owner process is gone.
+//! when that row is active and its recorded owner process is gone, or was
+//! replaced by one that started after the row was written (`liveness`).
 //!
 //! Output: one line on stdout, `<id> <kind> <status>`, then ` model=<final
 //! model>` when a fallback answered and ` restarted_as=<id>` when the run was
@@ -19,11 +20,11 @@
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use rusqlite::{Connection, OpenFlags};
 
-use crate::liveness::process_alive;
+use crate::liveness::{parse_sqlite_utc, row_pid_alive_since};
 use crate::store;
 
 /// Exit code: the run is terminal (the line names its status).
@@ -75,8 +76,13 @@ pub fn main(args: &[OsString]) -> i32 {
             return EXIT_ERROR;
         }
     };
-    let alive = |pid: i64| i32::try_from(pid).is_ok_and(process_alive);
-    match wait_for(&conn, &args.id, args.timeout, alive, std::thread::sleep) {
+    match wait_for(
+        &conn,
+        &args.id,
+        args.timeout,
+        row_pid_alive_since,
+        std::thread::sleep,
+    ) {
         Ok(Waited::Done { code, line }) => {
             let mut out = std::io::stdout().lock();
             if writeln!(out, "{line}").and_then(|_| out.flush()).is_err() {
@@ -208,12 +214,14 @@ enum Waited {
 /// Poll row `id` until it is terminal or `timeout` elapses (`None` waits
 /// without limit). An active row whose owner pid is set and not `alive` is
 /// marked `interrupted` through the server's conditional update, then read
-/// again; a row with no owner pid is waited on.
+/// again; a row with no owner pid is waited on. `alive` is given the owner pid
+/// and the row's `created_at` parsed (`None` when it does not parse), so a
+/// process that reused the pid after the row was written reads as gone.
 fn wait_for(
     conn: &Connection,
     id: &str,
     timeout: Option<Duration>,
-    alive: impl Fn(i64) -> bool,
+    alive: impl Fn(i64, Option<SystemTime>) -> bool,
     sleep: impl Fn(Duration),
 ) -> rusqlite::Result<Waited> {
     let deadline = deadline_after(Instant::now(), timeout);
@@ -223,7 +231,7 @@ fn wait_for(
         };
         if store::is_active(&row.status)
             && let Some(pid) = row.owner_pid
-            && !alive(pid)
+            && !alive(pid, parse_sqlite_utc(&row.created_at))
         {
             store::mark_interrupted(
                 conn,
@@ -268,6 +276,7 @@ fn status_line(conn: &Connection, row: &store::TaskRow) -> rusqlite::Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::liveness::alive_since_by;
     use std::cell::Cell;
 
     fn os(args: &[&str]) -> Vec<OsString> {
@@ -366,7 +375,7 @@ mod tests {
             [&id],
         )
         .unwrap();
-        let got = wait_for(&c, &id, None, |_| true, |_| panic!("must not sleep")).unwrap();
+        let got = wait_for(&c, &id, None, |_, _| true, |_| panic!("must not sleep")).unwrap();
         assert_eq!(
             got,
             Waited::Done {
@@ -384,7 +393,7 @@ mod tests {
             &c,
             &id,
             Some(Duration::from_millis(30)),
-            |_| true,
+            |_, _| true,
             |d| {
                 slept.set(slept.get() + d);
                 std::thread::sleep(d);
@@ -408,7 +417,7 @@ mod tests {
     #[test]
     fn an_orphaned_row_is_marked_interrupted_and_reported() {
         let (c, id) = store_with("running", Some(424242));
-        let got = wait_for(&c, &id, None, |pid| pid != 424242, no_sleep).unwrap();
+        let got = wait_for(&c, &id, None, |pid, _| pid != 424242, no_sleep).unwrap();
         assert_eq!(
             got,
             Waited::Done {
@@ -421,10 +430,104 @@ mod tests {
         assert!(row.error.unwrap_or_default().contains("pid 424242"));
     }
 
+    /// The row's `created_at`, parsed, as SQLite wrote it.
+    fn created_at(c: &Connection, id: &str) -> SystemTime {
+        let row = store::get(c, id).unwrap().unwrap();
+        parse_sqlite_utc(&row.created_at).expect("SQLite's datetime('now') parses")
+    }
+
+    /// Wait on `id` for no time at all, with the owner (this process, which
+    /// is running) reported as started at `start` by a stand-in reader.
+    fn wait_with_owner_started_at(c: &Connection, id: &str, start: SystemTime) -> Waited {
+        let alive = |pid: i64, recorded| alive_since_by(pid as i32, recorded, |_| Some(start));
+        wait_for(c, id, Some(Duration::ZERO), alive, no_sleep).unwrap()
+    }
+
+    #[test]
+    fn the_owner_check_is_given_the_rows_created_at() {
+        let (c, id) = store_with("running", Some(7));
+        let seen = Cell::new(None);
+        let record = |_, recorded| {
+            seen.set(Some(recorded));
+            true
+        };
+        wait_for(&c, &id, Some(Duration::ZERO), record, no_sleep).unwrap();
+        assert_eq!(seen.get(), Some(Some(created_at(&c, &id))));
+    }
+
+    #[test]
+    fn an_owner_pid_reused_after_the_row_was_written_is_marked_interrupted() {
+        let (c, id) = store_with("running", Some(i64::from(std::process::id())));
+        let created = created_at(&c, &id);
+        let got = wait_with_owner_started_at(&c, &id, created + Duration::from_secs(3600));
+        assert_eq!(
+            got,
+            Waited::Done {
+                code: EXIT_TERMINAL,
+                line: format!("{id} consult interrupted")
+            }
+        );
+        let row = store::get(&c, &id).unwrap().unwrap();
+        assert_eq!(row.status, store::STATUS_INTERRUPTED);
+        assert!(row.error.unwrap_or_default().contains("no longer running"));
+    }
+
+    #[test]
+    fn the_original_owner_is_waited_on_up_to_the_one_second_allowance() {
+        for (id_status, offset_secs) in [("running", -60i64), ("queued", 0), ("running", 1)] {
+            let (c, id) = store_with(id_status, Some(i64::from(std::process::id())));
+            let created = created_at(&c, &id);
+            let start = if offset_secs < 0 {
+                created - Duration::from_secs(offset_secs.unsigned_abs())
+            } else {
+                created + Duration::from_secs(offset_secs.unsigned_abs())
+            };
+            let got = wait_with_owner_started_at(&c, &id, start);
+            assert_eq!(
+                got,
+                Waited::Done {
+                    code: EXIT_ACTIVE,
+                    line: format!("{id} consult {id_status}")
+                },
+                "started {offset_secs} s from the row"
+            );
+        }
+        let (c, id) = store_with("running", Some(i64::from(std::process::id())));
+        let created = created_at(&c, &id);
+        let got = wait_with_owner_started_at(&c, &id, created + Duration::from_secs(2));
+        assert!(matches!(
+            got,
+            Waited::Done {
+                code: EXIT_TERMINAL,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_malformed_created_at_leaves_the_pid_check_to_decide() {
+        let (c, id) = store_with("running", Some(i64::from(std::process::id())));
+        c.execute(
+            "UPDATE dispatch_tasks SET created_at = 'not a time' WHERE id = ?1",
+            [&id],
+        )
+        .unwrap();
+        // The stand-in would call the process a replacement if it were asked.
+        let got =
+            wait_with_owner_started_at(&c, &id, SystemTime::now() + Duration::from_secs(3600));
+        assert_eq!(
+            got,
+            Waited::Done {
+                code: EXIT_ACTIVE,
+                line: format!("{id} consult running")
+            }
+        );
+    }
+
     #[test]
     fn a_row_without_an_owner_pid_is_waited_on() {
         let (c, id) = store_with("queued", None);
-        let got = wait_for(&c, &id, Some(Duration::ZERO), |_| false, no_sleep).unwrap();
+        let got = wait_for(&c, &id, Some(Duration::ZERO), |_, _| false, no_sleep).unwrap();
         assert_eq!(
             got,
             Waited::Done {
@@ -438,7 +541,7 @@ mod tests {
     fn an_unknown_id_is_reported() {
         let (c, _) = store_with("running", Some(1));
         assert_eq!(
-            wait_for(&c, "d-99", None, |_| true, no_sleep).unwrap(),
+            wait_for(&c, "d-99", None, |_, _| true, no_sleep).unwrap(),
             Waited::Unknown
         );
     }
@@ -452,7 +555,7 @@ mod tests {
             [&id],
         )
         .unwrap();
-        let got = wait_for(&c, &id, None, |_| true, no_sleep).unwrap();
+        let got = wait_for(&c, &id, None, |_, _| true, no_sleep).unwrap();
         assert_eq!(
             got,
             Waited::Done {
@@ -487,7 +590,7 @@ mod tests {
         assert_eq!(deadline_after(Instant::now(), None), None);
 
         let (c, id) = store_with("succeeded", Some(1));
-        let got = wait_for(&c, &id, Some(huge), |_| true, no_sleep).unwrap();
+        let got = wait_for(&c, &id, Some(huge), |_, _| true, no_sleep).unwrap();
         assert!(matches!(
             got,
             Waited::Done {

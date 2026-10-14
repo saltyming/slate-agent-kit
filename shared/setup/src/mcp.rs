@@ -1,12 +1,16 @@
 //! The `mcp` command: binaries and server registration for one or more
 //! harnesses, without a kit.
 //!
-//! Owns the flow used by slate's `tooling/install-mcp.sh`: obtain the dispatch
+//! Owns the flow used by slate's `tooling/install-mcp.sh`: retire the servers
+//! the harness's `mcp` manifest recorded and this release no longer ships (the
+//! same step, order and summary an install runs, `retire`), obtain the dispatch
 //! and palette binaries (and `agent-guard` beside them on Linux and
 //! macOS; it is not a server and is never registered), register the servers
-//! with each named harness, or unregister them. Registrations and edited keys are recorded in
-//! `<home>/.slate-agent-kit-mcp-manifest.toml` so the reverse is exact. It never
-//! touches instruction files, prefs or the subagent configuration.
+//! with each named harness, or unregister them. Registrations, edited keys and
+//! the installed binaries are recorded in
+//! `<home>/.slate-agent-kit-mcp-manifest.toml` so the reverse is exact and an
+//! installed binary has an owner. It never touches instruction files, prefs or
+//! the subagent configuration, and never removes a binary it installed.
 //!
 //! Main entry points: [`run`] and [`MCP_KIT`].
 
@@ -19,9 +23,26 @@ use crate::layout::Layout;
 use crate::manifest::Manifest;
 use crate::options::Options;
 use crate::report::Report;
+use crate::retire;
 use crate::serve;
 use crate::ui::Ui;
 use crate::wizard::parse_roots;
+use std::path::PathBuf;
+
+/// One harness `mcp` installs into: its home and layout, its manifest, and
+/// what retiring the servers that manifest recorded involves.
+struct Target {
+    harness: Harness,
+    home: PathBuf,
+    layout: Layout,
+    /// The manifest as loaded, with every step's result recorded in it.
+    manifest: Manifest,
+    /// The retirement context and plan, made once for the summary and carried out as shown.
+    retirement: retire::Context,
+    plan: retire::Plan,
+    /// The retired servers no longer registered with the harness, once the plan's first part ran.
+    gone: Vec<String>,
+}
 
 /// The manifest name of the `mcp` command.
 pub const MCP_KIT: &str = "slate-agent-kit-mcp";
@@ -109,6 +130,41 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
         );
     }
 
+    // Each harness's manifest is read, and the servers it recorded that this
+    // release no longer ships are planned for retirement, before anything is
+    // shown or changed: an unreadable manifest stops the run here.
+    // The manifests of the whole run are one owner of a binary: a retired
+    // server's binary that only they list goes, and one anything else lists stays.
+    let mut targets: Vec<Target> = Vec::new();
+    if !opts.uninstall {
+        let run_manifests: Vec<PathBuf> = harnesses
+            .iter()
+            .map(|h| Layout::new(*h, &home_of(*h)).manifest_path(MCP_KIT))
+            .collect();
+        for h in &harnesses {
+            let home = home_of(*h);
+            let layout = Layout::new(*h, &home);
+            let prior = Manifest::load(&layout.manifest_dir, MCP_KIT, *h)?;
+            let others: Vec<PathBuf> = run_manifests
+                .iter()
+                .filter(|m| **m != layout.manifest_path(MCP_KIT))
+                .cloned()
+                .collect();
+            let retirement =
+                retire::Context::for_mcp(*h, &home, &layout, prior.clone(), &servers, &others);
+            let plan = retire::plan(env, &retirement);
+            targets.push(Target {
+                harness: *h,
+                home,
+                layout,
+                manifest: prior.unwrap_or_else(|| Manifest::new(MCP_KIT)),
+                retirement,
+                plan,
+                gone: Vec::new(),
+            });
+        }
+    }
+
     ui.blank();
     ui.title("Summary");
     if opts.uninstall {
@@ -131,13 +187,14 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
                 request.installed_names(&env.platform()).join(", ")
             ));
         }
-        for h in &harnesses {
+        for t in &targets {
             ui.line(&format!(
                 "  Register {} with {} ({})",
                 servers.join(", "),
-                h.product(),
-                home_of(*h).display()
+                t.harness.product(),
+                t.home.display()
             ));
+            retire::print_summary(ui, &t.plan);
         }
         if harnesses.is_empty() && mode == Mode::Skip {
             ui.line("  Nothing to do.");
@@ -171,6 +228,55 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
         return Ok(report);
     }
 
+    // Retired servers go first, as in an install, and each manifest is
+    // written with the result before the binaries and registrations follow.
+    // The servers of every harness are unregistered before any retired
+    // binary is removed, so that a harness that still has one registered keeps
+    // it for the whole run.
+    for t in &mut targets {
+        if t.plan.is_empty() {
+            continue;
+        }
+        ui.blank();
+        ui.line(t.harness.product());
+        let retired = retire::apply_servers(
+            env,
+            ui,
+            &t.retirement,
+            &t.plan,
+            &mut t.manifest,
+            &mut report,
+        );
+        t.manifest.save(&t.layout.manifest_dir)?;
+        t.gone = retired?;
+    }
+    let needed: Vec<Vec<PathBuf>> = targets
+        .iter()
+        .map(|t| retire::needed_binaries(&t.plan, &t.gone))
+        .collect();
+    for (i, t) in targets.iter_mut().enumerate() {
+        if t.plan.is_empty() {
+            continue;
+        }
+        let held: Vec<PathBuf> = needed
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .flat_map(|(_, paths)| paths.iter().cloned())
+            .collect();
+        retire::apply_binaries(
+            ui,
+            &t.retirement,
+            &t.plan,
+            &t.gone,
+            &held,
+            &mut t.manifest,
+            &mut report,
+        );
+        t.manifest.save(&t.layout.manifest_dir)?;
+    }
+
+    let mut installed: Vec<PathBuf> = Vec::new();
     if mode != Mode::Skip {
         let fetch: Box<dyn binaries::Fetch> = if mode == Mode::Prebuilt {
             Box::new(HttpFetch::new()?)
@@ -181,6 +287,7 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
         for p in &got.paths {
             ui.ok(&format!("installed {}", p.display()));
         }
+        installed.clone_from(&got.paths);
         for n in got.notes {
             report.note(n);
         }
@@ -193,15 +300,12 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
                 .join(", "),
         );
     }
-    for h in &harnesses {
-        let home = home_of(*h);
-        let layout = Layout::new(*h, &home);
-        let mut manifest = Manifest::load(&layout.manifest_dir, MCP_KIT, *h)?
-            .unwrap_or_else(|| Manifest::new(MCP_KIT));
+    for t in &mut targets {
+        let (h, home, layout) = (t.harness, &t.home, &t.layout);
         let ctx = Ctx {
-            harness: *h,
+            harness: h,
             home: home.clone(),
-            default_home: env.default_home(*h),
+            default_home: env.default_home(h),
             bin_dir: bin_dir.clone(),
             roots: roots.clone(),
             servers: servers.clone(),
@@ -213,7 +317,7 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
             subagent: None,
         };
         let watch = created::watch_install(
-            &layout,
+            layout,
             &created::Targets {
                 rules: false,
                 skills: false,
@@ -221,10 +325,13 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
                 servers: true,
             },
         );
+        for p in &installed {
+            t.manifest.record_binary(p);
+        }
         let manual_before = report.manual.len();
         ui.blank();
         ui.line(h.product());
-        let _registered = serve::serve(env, ui, &input, &mut manifest, &mut report)?;
+        let _registered = serve::serve(env, ui, &input, &mut t.manifest, &mut report)?;
         if report.manual.len() > manual_before {
             report.problems.push(
                 Error::command(format!(
@@ -237,10 +344,10 @@ pub fn run(env: &Env, ui: &mut Ui, opts: &Options) -> Result<Report> {
         } else {
             report.done(h.name(), format!("registered in {}", home.display()));
         }
-        watch.record(&mut manifest);
-        manifest.roots = roots.clone();
-        manifest.version = env!("CARGO_PKG_VERSION").to_string();
-        manifest.save(&layout.manifest_dir)?;
+        watch.record(&mut t.manifest);
+        t.manifest.roots = roots.clone();
+        t.manifest.version = env!("CARGO_PKG_VERSION").to_string();
+        t.manifest.save(&layout.manifest_dir)?;
     }
     Ok(report)
 }

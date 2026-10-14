@@ -38,8 +38,8 @@ such text literally, so the agent acts without asking whether the action helps
 in the situation at hand. The aside rule makes a call mandatory "whether or not
 the user asked" and forbids reconsidering it; the delegation rule calls
 read-only delegates free and prefers them for any lookup beyond about three
-queries, counting only the leader's context as a cost. No rule names the model a
-delegate runs on, how many run at once, or who decides whether a turn is for
+queries, counting only the leader's context as a cost. No rule names the model
+a delegate runs on, how many run at once, or who decides whether a turn is for
 discussion or execution.
 
 The prohibitions that protect the user (erasing work, overwriting the user's
@@ -104,20 +104,20 @@ Design
 Decision rights
 ~~~~~~~~~~~~~~~
 
-The user sets direction: what to do and why, scope, priority, trade-offs and
-done criteria. The agent decides the rest under that direction: method, order,
-tools, and whether to delegate or consult within the configured level. An action
-that would change direction goes to the user before it happens: a different
-scope, design or order than approved; giving work to someone other than the plan
-or a document names; using a surface beyond its level. Prohibitions are a short
-fixed list that does not grow per incident.
+The user sets direction: what to do and why, scope, priority, trade-offs
+and done criteria. The agent decides the rest under that direction: method,
+order, tools, and whether to delegate or consult within the configured level.
+An action that would change direction goes to the user before it happens: a
+different scope, design or order than approved; giving work to someone other
+than the plan or a document names; using a surface beyond its level.
+Prohibitions are a short fixed list that does not grow per incident.
 
 Judgment
 ~~~~~~~~
 
-A rule states an action's purpose and how to judge its value. The value test for
-consulting, dispatching and delegating asks whether the action could change a
-decision not yet made, whether the user is already performing that role, and
+A rule states an action's purpose and how to judge its value. The value test
+for consulting, dispatching and delegating asks whether the action could change
+a decision not yet made, whether the user is already performing that role, and
 whether its cost in models, count, quota and time is proportionate to what it
 can change.
 
@@ -156,10 +156,10 @@ Implementation and transition
 The decision is implemented in the toolkit's rule sources:
 ``shared/rules/core/kernel.md``, ``shared/rules/core/loop-execution.md``,
 ``shared/rules/core/loop-delegation.md``, ``shared/rules/mcp/aside.md``,
-``shared/rules/mcp/dispatch.md`` and each harness's ``adapters/<harness>/inserts/``.
-The rule text, the prefs templates and their migration ship in one release
-across the three kits, because a kit whose rules name the new levels cannot read
-prefs that still hold the old values.
+``shared/rules/mcp/dispatch.md`` and each harness's
+``adapters/<harness>/inserts/``. The rule text, the prefs templates and their
+migration ship in one release across the three kits, because a kit whose rules
+name the new levels cannot read prefs that still hold the old values.
 
 Verification strategy
 ---------------------
@@ -168,8 +168,9 @@ Verification strategy
   RFC removes ("whether or not the user asked", "do not reconsider", "Use them
   without asking").
 - Each render states the decision rights, the value test and the three levels.
-- A scripted scenario in each harness: a discussion request in a palette project
-  ends with a report and a proposal, and starts no delegate or consultation.
+- A scripted scenario in each harness: a discussion request in a palette
+  project ends with a report and a proposal, and starts no delegate or
+  consultation.
 
 Alternatives and costs
 ----------------------

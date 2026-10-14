@@ -65,100 +65,542 @@ RFC-0023: agy-agent-kit: the fourth kit, for Antigravity, and the agy backend
 Summary
 -------
 
-Antigravity's command-line agent ``agy`` becomes the fourth harness. ``adapters/agy`` renders the shared rules into ``kits/agy-agent-kit``, whose manual is ``~/.gemini/config/AGENTS.md`` and whose rule and prefs files land in ``~/.gemini/config/rules/`` with the YAML frontmatter agy requires. ``slate-setup`` gains an agy harness module: registration through ``agy mcp add`` into ``~/.gemini/config/mcp_config.json``, per-tool approvals as ``mcp(<server>/<tool>)`` rules in ``~/.gemini/antigravity-cli/settings.json``, retirement through ``agy mcp remove``. agent-exec gains ``Backend::Agy`` for execution only: the prompt travels on stdin as a stream-json ``user`` event, the result is read from the ``result`` event while the stream is drained, the run goes under ``--dangerously-skip-permissions`` (with ``--sandbox`` at the workspace-write level), and a tool agy auto-denied is read from the ``denied_actions`` field of the result, which refines D-3. agy is not a consultation backend (the user's decision, 2026-10-14): ``dispatch_consult`` refuses ``backend: agy``, and an Antigravity session consults codex or claude like the other harnesses. The agy waiting insert names ``run_command``'s background notification; the support matrix gains an agy column.
+Antigravity's command-line agent ``agy`` becomes the fourth harness.
+``adapters/agy`` renders the shared rules into ``kits/agy-agent-kit``, whose
+manual is ``~/.gemini/config/AGENTS.md`` and whose rule and prefs files land in
+``~/.gemini/config/rules/`` with the YAML frontmatter agy requires.
+``slate-setup`` gains an agy harness module: registration through
+``agy mcp add`` into ``~/.gemini/config/mcp_config.json``, per-tool approvals
+as ``mcp(<server>/<tool>)`` rules in
+``~/.gemini/antigravity-cli/settings.json``, retirement through
+``agy mcp remove``. agent-exec gains ``Backend::Agy`` for execution only: the
+prompt travels on stdin as a stream-json ``user`` event, the result is read
+from the ``result`` event while the stream is drained, the run goes under
+``--dangerously-skip-permissions`` (with ``--sandbox`` at the workspace-write
+level), and a tool agy auto-denied is read from the ``denied_actions`` field of
+the result, which refines D-3. agy is not a consultation backend (the user's
+decision, 2026-10-14): ``dispatch_consult`` refuses ``backend: agy``, and an
+Antigravity session consults codex or claude like the other harnesses. The agy
+waiting insert names ``run_command``'s background notification; the support
+matrix gains an agy column.
 
 Problem and context
 -------------------
 
-The kit family covers Claude Code, Codex and Kimi Code. Antigravity (``agy`` 1.3.4 installed) is the user's fourth harness and the only one without the constitution, the palette skills, the prefs files and the two servers. Nothing in the render, the installer or the backend library is agy-shaped today: ``render-kit.sh`` and ``validate.sh`` enumerate three harnesses, ``slate-setup`` has three harness modules, ``agent_exec::Backend`` has codex and claude, and the support matrix has three columns. D-3 (state, 2026-10-13) fixed the scope: Antigravity only, one phase after B-3, on Opus, and assumed that headless agy soft-denies unapproved tools and exits 0 with a stderr notice.
+The kit family covers Claude Code, Codex and Kimi Code. Antigravity (``agy``
+1.3.4 installed) is the user's fourth harness and the only one without the
+constitution, the palette skills, the prefs files and the two servers. Nothing
+in the render, the installer or the backend library is agy-shaped today:
+``render-kit.sh`` and ``validate.sh`` enumerate three harnesses,
+``slate-setup`` has three harness modules, ``agent_exec::Backend`` has codex
+and claude, and the support matrix has three columns. D-3 (state, 2026-10-13)
+fixed the scope: Antigravity only, one phase after B-3, on Opus, and assumed
+that headless agy soft-denies unapproved tools and exits 0 with a stderr
+notice.
 
 Evidence
 --------
 
-- agy 1.3.4 help (2026-10-14): ``-p/--print`` runs one prompt; ``--output-format text|json|stream-json``; ``--input-format text|stream-json`` reads one NDJSON message per line from stdin and requires stream-json output; ``--mode accept-edits|plan``; ``--sandbox``; ``--dangerously-skip-permissions``; ``--add-dir`` (repeatable); ``--conversation <id>`` resumes a conversation; ``--model``; ``--effort low|medium|high|xhigh|max``; ``--print-timeout`` (default 0s, wait for the turn); ``--json-schema``; ``agy mcp add [flags] <name> <command> [args...]`` with ``-e/--env KEY=value`` repeatable, ``agy mcp remove|list|enable|disable``; ``agy models`` lists ``gemini-3.8-flash``, ``claude-opus-5-5``, ``claude-sonnet-5-5`` (each with ``-low``, ``-medium``, ``-high``) and ``gpt-oss-120b-medium``.
-- Configuration home (docs antigravity.google/docs/settings and the binary's embedded changelog, 2026-10-14): ``~/.gemini/`` on Unix, ``%USERPROFILE%\.gemini`` on Windows; ``config/`` is shared with the Antigravity app and holds ``mcp_config.json``, ``config.json``, ``rules/``, ``skills/``, ``plugins/``, ``agents/``, ``hooks.json``; ``antigravity-cli/`` holds ``settings.json`` (``permissions{allow,ask,deny}``, ``toolPermission``, ``enableTerminalSandbox``, ``agentMode``) and ``cache/``. No relocation variable exists; ``HOME`` decides. Probe: with ``HOME`` set to a scratch folder, ``agy mcp add --env SLATE_HARNESS=agy --env SLATE_AGENT_STATE_HOME=<p> probe /bin/echo hi`` wrote ``<scratch>/.gemini/config/mcp_config.json`` with ``{"mcpServers":{"probe":{"args":["hi"],"command":"/bin/echo","disabled":false,"env":{...}}}}`` and ``agy mcp remove probe`` left ``{"mcpServers":{}}``; the live ``~/.gemini`` was not touched.
-- Rules (docs/rules, changelog 1.2.15, binary): ``~/.gemini/AGENTS.md`` and ``GEMINI.md`` and their ``~/.gemini/config/`` counterparts load into every session without frontmatter; ``~/.gemini/config/rules/*.md`` is a flat scan where YAML frontmatter is required (``trigger: always_on|model_decision|glob|manual``, ``description``, ``globs``) and a file without it is silently dropped; 24,000 bytes per file; always-on and global rules share a 20,000-token budget, overflow becomes path pointers. Project scope: ``AGENTS.md``, ``GEMINI.md``, ``.agents/rules/*.md``. Probe at project scope (2026-10-14): ``.agents/rules/with-fm.md`` carrying ``trigger: always_on`` was obeyed (the model answered its codeword), ``.agents/rules/no-fm.md`` without frontmatter was not (``unknown``). The rendered standing corpus is 32,068 bytes for claude with the largest file at 13,155 bytes, so the limits hold with room.
-- Print mode probes with the live login in a scratch working directory (2026-10-14): the json envelope is ``{conversation_id, status, response, duration_seconds, num_turns, usage{input_tokens, output_tokens, thinking_tokens, cache_read_tokens, total_tokens}}`` and, when a tool was auto-denied, ``denied_actions: [{action, display_name}]`` with ``status: SUCCESS``, exit 0 and the stderr line ``jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied. Add an allow-rule under permissions.allow in settings.json (e.g. command(<target>)). Alternatively, re-run with --dangerously-skip-permissions to auto-approve all tools.`` A ``RunCommand`` was denied in plain print mode and in ``--mode plan``; ``--dangerously-skip-permissions`` created a file in the working directory; ``--sandbox --dangerously-skip-permissions`` ran ``printf hi > z.txt`` and the file exists; in ``--mode plan`` a request to write a file produced a plan file under ``~/.gemini/antigravity-cli/brain/<conversation>/`` and the reply ``Please review the plan``, and the working directory stayed unchanged; in ``--mode plan`` with ``--add-dir <repo>`` a read of ``docs/spec/dispatch-server.rst`` failed when the model chose a shell command (denied, empty response) and succeeded when the prompt said to use file viewing tools and never a shell command (eight section titles returned); ``--model claude-sonnet-5-5-low`` and ``--model claude-sonnet-5-5 --effort low`` both answered. Usage arithmetic across the probes: ``total_tokens = input_tokens + output_tokens``; ``cache_read_tokens`` exceeded ``input_tokens`` in one run, so it is a bucket beside input; ``thinking_tokens`` never exceeded ``output_tokens``, so reasoning is counted inside output.
-- stdin transport (probe 2026-10-14): ``-p`` without a value swallows the next flag as its prompt (exit 2, ``-p took "--output-format" as its prompt``); with ``--input-format stream-json --output-format stream-json`` and no ``-p``, the line ``{"event":"user","message":{"role":"user","content":"..."}}`` ran a turn (a ``content`` array of ``{"type":"text","text"}`` also works); the output is ``{"event":"init","conversation_id":...,"init":{"cwd","tools":[...],"permission_mode":"request-review"}}`` first, then ``step_update`` events (``step_type`` ``user_input``, ``agent_response``, ``text_delta``, ``usage``) and last ``{"event":"result","result":{...}}`` with the same envelope as json mode. A message without ``event`` fails the run with ``status: ERROR`` and ``error`` text; an unknown event is ignored with a warning. ``--conversation <id>`` with the same stdin event resumed an earlier conversation (``num_turns: 2``, same id, the earlier reply recalled). The init event's tool list includes ``view_file``, ``grep_search``, ``find_by_name``, ``list_dir``, ``read_url_content``, ``write_to_file``, ``replace_file_content``, ``run_command``, ``command_status``, ``call_mcp_tool``, ``define_subagent``, ``invoke_subagent``, ``manage_subagents``, ``wait``, ``schedule``.
-- MCP spawning (probe 2026-10-14): a project-scope ``.agents/mcp_config.json`` server was started by ``agy -p`` and received the parent process's environment (a ``PROBE_VAR`` set on the agy process arrived, 57 variables in all) merged with the entry's ``env``. Permission rule syntax from the binary's embedded prompts: ``command(*)``, ``read_file(*)``, ``write_file(*)``, ``mcp(*)``, ``mcp(<server_name>/<tool_name>)``; the headless notice names ``permissions.allow`` in ``settings.json``. No flag disables the user's MCP servers for one run.
-- Transcripts (binary, probe 2026-10-14): ``~/.gemini/antigravity-cli/cache/last_conversations.json`` maps a workspace path to its latest conversation id (print-mode runs from the scratch folders appear in it); ``~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`` holds one JSON object per step with ``step_index``, ``source`` (``USER_EXPLICIT``, ``MODEL``), ``type`` (``USER_INPUT``, ``PLANNER_RESPONSE``, ``GENERIC``), ``status``, ``created_at``, ``content``, and on model steps ``input_tokens``, ``output_tokens``, ``cache_read_tokens``, ``thinking`` and ``tool_calls``; ``transcript_full.jsonl`` carries untruncated fields.
-- Shell tool (binary schema text, 2026-10-14): ``run_command`` waits at most 10,000 ms (``WaitMsBeforeAsync``) and then continues as a background task, and the prompt tells the agent that the system notifies it when the task finishes and not to poll; ``command_status`` and ``send_command_input`` exist for inspection. No native advisor or second-opinion tool exists; subagents are markdown definitions with a tools allowlist and no read-only kind; ``--dangerously-skip-permissions`` does not approve plans (changelog 1.3.2); exit code 3 follows a partial response with an ``AGY_ERROR`` line, 1 an unknown ``--model`` or schema, 2 a usage error (changelog).
-- agent-exec and slate-setup today (lines cited by the codex review, each read 2026-10-14): the runner writes ``spec.prompt`` to stdin verbatim and caps stdout as it reads it (``run.rs``: ``capture::read_capped``, the stdin write, ``let success = status.success()``); ``CapturePolicy`` holds sizes only (``capture.rs``); ``failure_text`` chooses text only after a failure (``failure.rs``); the consultation reply is rendered from ``r.stdout`` (``consult.rs`` ``render_reply``); a kit-owned or user-owned file is recognised by its first line (``signature.rs`` ``classify``, ``manifest.rs``); ``ensure_custom_signature`` prepends the signature to a custom rule (``signature.rs``, called from ``rules.rs``); the primary file, rules, skills and manifests sit directly under the harness home (``plan.rs`` ``primary_dest``, ``manifest.rs`` ``manifest_path``, ``mcp.rs``), and shared-binary ownership is discovered by ``other_manifests_listing`` over those folders (``manifest.rs``); ``--home`` selects the harness folder independently of the process home (``kit.rs``); the Windows home comes from ``USERPROFILE`` (``env.rs``); ``write_atomic`` resolves a symlinked destination and writes its target (``util.rs``); ``reentry_refusal_at`` refuses only ``execute`` at depth 1 or more (``main.rs``).
+- agy 1.3.4 help (2026-10-14): ``-p/--print`` runs one prompt;
+  ``--output-format text|json|stream-json``;
+  ``--input-format text|stream-json`` reads one NDJSON message per line from
+  stdin and requires stream-json output; ``--mode accept-edits|plan``;
+  ``--sandbox``; ``--dangerously-skip-permissions``; ``--add-dir``
+  (repeatable); ``--conversation <id>`` resumes a conversation; ``--model``;
+  ``--effort low|medium|high|xhigh|max``; ``--print-timeout`` (default 0s, wait
+  for the turn); ``--json-schema``;
+  ``agy mcp add [flags] <name> <command> [args...]`` with
+  ``-e/--env KEY=value`` repeatable, ``agy mcp remove|list|enable|disable``;
+  ``agy models`` lists ``gemini-3.8-flash``, ``claude-opus-5-5``,
+  ``claude-sonnet-5-5`` (each with ``-low``, ``-medium``, ``-high``) and
+  ``gpt-oss-120b-medium``.
+- Configuration home (docs antigravity.google/docs/settings and the binary's
+  embedded changelog, 2026-10-14): ``~/.gemini/`` on Unix,
+  ``%USERPROFILE%\.gemini`` on Windows; ``config/`` is shared with the
+  Antigravity app and holds ``mcp_config.json``, ``config.json``, ``rules/``,
+  ``skills/``, ``plugins/``, ``agents/``, ``hooks.json``; ``antigravity-cli/``
+  holds ``settings.json`` (``permissions{allow,ask,deny}``, ``toolPermission``,
+  ``enableTerminalSandbox``, ``agentMode``) and ``cache/``. No relocation
+  variable exists; ``HOME`` decides. Probe: with ``HOME`` set to a scratch
+  folder,
+  ``agy mcp add --env SLATE_HARNESS=agy --env SLATE_AGENT_STATE_HOME=<p> probe /bin/echo hi``
+  wrote ``<scratch>/.gemini/config/mcp_config.json`` with
+  ``{"mcpServers":{"probe":{"args":["hi"],"command":"/bin/echo","disabled":false,"env":{...}}}}``
+  and ``agy mcp remove probe`` left ``{"mcpServers":{}}``; the live
+  ``~/.gemini`` was not touched.
+- Rules (docs/rules, changelog 1.2.15, binary): ``~/.gemini/AGENTS.md`` and
+  ``GEMINI.md`` and their ``~/.gemini/config/`` counterparts load into every
+  session without frontmatter; ``~/.gemini/config/rules/*.md`` is a flat scan
+  where YAML frontmatter is required
+  (``trigger: always_on|model_decision|glob|manual``, ``description``,
+  ``globs``) and a file without it is silently dropped; 24,000 bytes per file;
+  always-on and global rules share a 20,000-token budget, overflow becomes path
+  pointers. Project scope: ``AGENTS.md``, ``GEMINI.md``,
+  ``.agents/rules/*.md``. Probe at project scope (2026-10-14):
+  ``.agents/rules/with-fm.md`` carrying ``trigger: always_on`` was obeyed (the
+  model answered its codeword), ``.agents/rules/no-fm.md`` without frontmatter
+  was not (``unknown``). The rendered standing corpus is 32,068 bytes for
+  claude with the largest file at 13,155 bytes, so the limits hold with room.
+- Print mode probes with the live login in a scratch working directory
+  (2026-10-14): the json envelope is
+  ``{conversation_id, status, response, duration_seconds, num_turns, usage{input_tokens, output_tokens, thinking_tokens, cache_read_tokens, total_tokens}}``
+  and, when a tool was auto-denied,
+  ``denied_actions: [{action, display_name}]`` with ``status: SUCCESS``, exit 0
+  and the stderr line
+  ``jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied. Add an allow-rule under permissions.allow in settings.json (e.g. command(<target>)). Alternatively, re-run with --dangerously-skip-permissions to auto-approve all tools.``
+  A ``RunCommand`` was denied in plain print mode and in ``--mode plan``;
+  ``--dangerously-skip-permissions`` created a file in the working directory;
+  ``--sandbox --dangerously-skip-permissions`` ran ``printf hi > z.txt`` and
+  the file exists; in ``--mode plan`` a request to write a file produced a plan
+  file under ``~/.gemini/antigravity-cli/brain/<conversation>/`` and the reply
+  ``Please review the plan``, and the working directory stayed unchanged; in
+  ``--mode plan`` with ``--add-dir <repo>`` a read of
+  ``docs/spec/dispatch-server.rst`` failed when the model chose a shell command
+  (denied, empty response) and succeeded when the prompt said to use file
+  viewing tools and never a shell command (eight section titles returned);
+  ``--model claude-sonnet-5-5-low`` and
+  ``--model claude-sonnet-5-5 --effort low`` both answered. Usage arithmetic
+  across the probes: ``total_tokens = input_tokens + output_tokens``;
+  ``cache_read_tokens`` exceeded ``input_tokens`` in one run, so it is a bucket
+  beside input; ``thinking_tokens`` never exceeded ``output_tokens``, so
+  reasoning is counted inside output.
+- stdin transport (probe 2026-10-14): ``-p`` without a value swallows the next
+  flag as its prompt (exit 2, ``-p took "--output-format" as its prompt``);
+  with ``--input-format stream-json --output-format stream-json`` and no
+  ``-p``, the line
+  ``{"event":"user","message":{"role":"user","content":"..."}}`` ran a turn (a
+  ``content`` array of ``{"type":"text","text"}`` also works); the output is
+  ``{"event":"init","conversation_id":...,"init":{"cwd","tools":[...],"permission_mode":"request-review"}}``
+  first, then ``step_update`` events (``step_type`` ``user_input``,
+  ``agent_response``, ``text_delta``, ``usage``) and last
+  ``{"event":"result","result":{...}}`` with the same envelope as json mode. A
+  message without ``event`` fails the run with ``status: ERROR`` and ``error``
+  text; an unknown event is ignored with a warning. ``--conversation <id>``
+  with the same stdin event resumed an earlier conversation (``num_turns: 2``,
+  same id, the earlier reply recalled). The init event's tool list includes
+  ``view_file``, ``grep_search``, ``find_by_name``, ``list_dir``,
+  ``read_url_content``, ``write_to_file``, ``replace_file_content``,
+  ``run_command``, ``command_status``, ``call_mcp_tool``, ``define_subagent``,
+  ``invoke_subagent``, ``manage_subagents``, ``wait``, ``schedule``.
+- MCP spawning (probe 2026-10-14): a project-scope ``.agents/mcp_config.json``
+  server was started by ``agy -p`` and received the parent process's
+  environment (a ``PROBE_VAR`` set on the agy process arrived, 57 variables in
+  all) merged with the entry's ``env``. Permission rule syntax from the
+  binary's embedded prompts: ``command(*)``, ``read_file(*)``,
+  ``write_file(*)``, ``mcp(*)``, ``mcp(<server_name>/<tool_name>)``; the
+  headless notice names ``permissions.allow`` in ``settings.json``. No flag
+  disables the user's MCP servers for one run.
+- Transcripts (binary, probe 2026-10-14):
+  ``~/.gemini/antigravity-cli/cache/last_conversations.json`` maps a workspace
+  path to its latest conversation id (print-mode runs from the scratch folders
+  appear in it);
+  ``~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl``
+  holds one JSON object per step with ``step_index``, ``source``
+  (``USER_EXPLICIT``, ``MODEL``), ``type`` (``USER_INPUT``,
+  ``PLANNER_RESPONSE``, ``GENERIC``), ``status``, ``created_at``, ``content``,
+  and on model steps ``input_tokens``, ``output_tokens``,
+  ``cache_read_tokens``, ``thinking`` and ``tool_calls``;
+  ``transcript_full.jsonl`` carries untruncated fields.
+- Shell tool (binary schema text, 2026-10-14): ``run_command`` waits at most
+  10,000 ms (``WaitMsBeforeAsync``) and then continues as a background task,
+  and the prompt tells the agent that the system notifies it when the task
+  finishes and not to poll; ``command_status`` and ``send_command_input`` exist
+  for inspection. No native advisor or second-opinion tool exists; subagents
+  are markdown definitions with a tools allowlist and no read-only kind;
+  ``--dangerously-skip-permissions`` does not approve plans (changelog 1.3.2);
+  exit code 3 follows a partial response with an ``AGY_ERROR`` line, 1 an
+  unknown ``--model`` or schema, 2 a usage error (changelog).
+- agent-exec and slate-setup today (lines cited by the codex review, each read
+  2026-10-14): the runner writes ``spec.prompt`` to stdin verbatim and caps
+  stdout as it reads it (``run.rs``: ``capture::read_capped``, the stdin write,
+  ``let success = status.success()``); ``CapturePolicy`` holds sizes only
+  (``capture.rs``); ``failure_text`` chooses text only after a failure
+  (``failure.rs``); the consultation reply is rendered from ``r.stdout``
+  (``consult.rs`` ``render_reply``); a kit-owned or user-owned file is
+  recognised by its first line (``signature.rs`` ``classify``,
+  ``manifest.rs``); ``ensure_custom_signature`` prepends the signature to a
+  custom rule (``signature.rs``, called from ``rules.rs``); the primary file,
+  rules, skills and manifests sit directly under the harness home (``plan.rs``
+  ``primary_dest``, ``manifest.rs`` ``manifest_path``, ``mcp.rs``), and
+  shared-binary ownership is discovered by ``other_manifests_listing`` over
+  those folders (``manifest.rs``); ``--home`` selects the harness folder
+  independently of the process home (``kit.rs``); the Windows home comes from
+  ``USERPROFILE`` (``env.rs``); ``write_atomic`` resolves a symlinked
+  destination and writes its target (``util.rs``); ``reentry_refusal_at``
+  refuses only ``execute`` at depth 1 or more (``main.rs``).
 
 Goals and non-goals
 -------------------
 
-Goals: the constitution and every implementing rule load in Antigravity from the user's home with the same text the other kits carry; the palette skills, the five prefs files and the two servers install, upgrade and uninstall through ``slate-setup`` into ``~/.gemini``; ``dispatch_submit`` accepts ``backend: agy`` and ``dispatch_consult`` refuses it with a message; the agy kit's rules name agy's own waiting means, its surface and its models; the support matrix states every capability for agy; CI validates the fourth render and the kit has a repository, entry points and a changelog like the other three.
+Goals: the constitution and every implementing rule load in Antigravity from
+the user's home with the same text the other kits carry; the palette skills,
+the five prefs files and the two servers install, upgrade and uninstall through
+``slate-setup`` into ``~/.gemini``; ``dispatch_submit`` accepts
+``backend: agy`` and ``dispatch_consult`` refuses it with a message; the agy
+kit's rules name agy's own waiting means, its surface and its models; the
+support matrix states every capability for agy; CI validates the fourth render
+and the kit has a repository, entry points and a changelog like the other
+three.
 
-Non-goals: no agy consultation backend (agy cannot hide the user's MCP servers from a nested run, so a consultation on it would see them; the user chose to leave consultation to codex and claude); no agy plugin packaging of the kit; no project-scope (``.agents/``) rule delivery; no change to the three existing kits' text beyond the places that enumerate harnesses; no Antigravity app (IDE) specific behaviour beyond what sharing ``~/.gemini/config`` implies; no Termux or Googlebook targets; no custom agent definitions shipped by the kit.
+Non-goals: no agy consultation backend (agy cannot hide the user's MCP servers
+from a nested run, so a consultation on it would see them; the user chose to
+leave consultation to codex and claude); no agy plugin packaging of the kit; no
+project-scope (``.agents/``) rule delivery; no change to the three existing
+kits' text beyond the places that enumerate harnesses; no Antigravity app (IDE)
+specific behaviour beyond what sharing ``~/.gemini/config`` implies; no Termux
+or Googlebook targets; no custom agent definitions shipped by the kit.
 
 Requirements and invariants
 ---------------------------
 
-- Every rule file and prefs file under ``~/.gemini/config/rules/`` begins with a closed YAML frontmatter block whose ``trigger`` is ``always_on`` and whose ``description`` is a quoted string; the signature comment is the first line after the block; the manual at ``~/.gemini/config/AGENTS.md`` carries no frontmatter. This holds for kit-rendered files and for the user's custom rules the installer places there.
-- The agy render stays under a byte ceiling validate.sh enforces (34,000 bytes, like claude and codex) and under agy's 24,000 bytes per file.
-- agy serves the ``execute`` kind only: ``dispatch_consult`` with ``backend: agy`` is refused with ``invalid_params`` naming the reason, and ``dispatch_backends`` lists agy with that one kind. RFC-0022's rule that a consultation backend sees no MCP server is unchanged.
-- An execution on agy runs only under the agent guard, with ``--dangerously-skip-permissions`` and, at the workspace-write sandbox level, ``--sandbox``; the read-only level is refused for an agy execution.
-- The prompt travels on stdin as one stream-json ``user`` event; argv carries flags, paths and model names only.
-- The outcome of an agy run is decided from its ``result`` event, parsed while the stream is drained and independently of the retained diagnostic text: a run with exit 0 but no well-formed ``result``, a ``status`` other than ``SUCCESS``, an ``error``, or ``denied_actions`` with an empty ``response`` is a failure; the exit code is kept on the record as observed.
-- The identity of an agy run is the ``conversation_id`` of its ``init`` event, stored on the run as soon as it is read; ``dispatch_logs`` and steering use it, never the workspace's latest conversation.
-- The re-entry marker reaches a nested dispatch through the agy process environment; a nested agy execution sees the user's registered servers and is bound by RFC-0022's per-kind refusal (it may consult codex or claude, it may not submit or steer).
-- Installer writes stay inside ``~/.gemini/config/`` (the manual, ``rules/``, ``skills/``, ``mcp_config.json``, and ``skills.json`` if agy requires it), ``~/.gemini/antigravity-cli/settings.json`` (``permissions.allow`` entries only, recorded and restored), the kit state folder ``~/.gemini/slate-agent-kit`` and the shared binary folder the installer contract already names; nothing else in ``~/.gemini`` is read or written; a symlinked destination is written through, as for the other harnesses. The manifest records every path and key the installer added.
-- For agy, ``slate-setup --home`` accepts only the folder agy itself uses (``<process home>/.gemini``), because agy has no home override: another value is refused with a message saying to set ``HOME`` instead.
-- Delegates implementing this RFC never write under the live ``~/.gemini``; verification against a live home happens only through the release train's ``make install`` step.
+- Every rule file and prefs file under ``~/.gemini/config/rules/`` begins with
+  a closed YAML frontmatter block whose ``trigger`` is ``always_on`` and whose
+  ``description`` is a quoted string; the signature comment is the first line
+  after the block; the manual at ``~/.gemini/config/AGENTS.md`` carries no
+  frontmatter. This holds for kit-rendered files and for the user's custom
+  rules the installer places there.
+- The agy render stays under a byte ceiling validate.sh enforces (34,000 bytes,
+  like claude and codex) and under agy's 24,000 bytes per file.
+- agy serves the ``execute`` kind only: ``dispatch_consult`` with
+  ``backend: agy`` is refused with ``invalid_params`` naming the reason, and
+  ``dispatch_backends`` lists agy with that one kind. RFC-0022's rule that a
+  consultation backend sees no MCP server is unchanged.
+- An execution on agy runs only under the agent guard, with
+  ``--dangerously-skip-permissions`` and, at the workspace-write sandbox level,
+  ``--sandbox``; the read-only level is refused for an agy execution.
+- The prompt travels on stdin as one stream-json ``user`` event; argv carries
+  flags, paths and model names only.
+- The outcome of an agy run is decided from its ``result`` event, parsed while
+  the stream is drained and independently of the retained diagnostic text: a
+  run with exit 0 but no well-formed ``result``, a ``status`` other than
+  ``SUCCESS``, an ``error``, or ``denied_actions`` with an empty ``response``
+  is a failure; the exit code is kept on the record as observed.
+- The identity of an agy run is the ``conversation_id`` of its ``init`` event,
+  stored on the run as soon as it is read; ``dispatch_logs`` and steering use
+  it, never the workspace's latest conversation.
+- The re-entry marker reaches a nested dispatch through the agy process
+  environment; a nested agy execution sees the user's registered servers and is
+  bound by RFC-0022's per-kind refusal (it may consult codex or claude, it may
+  not submit or steer).
+- Installer writes stay inside ``~/.gemini/config/`` (the manual, ``rules/``,
+  ``skills/``, ``mcp_config.json``, and ``skills.json`` if agy requires it),
+  ``~/.gemini/antigravity-cli/settings.json`` (``permissions.allow`` entries
+  only, recorded and restored), the kit state folder
+  ``~/.gemini/slate-agent-kit`` and the shared binary folder the installer
+  contract already names; nothing else in ``~/.gemini`` is read or written; a
+  symlinked destination is written through, as for the other harnesses. The
+  manifest records every path and key the installer added.
+- For agy, ``slate-setup --home`` accepts only the folder agy itself uses
+  (``<process home>/.gemini``), because agy has no home override: another value
+  is refused with a message saying to set ``HOME`` instead.
+- Delegates implementing this RFC never write under the live ``~/.gemini``;
+  verification against a live home happens only through the release train's
+  ``make install`` step.
 
 Design
 ------
 
-Adapter and render. ``adapters/agy/`` holds ``tokens.sed`` (``KIT_DISPLAY_NAME`` Antigravity Agent, ``HARNESS_NAME`` Antigravity CLI, ``HARNESS_HOME`` ``$HOME/.gemini``, ``HARNESS_RULES_DIR`` ``$HOME/.gemini/config/rules``, ``HARNESS_SKILLS_DIR`` ``$HOME/.gemini/config/skills``, ``PRIMARY_MANUAL_FILE`` ``AGENTS.md``, rule and prefs file names prefixed ``agy-agent-kit--``, ``EDIT_SURFACE`` agy's file tools, ``DELEGATION_SURFACE`` ``invoke_subagent`` / dispatch, ``FANOUT_DELEGATION_SURFACE`` ``manage_subagents``, ``PREFS_LOADING`` loads with the rules, ``SUBAGENT_EFFORT_VALUES`` low to max), ``surface.md`` (how rules load, the shared ``config`` folder, no native advisor, subagents write-capable with a tools allowlist, ``run_command`` and the background notification, the ``mcp(<server>/<tool>)`` approvals the installer wrote) and one insert per marker: ``consult-native-advisor.md`` (none exists; ``dispatch_consult`` on codex or claude is the only second opinion), ``delegation-surfaces.md`` (``define_subagent``, ``invoke_subagent``, ``manage_subagents``, all write-capable; the tools allowlist is the read-only mechanism and is not relied on), ``dispatch-notify.md`` (run the ``wait`` line with ``run_command``; it returns within 10 s with the command still running and the harness notifies you when it exits; do not poll ``command_status``), ``execution-harness.md`` (empty), ``git-overrides.md`` (empty), ``models-table.md`` (the ``agy models`` list with tiers from the vendors' own statements). ``render-kit.sh agy`` renders like claude (a rules folder the harness reads natively, ``load = "rules-dir"``) with ``AGENTS.md`` as the manual, and prepends to every rule and prefs file the frontmatter block ``---`` / ``trigger: always_on`` / ``description: "<kit display name>: <file title>"`` / ``---`` before the signature comment, through one function that quotes the description; the frontmatter is emitted by the render step, not stored in the sources, so the other three renders are unchanged. ``validate.sh`` adds agy to every harness loop, a ceiling of 34,000 bytes, a check that every ``dist/rules/*.md`` and ``dist/prefs/*.md`` starts with that closed block and parses as YAML with exactly those two keys, and leak greps: ``run_command``, ``command_status``, ``WaitMsBeforeAsync``, ``invoke_subagent`` outside the agy render; the other harnesses' waiting terms (``run_in_background``, ``TaskOutput``, ``disable_timeout``, ``write_stdin``, ``yield_time_ms``) and ``advisor()``, ``ultracode``, ``ScheduleWakeup`` outside their renders including agy.
+Adapter and render. ``adapters/agy/`` holds ``tokens.sed``
+(``KIT_DISPLAY_NAME`` Antigravity Agent, ``HARNESS_NAME`` Antigravity CLI,
+``HARNESS_HOME`` ``$HOME/.gemini``, ``HARNESS_RULES_DIR``
+``$HOME/.gemini/config/rules``, ``HARNESS_SKILLS_DIR``
+``$HOME/.gemini/config/skills``, ``PRIMARY_MANUAL_FILE`` ``AGENTS.md``, rule
+and prefs file names prefixed ``agy-agent-kit--``, ``EDIT_SURFACE`` agy's file
+tools, ``DELEGATION_SURFACE`` ``invoke_subagent`` / dispatch,
+``FANOUT_DELEGATION_SURFACE`` ``manage_subagents``, ``PREFS_LOADING`` loads
+with the rules, ``SUBAGENT_EFFORT_VALUES`` low to max), ``surface.md`` (how
+rules load, the shared ``config`` folder, no native advisor, subagents
+write-capable with a tools allowlist, ``run_command`` and the background
+notification, the ``mcp(<server>/<tool>)`` approvals the installer wrote) and
+one insert per marker: ``consult-native-advisor.md`` (none exists;
+``dispatch_consult`` on codex or claude is the only second opinion),
+``delegation-surfaces.md`` (``define_subagent``, ``invoke_subagent``,
+``manage_subagents``, all write-capable; the tools allowlist is the read-only
+mechanism and is not relied on), ``dispatch-notify.md`` (run the ``wait`` line
+with ``run_command``; it returns within 10 s with the command still running and
+the harness notifies you when it exits; do not poll ``command_status``),
+``execution-harness.md`` (empty), ``git-overrides.md`` (empty),
+``models-table.md`` (the ``agy models`` list with tiers from the vendors' own
+statements). ``render-kit.sh agy`` renders like claude (a rules folder the
+harness reads natively, ``load = "rules-dir"``) with ``AGENTS.md`` as the
+manual, and prepends to every rule and prefs file the frontmatter block ``---``
+/ ``trigger: always_on`` / ``description: "<kit display name>: <file title>"``
+/ ``---`` before the signature comment, through one function that quotes the
+description; the frontmatter is emitted by the render step, not stored in the
+sources, so the other three renders are unchanged. ``validate.sh`` adds agy to
+every harness loop, a ceiling of 34,000 bytes, a check that every
+``dist/rules/*.md`` and ``dist/prefs/*.md`` starts with that closed block and
+parses as YAML with exactly those two keys, and leak greps: ``run_command``,
+``command_status``, ``WaitMsBeforeAsync``, ``invoke_subagent`` outside the agy
+render; the other harnesses' waiting terms (``run_in_background``,
+``TaskOutput``, ``disable_timeout``, ``write_stdin``, ``yield_time_ms``) and
+``advisor()``, ``ultracode``, ``ScheduleWakeup`` outside their renders
+including agy.
 
-Kit. ``kits/agy-agent-kit`` is a new submodule (repository created by the user; the pin is added when it exists) with the rendered ``dist/`` (``AGENTS.md``, ``rules/``, ``skills/``, ``prefs/``, ``kit.toml`` with ``harness = "agy"``, ``primary = "AGENTS.md"``, ``load = "rules-dir"``, the same ``rules``, ``skills``, ``prefs`` and ``servers`` lists), ``install.sh``, ``install.ps1``, ``Makefile`` and the maintainer ``AGENTS.md`` from the entry templates, a ``CHANGELOG.md`` whose first entry names 26.10.1, a ``README.md`` and the kit CI workflow the other kits carry.
+Kit. ``kits/agy-agent-kit`` is a new submodule (repository created by the user;
+the pin is added when it exists) with the rendered ``dist/`` (``AGENTS.md``,
+``rules/``, ``skills/``, ``prefs/``, ``kit.toml`` with ``harness = "agy"``,
+``primary = "AGENTS.md"``, ``load = "rules-dir"``, the same ``rules``,
+``skills``, ``prefs`` and ``servers`` lists), ``install.sh``, ``install.ps1``,
+``Makefile`` and the maintainer ``AGENTS.md`` from the entry templates, a
+``CHANGELOG.md`` whose first entry names 26.10.1, a ``README.md`` and the kit
+CI workflow the other kits carry.
 
-Installer. ``slate-setup`` gains ``Harness::Agy`` and, because its folders differ from ``<home>/rules``, ``<home>/<primary>`` and ``<home>/skills``, a per-harness layout the shared code consults: the manual folder, rules folder, skills folder, state folder (manifest, backups, the servers' state home) and native-configuration files; the shared paths in ``kit.rs``, ``plan.rs``, ``manifest.rs`` and ``mcp.rs`` go through it, and shared-binary ownership discovery scans every harness's manifest folder, so an agy manifest under ``~/.gemini/slate-agent-kit`` is seen when another kit decides whether a binary is still used. For agy: manual ``~/.gemini/config/AGENTS.md``, rules and prefs ``~/.gemini/config/rules/``, skills ``~/.gemini/config/skills/<name>/`` (and entries in ``~/.gemini/config/skills.json`` if the first install into a logged-in home shows agy needs them; recorded in the manifest and removed at uninstall), state ``~/.gemini/slate-agent-kit``; Windows ``%USERPROFILE%\.gemini`` throughout, which is the same home the installer already resolves from ``USERPROFILE``. ``--home`` is accepted only when it names that folder. Registration runs ``agy mcp add --env SLATE_HARNESS=agy --env SLATE_AGENT_STATE_HOME=<state home> [--env <roots var>=<roots>] <server> <binary>`` and retirement ``agy mcp remove <server>``; the manifest records each. Approvals: ``permissions.allow`` in ``~/.gemini/antigravity-cli/settings.json`` gains ``mcp(dispatch/dispatch_consult)``, ``mcp(dispatch/dispatch_status)``, ``mcp(dispatch/dispatch_list)``, ``mcp(dispatch/dispatch_logs)``, ``mcp(dispatch/dispatch_backends)``, ``mcp(palette/palette_status)``, ``mcp(palette/palette_lint)``, ``mcp(palette/palette_layout)``, ``mcp(palette/palette_template)``; the installer creates the file when absent, edits only that array, records what it added and removes exactly that at uninstall; unknown keys and the user's own entries are preserved. Ownership: the signature reader recognises a closed leading frontmatter block (``---`` line, lines, ``---`` line) and classifies the file by the first line after it, so a kit signature there is kit-owned and a ``-custom:`` signature there is user-owned, prefs included; the prefs document parser already keeps leading text. A custom rule the installer places into the agy rules folder gets the block too: when the file already starts with one, the signature goes after it; when it does not, the installer prepends the kit's always-on block and then the signature. The subagent prefs' model is informational, because agy has no subagent default-model setting, and the file says so. The consult prefs template's backend values stay ``codex`` and ``claude``; the dispatch prefs template adds ``agy``. ``slate-setup mcp`` registers the servers for agy like the others.
+Installer. ``slate-setup`` gains ``Harness::Agy`` and, because its folders
+differ from ``<home>/rules``, ``<home>/<primary>`` and ``<home>/skills``, a
+per-harness layout the shared code consults: the manual folder, rules folder,
+skills folder, state folder (manifest, backups, the servers' state home) and
+native-configuration files; the shared paths in ``kit.rs``, ``plan.rs``,
+``manifest.rs`` and ``mcp.rs`` go through it, and shared-binary ownership
+discovery scans every harness's manifest folder, so an agy manifest under
+``~/.gemini/slate-agent-kit`` is seen when another kit decides whether a binary
+is still used. For agy: manual ``~/.gemini/config/AGENTS.md``, rules and prefs
+``~/.gemini/config/rules/``, skills ``~/.gemini/config/skills/<name>/`` (and
+entries in ``~/.gemini/config/skills.json`` if the first install into a
+logged-in home shows agy needs them; recorded in the manifest and removed at
+uninstall), state ``~/.gemini/slate-agent-kit``; Windows
+``%USERPROFILE%\.gemini`` throughout, which is the same home the installer
+already resolves from ``USERPROFILE``. ``--home`` is accepted only when it
+names that folder. Registration runs
+``agy mcp add --env SLATE_HARNESS=agy --env SLATE_AGENT_STATE_HOME=<state home> [--env <roots var>=<roots>] <server> <binary>``
+and retirement ``agy mcp remove <server>``; the manifest records each.
+Approvals: ``permissions.allow`` in ``~/.gemini/antigravity-cli/settings.json``
+gains ``mcp(dispatch/dispatch_consult)``, ``mcp(dispatch/dispatch_status)``,
+``mcp(dispatch/dispatch_list)``, ``mcp(dispatch/dispatch_logs)``,
+``mcp(dispatch/dispatch_backends)``, ``mcp(palette/palette_status)``,
+``mcp(palette/palette_lint)``, ``mcp(palette/palette_layout)``,
+``mcp(palette/palette_template)``; the installer creates the file when absent,
+edits only that array, records what it added and removes exactly that at
+uninstall; unknown keys and the user's own entries are preserved. Ownership:
+the signature reader recognises a closed leading frontmatter block (``---``
+line, lines, ``---`` line) and classifies the file by the first line after it,
+so a kit signature there is kit-owned and a ``-custom:`` signature there is
+user-owned, prefs included; the prefs document parser already keeps leading
+text. A custom rule the installer places into the agy rules folder gets the
+block too: when the file already starts with one, the signature goes after it;
+when it does not, the installer prepends the kit's always-on block and then the
+signature. The subagent prefs' model is informational, because agy has no
+subagent default-model setting, and the file says so. The consult prefs
+template's backend values stay ``codex`` and ``claude``; the dispatch prefs
+template adds ``agy``. ``slate-setup mcp`` registers the servers for agy like
+the others.
 
-Backend. ``agent_exec::Backend::Agy`` with ``process()`` ``agy``, execution only. Two backend-specific branches are added to agent-exec, each named in its spec: an input encoding (``verbatim`` for codex and claude, ``agy-stream-json`` for agy: the prompt is serialised as the one-line event ``{"event":"user","message":{"role":"user","content":<prompt>}}``, a newline, then end of input) and a result normaliser (``exit-status`` for codex and claude, which keeps today's behaviour; ``agy-stream-json`` for agy, which parses NDJSON events from stdout as they are drained, before and independently of the retained capture: the ``init`` event's ``conversation_id`` becomes the record's session identity at once; ``step_update`` text deltas feed the retained capture under the capture policy; the ``result`` event is kept whole up to a bound of 8 MB, beyond which the run fails with a text saying so). The normaliser decides ``success``: exit 0 and a well-formed ``result`` with ``status: SUCCESS``, no ``error``, and not (``denied_actions`` present with an empty ``response``); the exit code stays on the record as observed. It sets ``final_text`` to ``response`` (with a note naming the denied actions appended when ``denied_actions`` is present and ``response`` is not empty), the failure text to ``error``, the ``AGY_ERROR`` line, ``agy ended without a result event`` or the denied-actions text, and usage to input = ``input_tokens``, cached = ``cache_read_tokens``, output = ``output_tokens`` (which includes reasoning), reasoning = ``thinking_tokens``, matching the existing contract of disjoint input buckets and reasoning inside output. The execution result (and the consultation reply, for the backends that serve it) becomes the record's ``final_text`` for every backend, where ``final_text`` is the retained stdout under the exit-status normaliser, so codex and claude are unchanged. Argv: ``--dangerously-skip-permissions --input-format stream-json --output-format stream-json --print-timeout 0``, ``--model <m>`` and ``--effort <e>`` when set (a model slug that already carries its effort is passed as is); ``Sandbox::WorkspaceWrite`` adds ``--sandbox``; ``Sandbox::DangerFullAccess`` adds nothing; ``Sandbox::ReadOnly`` is refused for an agy execution with ``invalid_params`` naming the reason. Steer: ``dispatch_steer`` on an agy execution resumes the stored conversation with ``--conversation <id>`` and the new instruction on stdin, which the probe showed keeps the conversation (``num_turns`` 2). Isolation: ``Isolation::Permissions``-shaped; the process environment carries ``DISPATCH_REENTRY_DEPTH``, which agy passes to the servers it spawns, and no configuration override exists for agy, so a nested agy sees the user's servers; the nested dispatch applies RFC-0022's refusal unchanged (consultation on codex or claude accepted, submit and steer refused), and those consultation backends see no server, so no run can start another agy. ``dispatch_consult`` refuses ``backend: agy`` with ``invalid_params`` (agy is not a consultation backend), and ``dispatch_backends`` lists agy with the kind ``execute``. The palette write tools are not pre-approved and headless agy denies them; a user's other MCP servers with pre-approved mutation tools are reachable from an agy execution as they are from any execution backend. Session location for ``dispatch_logs``: ``~/.gemini/antigravity-cli/brain/<conversation_id>/.system_generated/logs/transcript.jsonl`` from the stored identity, live from the first event. The agy harness transcript reader (``SLATE_HARNESS=agy``, for a consultation started from an Antigravity session and served by codex or claude) resolves the ambient conversation through ``cache/last_conversations.json[<working dir>]``, reads ``DISPATCH_TRANSCRIPT_DIR`` when set, keeps ``USER_INPUT`` and ``PLANNER_RESPONSE`` content and redacts ``tool_calls`` and ``thinking`` with the same placeholders the other readers use.
+Backend. ``agent_exec::Backend::Agy`` with ``process()`` ``agy``, execution
+only. Two backend-specific branches are added to agent-exec, each named in its
+spec: an input encoding (``verbatim`` for codex and claude, ``agy-stream-json``
+for agy: the prompt is serialised as the one-line event
+``{"event":"user","message":{"role":"user","content":<prompt>}}``, a newline,
+then end of input) and a result normaliser (``exit-status`` for codex and
+claude, which keeps today's behaviour; ``agy-stream-json`` for agy, which
+parses NDJSON events from stdout as they are drained, before and independently
+of the retained capture: the ``init`` event's ``conversation_id`` becomes the
+record's session identity at once; ``step_update`` text deltas feed the
+retained capture under the capture policy; the ``result`` event is kept whole
+up to a bound of 8 MB, beyond which the run fails with a text saying so). The
+normaliser decides ``success``: exit 0 and a well-formed ``result`` with
+``status: SUCCESS``, no ``error``, and not (``denied_actions`` present with an
+empty ``response``); the exit code stays on the record as observed. It sets
+``final_text`` to ``response`` (with a note naming the denied actions appended
+when ``denied_actions`` is present and ``response`` is not empty), the failure
+text to ``error``, the ``AGY_ERROR`` line, ``agy ended without a result event``
+or the denied-actions text, and usage to input = ``input_tokens``, cached =
+``cache_read_tokens``, output = ``output_tokens`` (which includes reasoning),
+reasoning = ``thinking_tokens``, matching the existing contract of disjoint
+input buckets and reasoning inside output. The execution result (and the
+consultation reply, for the backends that serve it) becomes the record's
+``final_text`` for every backend, where ``final_text`` is the retained stdout
+under the exit-status normaliser, so codex and claude are unchanged. Argv:
+``--dangerously-skip-permissions --input-format stream-json --output-format stream-json --print-timeout 0``,
+``--model <m>`` and ``--effort <e>`` when set (a model slug that already
+carries its effort is passed as is); ``Sandbox::WorkspaceWrite`` adds
+``--sandbox``; ``Sandbox::DangerFullAccess`` adds nothing;
+``Sandbox::ReadOnly`` is refused for an agy execution with ``invalid_params``
+naming the reason. Steer: ``dispatch_steer`` on an agy execution resumes the
+stored conversation with ``--conversation <id>`` and the new instruction on
+stdin, which the probe showed keeps the conversation (``num_turns`` 2).
+Isolation: ``Isolation::Permissions``-shaped; the process environment carries
+``DISPATCH_REENTRY_DEPTH``, which agy passes to the servers it spawns, and no
+configuration override exists for agy, so a nested agy sees the user's servers;
+the nested dispatch applies RFC-0022's refusal unchanged (consultation on codex
+or claude accepted, submit and steer refused), and those consultation backends
+see no server, so no run can start another agy. ``dispatch_consult`` refuses
+``backend: agy`` with ``invalid_params`` (agy is not a consultation backend),
+and ``dispatch_backends`` lists agy with the kind ``execute``. The palette
+write tools are not pre-approved and headless agy denies them; a user's other
+MCP servers with pre-approved mutation tools are reachable from an agy
+execution as they are from any execution backend. Session location for
+``dispatch_logs``:
+``~/.gemini/antigravity-cli/brain/<conversation_id>/.system_generated/logs/transcript.jsonl``
+from the stored identity, live from the first event. The agy harness transcript
+reader (``SLATE_HARNESS=agy``, for a consultation started from an Antigravity
+session and served by codex or claude) resolves the ambient conversation
+through ``cache/last_conversations.json[<working dir>]``, reads
+``DISPATCH_TRANSCRIPT_DIR`` when set, keeps ``USER_INPUT`` and
+``PLANNER_RESPONSE`` content and redacts ``tool_calls`` and ``thinking`` with
+the same placeholders the other readers use.
 
-Rules and documents. The constitution and implementing rules change nowhere except the harness enumerations that already name three kits. The support matrix gains an agy column: rules through ``config/AGENTS.md`` and ``config/rules/`` with frontmatter; consultation through the shared server on codex or claude, agy itself not a consultation backend; dispatch through the shared server with agy as an execution backend; waiting through ``run_command``'s notification; prefs load with the rules; no subagent default model; models from ``agy models``; no read-only subagent; write-capable subagents through ``invoke_subagent``; native memory none known; hooks ``hooks.json`` not used. ``spec/installer.rst`` gains the per-harness layout, the agy home, paths, registration command, approvals, the ``--home`` restriction and the frontmatter-aware ownership; ``spec/agent-exec.rst`` the backend, argv, input encoding, result normaliser, failure text, the record's ``final_text`` and kept exit code, usage mapping and session location; ``spec/dispatch-server.rst`` the agy execution backend, the refused read-only execution and the refused agy consultation, the stored conversation identity and the transcript reader; ``spec/prefs.rst`` the dispatch backend value; the design and glossary the fourth harness; the repository guides the fourth kit. CI: ``ci.yml`` already checks out submodules recursively and runs ``validate.sh``, which now covers the agy render; ``release.yml`` is unchanged because the kits ship no binaries. D-3 graduates into this record with its denial mechanism refined from a stderr notice to the ``denied_actions`` field and its backend narrowed to execution.
+Rules and documents. The constitution and implementing rules change nowhere
+except the harness enumerations that already name three kits. The support
+matrix gains an agy column: rules through ``config/AGENTS.md`` and
+``config/rules/`` with frontmatter; consultation through the shared server on
+codex or claude, agy itself not a consultation backend; dispatch through the
+shared server with agy as an execution backend; waiting through
+``run_command``'s notification; prefs load with the rules; no subagent default
+model; models from ``agy models``; no read-only subagent; write-capable
+subagents through ``invoke_subagent``; native memory none known; hooks
+``hooks.json`` not used. ``spec/installer.rst`` gains the per-harness layout,
+the agy home, paths, registration command, approvals, the ``--home``
+restriction and the frontmatter-aware ownership; ``spec/agent-exec.rst`` the
+backend, argv, input encoding, result normaliser, failure text, the record's
+``final_text`` and kept exit code, usage mapping and session location;
+``spec/dispatch-server.rst`` the agy execution backend, the refused read-only
+execution and the refused agy consultation, the stored conversation identity
+and the transcript reader; ``spec/prefs.rst`` the dispatch backend value; the
+design and glossary the fourth harness; the repository guides the fourth kit.
+CI: ``ci.yml`` already checks out submodules recursively and runs
+``validate.sh``, which now covers the agy render; ``release.yml`` is unchanged
+because the kits ship no binaries. D-3 graduates into this record with its
+denial mechanism refined from a stderr notice to the ``denied_actions`` field
+and its backend narrowed to execution.
 
 Impact and compatibility
 ------------------------
 
-The three existing kits' rendered text changes only where a harness list is enumerated (the models rule's vendor table is per harness and unchanged; the support matrix is a spec, not a rule). ``agent_exec::Backend`` and ``dispatch::Backend`` gain a variant; the input encoding and result normaliser default to today's behaviour for codex and claude, and the consultation reply becomes the record's ``final_text``, which equals the retained stdout for them. RFC-0022's isolation of consultation backends is unchanged. Existing stores and prefs files are untouched; a prefs file naming ``agy`` as a dispatch backend on a machine without ``agy`` fails the run with the existing missing-CLI text; ``agy`` in a consult prefs file is reported as an unknown backend. The per-harness layout changes shared installer paths, so the three existing harnesses' layouts are stated explicitly and covered by the byte-identical reinstall test. ``validate.sh`` fails until ``kits/agy-agent-kit`` exists and is rendered, so the submodule pin, the render and the validate change land in one slate push, as the release train requires. Windows: ``%USERPROFILE%\.gemini\config``, ``agy.exe``, and the prompt kept off the command line; Windows executable discovery and the sandbox are exercised on the Windows CI runner with a stand-in ``agy``, not on a live Antigravity.
+The three existing kits' rendered text changes only where a harness list is
+enumerated (the models rule's vendor table is per harness and unchanged; the
+support matrix is a spec, not a rule). ``agent_exec::Backend`` and
+``dispatch::Backend`` gain a variant; the input encoding and result normaliser
+default to today's behaviour for codex and claude, and the consultation reply
+becomes the record's ``final_text``, which equals the retained stdout for them.
+RFC-0022's isolation of consultation backends is unchanged. Existing stores and
+prefs files are untouched; a prefs file naming ``agy`` as a dispatch backend on
+a machine without ``agy`` fails the run with the existing missing-CLI text;
+``agy`` in a consult prefs file is reported as an unknown backend. The
+per-harness layout changes shared installer paths, so the three existing
+harnesses' layouts are stated explicitly and covered by the byte-identical
+reinstall test. ``validate.sh`` fails until ``kits/agy-agent-kit`` exists and
+is rendered, so the submodule pin, the render and the validate change land in
+one slate push, as the release train requires. Windows:
+``%USERPROFILE%\.gemini\config``, ``agy.exe``, and the prompt kept off the
+command line; Windows executable discovery and the sandbox are exercised on the
+Windows CI runner with a stand-in ``agy``, not on a live Antigravity.
 
 Implementation and transition
 -----------------------------
 
-Order: adapter and render (``adapters/agy``, ``render-kit.sh``, ``validate.sh``, frontmatter) with a local render target until the kit repository exists; the kit repository, entry points and CI; the installer module with stand-in ``agy`` CLI tests and a scratch-HOME install using the real ``agy mcp`` commands; the backend in agent-exec and dispatch with fixtures from the probes; the documents through this record's changeset; the three CHANGELOGs' 26.10.1 entries name the agy backend, the agy kit's CHANGELOG names its first release. Delegates run on Opus (D-3), one writer per file, none touching ``~/.gemini``. The release train adds ``kits/agy-agent-kit`` to steps 4 to 7; the user creates the GitHub repository and adds the submodule before the pin bump.
+Order: adapter and render (``adapters/agy``, ``render-kit.sh``,
+``validate.sh``, frontmatter) with a local render target until the kit
+repository exists; the kit repository, entry points and CI; the installer
+module with stand-in ``agy`` CLI tests and a scratch-HOME install using the
+real ``agy mcp`` commands; the backend in agent-exec and dispatch with fixtures
+from the probes; the documents through this record's changeset; the three
+CHANGELOGs' 26.10.1 entries name the agy backend, the agy kit's CHANGELOG names
+its first release. Delegates run on Opus (D-3), one writer per file, none
+touching ``~/.gemini``. The release train adds ``kits/agy-agent-kit`` to steps
+4 to 7; the user creates the GitHub repository and adds the submodule before
+the pin bump.
 
 Verification strategy
 ---------------------
 
-- Render: ``render-kit.sh agy`` produces every required path; each ``dist/rules/*.md`` and ``dist/prefs/*.md`` starts with a closed frontmatter block that a YAML parser reads as exactly ``trigger`` and ``description`` and that is followed by the signature; ``validate.sh`` prints ``validate: OK`` with the agy corpus under 34,000 bytes and no file over 24,000 bytes; leak greps in both directions pass.
-- agent-exec: argv per sandbox level and for steer; the refusal of read-only execution; the stdin event line including escaping of quotes, newlines and non-ASCII; the result normaliser on recorded fixtures of the probes and on synthetic streams: success, ``denied_actions`` with empty and non-empty response, ``status: ERROR``, exit 3 with an ``AGY_ERROR`` line, a missing ``result`` with exit 0, a ``result`` over the bound, events split across reads and across UTF-8 boundaries, output beyond the capture limits with the ``result`` still read; the exit code kept on an exit-0 failure; usage mapping; fallback classification that ignores error-like words inside a successful ``response``; the identity taken from ``init``.
-- dispatch: ``dispatch_backends`` lists agy with kind execute; ``dispatch_consult`` with ``backend: agy`` is refused; the result and reply are ``final_text`` for all backends (codex and claude fixtures unchanged); the agy transcript reader on a synthetic ``transcript.jsonl`` and ``last_conversations.json``; ``dispatch_logs`` of an agy run reading the stored conversation's transcript while another conversation is newer for the same directory.
-- Installer tests with a stand-in ``agy`` that records its argv, on the three CI operating systems: install writes the manual, rules and prefs with frontmatter, skills, registers both servers with the environment, adds the approval rules and the manifest under the agy state folder, and the filesystem diff of the scratch home is exactly the recorded set; reinstall is byte-identical; upgrade over a previous manifest keeps user-owned files; custom rules with and without an existing frontmatter block get the block first and the signature after it; uninstall removes exactly what was recorded, leaves the user's own ``permissions.allow`` entries and unknown settings keys, and does not remove a shared binary while another harness's manifest lists it; ownership classification on kit, custom, BOM, CRLF and malformed-frontmatter files; ``--home`` with a folder other than ``<home>/.gemini`` is refused; the three existing harnesses' install output is byte-identical before and after the layout change.
-- Scratch ``HOME`` with the real CLI: ``agy mcp add``/``remove`` through ``slate-setup`` write and clear ``<scratch>/.gemini/config/mcp_config.json``; a checksum listing of the live ``~/.gemini/config`` and ``antigravity-cli/settings.json`` taken before and after is unchanged.
-- Live, after the release train's ``make install`` into the live home, or earlier in a scratch ``HOME`` with ``GEMINI_API_KEY`` if the user provides one: an Antigravity session loads the manual and the rules (a rule-only fact is answered) and the skills are listed (deciding the ``skills.json`` question); the dispatch and palette tools appear without a prompt for the pre-approved ones; one consultation (on codex) and one execution are submitted and waited on through ``run_command``'s notification with a wait longer than ten seconds; from Claude Code, ``dispatch_submit`` with ``backend: agy`` runs a step to ``succeeded`` with the result reviewed, a nested ``dispatch_consult`` from that run is accepted and a nested ``dispatch_submit`` refused, and ``dispatch_consult`` with ``backend: agy`` is refused.
-- Workspace tests, clippy ``-D warnings`` and fmt on the latest stable on the three operating systems.
+- Render: ``render-kit.sh agy`` produces every required path; each
+  ``dist/rules/*.md`` and ``dist/prefs/*.md`` starts with a closed frontmatter
+  block that a YAML parser reads as exactly ``trigger`` and ``description`` and
+  that is followed by the signature; ``validate.sh`` prints ``validate: OK``
+  with the agy corpus under 34,000 bytes and no file over 24,000 bytes; leak
+  greps in both directions pass.
+- agent-exec: argv per sandbox level and for steer; the refusal of read-only
+  execution; the stdin event line including escaping of quotes, newlines and
+  non-ASCII; the result normaliser on recorded fixtures of the probes and on
+  synthetic streams: success, ``denied_actions`` with empty and non-empty
+  response, ``status: ERROR``, exit 3 with an ``AGY_ERROR`` line, a missing
+  ``result`` with exit 0, a ``result`` over the bound, events split across
+  reads and across UTF-8 boundaries, output beyond the capture limits with the
+  ``result`` still read; the exit code kept on an exit-0 failure; usage
+  mapping; fallback classification that ignores error-like words inside a
+  successful ``response``; the identity taken from ``init``.
+- dispatch: ``dispatch_backends`` lists agy with kind execute;
+  ``dispatch_consult`` with ``backend: agy`` is refused; the result and reply
+  are ``final_text`` for all backends (codex and claude fixtures unchanged);
+  the agy transcript reader on a synthetic ``transcript.jsonl`` and
+  ``last_conversations.json``; ``dispatch_logs`` of an agy run reading the
+  stored conversation's transcript while another conversation is newer for the
+  same directory.
+- Installer tests with a stand-in ``agy`` that records its argv, on the three
+  CI operating systems: install writes the manual, rules and prefs with
+  frontmatter, skills, registers both servers with the environment, adds the
+  approval rules and the manifest under the agy state folder, and the
+  filesystem diff of the scratch home is exactly the recorded set; reinstall is
+  byte-identical; upgrade over a previous manifest keeps user-owned files;
+  custom rules with and without an existing frontmatter block get the block
+  first and the signature after it; uninstall removes exactly what was
+  recorded, leaves the user's own ``permissions.allow`` entries and unknown
+  settings keys, and does not remove a shared binary while another harness's
+  manifest lists it; ownership classification on kit, custom, BOM, CRLF and
+  malformed-frontmatter files; ``--home`` with a folder other than
+  ``<home>/.gemini`` is refused; the three existing harnesses' install output
+  is byte-identical before and after the layout change.
+- Scratch ``HOME`` with the real CLI: ``agy mcp add``/``remove`` through
+  ``slate-setup`` write and clear ``<scratch>/.gemini/config/mcp_config.json``;
+  a checksum listing of the live ``~/.gemini/config`` and
+  ``antigravity-cli/settings.json`` taken before and after is unchanged.
+- Live, after the release train's ``make install`` into the live home, or
+  earlier in a scratch ``HOME`` with ``GEMINI_API_KEY`` if the user provides
+  one: an Antigravity session loads the manual and the rules (a rule-only fact
+  is answered) and the skills are listed (deciding the ``skills.json``
+  question); the dispatch and palette tools appear without a prompt for the
+  pre-approved ones; one consultation (on codex) and one execution are
+  submitted and waited on through ``run_command``'s notification with a wait
+  longer than ten seconds; from Claude Code, ``dispatch_submit`` with
+  ``backend: agy`` runs a step to ``succeeded`` with the result reviewed, a
+  nested ``dispatch_consult`` from that run is accepted and a nested
+  ``dispatch_submit`` refused, and ``dispatch_consult`` with ``backend: agy``
+  is refused.
+- Workspace tests, clippy ``-D warnings`` and fmt on the latest stable on the
+  three operating systems.
 
 Alternatives and costs
 ----------------------
 
-- agy as a consultation backend under ``--mode plan``: plan mode blocked a direct file write and headless mode denied the shell in the probes, but agy has no way to hide the user's MCP servers from one run, so a consultation would see them and could start another consultation, which RFC-0022 forbids for consultation backends; its isolation against subagents and pre-approved MCP tools was unverified. Rejected by the user (2026-10-14): consultation stays on codex and claude.
-- Deliver the kit as an agy plugin (``rules/``, ``skills/``, ``mcp_config.json``): one install command and no frontmatter, but plugin MCP servers are namespaced ``<plugin>_<server>`` (changelog 1.2.x), which renames every dispatch and palette tool in the rules, and plugin rules apply only while the plugin is enabled. Rejected.
-- Pass the prompt as the ``-p`` argument: simpler, but a transcript-carrying prompt of up to 100 KB exceeds the Windows command-line limit. Rejected in favour of stdin.
-- Detect a denial from the stderr notice (D-3): works, but the json ``denied_actions`` field is structured and present in the same envelope as the response. Replaced.
-- Store the frontmatter in the rule sources: the other three renders would carry text their harnesses do not read. Rejected; the render step emits it for agy only.
+- agy as a consultation backend under ``--mode plan``: plan mode blocked a
+  direct file write and headless mode denied the shell in the probes, but agy
+  has no way to hide the user's MCP servers from one run, so a consultation
+  would see them and could start another consultation, which RFC-0022 forbids
+  for consultation backends; its isolation against subagents and pre-approved
+  MCP tools was unverified. Rejected by the user (2026-10-14): consultation
+  stays on codex and claude.
+- Deliver the kit as an agy plugin (``rules/``, ``skills/``,
+  ``mcp_config.json``): one install command and no frontmatter, but plugin MCP
+  servers are namespaced ``<plugin>_<server>`` (changelog 1.2.x), which renames
+  every dispatch and palette tool in the rules, and plugin rules apply only
+  while the plugin is enabled. Rejected.
+- Pass the prompt as the ``-p`` argument: simpler, but a transcript-carrying
+  prompt of up to 100 KB exceeds the Windows command-line limit. Rejected in
+  favour of stdin.
+- Detect a denial from the stderr notice (D-3): works, but the json
+  ``denied_actions`` field is structured and present in the same envelope as
+  the response. Replaced.
+- Store the frontmatter in the rule sources: the other three renders would
+  carry text their harnesses do not read. Rejected; the render step emits it
+  for agy only.
 
 Open questions
 --------------
 
-- Whether a user-scope ``config/rules/*.md`` file needs ``description`` beside ``trigger: always_on``; the render emits both. (Whether ``skills.json`` entries are needed was answered by the live install of 2026-10-14: Antigravity lists the installed skill folders without them.)
+- Whether a user-scope ``config/rules/*.md`` file needs ``description`` beside
+  ``trigger: always_on``; the render emits both. (Whether ``skills.json``
+  entries are needed was answered by the live install of 2026-10-14:
+  Antigravity lists the installed skill folders without them.)
 
 References
 ----------
 
-- agy 1.3.4 ``--help``, ``mcp add --help``, ``models`` (2026-10-14); probes in print and stream-json mode, project-scope rules and MCP, scratch-HOME ``mcp add``/``remove`` (2026-10-14, this session).
-- antigravity.google/docs: rules, settings, mcp, cli/headless, cli/modes, sandbox, plugins, subagents (2026-10-14, through a summarizing fetch).
-- The agy binary's embedded changelog and prompt text (1.1.5 to 1.3.4), read with ``strings`` (2026-10-14).
-- RFC-0022 (consult kind, wait, per-harness waiting); RFC-0008 (agent-exec); RFC-0002 (installer); D-3 (state, 2026-10-13).
+- agy 1.3.4 ``--help``, ``mcp add --help``, ``models`` (2026-10-14); probes in
+  print and stream-json mode, project-scope rules and MCP, scratch-HOME
+  ``mcp add``/``remove`` (2026-10-14, this session).
+- antigravity.google/docs: rules, settings, mcp, cli/headless, cli/modes,
+  sandbox, plugins, subagents (2026-10-14, through a summarizing fetch).
+- The agy binary's embedded changelog and prompt text (1.1.5 to 1.3.4), read
+  with ``strings`` (2026-10-14).
+- RFC-0022 (consult kind, wait, per-harness waiting); RFC-0008 (agent-exec);
+  RFC-0002 (installer); D-3 (state, 2026-10-13).
