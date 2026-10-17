@@ -19,7 +19,7 @@ s#{{EDIT_SURFACE}}#the file tools (`write_to_file`, `replace_file_content`) dire
 s#{{DELEGATION_SURFACE}}#invoke_subagent / dispatch#g
 s#{{FANOUT_DELEGATION_SURFACE}}#manage_subagents#g
 s#{{KIT_PREFIX}}#agy-agent-kit#g
-s#{{KIT_VERSION}}#26.10.1#g
+s#{{KIT_VERSION}}#26.10.2#g
 s#{{SUBAGENT_PREFS_FILE}}#agy-agent-kit--subagent-prefs.md#g
 s#{{HARNESS_SKILLS_DIR}}#$HOME/.gemini/config/skills#g
 s#{{PREFS_LOADING}}#it loads with these rules#g

@@ -1,6 +1,6 @@
 [package]
 name = "slate-setup"
-version = "26.10.1"
+version = "26.10.2"
 edition = "2024"
 license = "MIT"
 description = "Installer for the slate agent kits: payload files, MCP servers, prefs and native harness configuration."

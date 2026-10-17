@@ -17,3 +17,9 @@ Records
   Depends: RFC-0024.
   Linked from: none.
   Superseded by: none.
+
+`ADR-0003 <adr-0003-an-approval-and-a-correction-reach-what-they-name-korean-answers-use-and-a-document-disagreeing-with-the-source-is-a-discrepancy.rst>`_ An approval and a correction reach what they name, Korean answers use 해요체, and a document disagreeing with the source is a discrepancy
+  Status: Accepted. Implementation: complete.
+  Depends: RFC-0018.
+  Linked from: none.
+  Superseded by: none.

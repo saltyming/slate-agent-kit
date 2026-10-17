@@ -230,8 +230,8 @@ fi
 
 # ── 5. formal-language + stale-terminology ────────────────
 
-if ! grep -n "polite formal" "$ROOT/shared/rules/constitution.md" >/dev/null; then
-  echo "formal-language rule missing from the constitution" >&2
+if ! grep -n "polite informal register" "$ROOT/shared/rules/constitution.md" >/dev/null; then
+  echo "register rule missing from the constitution" >&2
   fail=1
 fi
 

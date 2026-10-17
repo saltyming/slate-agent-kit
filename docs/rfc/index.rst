@@ -111,7 +111,7 @@ Records
 `RFC-0018 <rfc-0018-constitution-and-implementing-rules.rst>`_ The manual is a constitution with a preamble; the rules implement it
   Status: Accepted. Implementation: complete.
   Depends: RFC-0001, RFC-0002, RFC-0006.
-  Linked from: ADR-0001 (Depends), ADR-0001 (Within).
+  Linked from: ADR-0001 (Depends), ADR-0001 (Within), ADR-0003 (Depends), ADR-0003 (Within).
   Superseded by: none.
 
 `RFC-0019 <rfc-0019-changesets-under-the-document-root.rst>`_ Changesets edit any document under the document root, and Replace body: keeps subsections
